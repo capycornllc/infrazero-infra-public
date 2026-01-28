@@ -3,7 +3,7 @@
 This list reflects the Epic-1 web UI inputs and generated values that will be stored as GitHub Actions secrets for infra repos. Some entries are not sensitive but are still stored as secrets for consistent automation.
 
 ## 1) Project Basics
-- `project_slug`
+- `project_slug` (used to derive `name_prefix` as `<project_slug>-<environment>`)
 - `cloud_region` (e.g. `nbg1`, `fsn1`, `hel1`, `ash`, `hil`, `sin`; used as fallback if `s3_region` is empty)
 - `s3_endpoint` (include scheme; workflows will prepend `https://` if missing)
 

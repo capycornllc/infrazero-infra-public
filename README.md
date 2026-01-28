@@ -11,6 +11,7 @@ Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bast
 - Single source of truth: `config/infra.yaml`
 - Schema: `config/schema.json`
 - `s3_backend.state_prefix` lives in config; `s3_endpoint` + `s3_region` come from secrets.
+- `name_prefix` is derived from `PROJECT_SLUG` + `environment` at render time.
 
 Render and validate locally:
 ```bash
