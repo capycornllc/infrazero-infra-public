@@ -25,7 +25,7 @@ def main() -> int:
         return 1
 
     endpoint = os.getenv("S3_ENDPOINT", "")
-    region = os.getenv("S3_REGION") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "")
+    region = os.getenv("S3_REGION") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or os.getenv("CLOUD_REGION", "")
     state_prefix = s3_cfg.get("state_prefix", "")
 
     if not endpoint or not region or not state_prefix:
