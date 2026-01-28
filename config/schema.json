@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "project",
+    "environment",
+    "name_prefix",
+    "location",
+    "network_zone",
+    "private_cidr",
+    "server_image",
+    "servers",
+    "load_balancer",
+    "db_volume",
+    "placement_groups",
+    "wireguard",
+    "k3s",
+    "s3_backend",
+    "bootstrap"
+  ],
+  "properties": {
+    "project": { "type": "string", "minLength": 1 },
+    "environment": { "type": "string", "minLength": 1 },
+    "name_prefix": { "type": "string", "minLength": 1 },
+    "location": { "type": "string", "minLength": 1 },
+    "network_zone": { "type": "string", "minLength": 1 },
+    "private_cidr": { "type": "string", "minLength": 1 },
+    "server_image": { "type": "string", "minLength": 1 },
+    "servers": {
+      "type": "object",
+      "required": ["bastion", "egress", "node1", "node2", "db"],
+      "properties": {
+        "bastion": { "$ref": "#/$defs/server" },
+        "egress": { "$ref": "#/$defs/server" },
+        "node1": { "$ref": "#/$defs/server" },
+        "node2": { "$ref": "#/$defs/server" },
+        "db": { "$ref": "#/$defs/server" }
+      },
+      "additionalProperties": true
+    },
+    "load_balancer": {
+      "type": "object",
+      "required": ["type", "private_ip", "services", "health_check"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "private_ip": { "type": "string", "minLength": 1 },
+        "services": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/lb_service" }
+        },
+        "health_check": { "$ref": "#/$defs/lb_health_check" }
+      },
+      "additionalProperties": true
+    },
+    "db_volume": {
+      "type": "object",
+      "required": ["name", "size", "format"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 10 },
+        "format": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "placement_groups": {
+      "type": "object",
+      "required": ["enabled", "type"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "type": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "wireguard": {
+      "type": "object",
+      "required": ["enabled", "listen_port", "allowed_cidrs"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "listen_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "allowed_cidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": true
+    },
+    "k3s": {
+      "type": "object",
+      "required": ["token_name", "server_taint"],
+      "properties": {
+        "token_name": { "type": "string", "minLength": 1 },
+        "server_taint": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "s3_backend": {
+      "type": "object",
+      "required": ["state_prefix"],
+      "properties": {
+        "state_prefix": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "bootstrap": {
+      "type": "object",
+      "required": ["presign_expiry_seconds"],
+      "properties": {
+        "presign_expiry_seconds": { "type": "integer", "minimum": 60 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "server": {
+      "type": "object",
+      "required": ["type", "private_ip", "public_ipv4", "public_ipv6"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "private_ip": { "type": "string", "minLength": 1 },
+        "public_ipv4": { "type": "boolean" },
+        "public_ipv6": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "lb_service": {
+      "type": "object",
+      "required": ["name", "protocol", "listen_port", "destination_port"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "protocol": { "type": "string", "enum": ["tcp", "http", "https"] },
+        "listen_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "destination_port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "additionalProperties": true
+    },
+    "lb_health_check": {
+      "type": "object",
+      "required": ["protocol", "port", "interval", "timeout", "retries"],
+      "properties": {
+        "protocol": { "type": "string", "enum": ["tcp", "http"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "interval": { "type": "integer", "minimum": 1 },
+        "timeout": { "type": "integer", "minimum": 1 },
+        "retries": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    }
+  }
+}

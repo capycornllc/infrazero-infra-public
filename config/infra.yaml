@@ -1,0 +1,80 @@
+project: infrazero
+environment: dev
+name_prefix: infrazero-dev
+
+location: fsn1
+network_zone: eu-central
+private_cidr: 10.10.0.0/24
+
+server_image: ubuntu-22.04
+
+servers:
+  bastion:
+    type: cx22
+    private_ip: 10.10.0.10
+    public_ipv4: true
+    public_ipv6: true
+  egress:
+    type: cx22
+    private_ip: 10.10.0.11
+    public_ipv4: true
+    public_ipv6: true
+  node1:
+    type: cx32
+    private_ip: 10.10.0.20
+    public_ipv4: false
+    public_ipv6: false
+  node2:
+    type: cx32
+    private_ip: 10.10.0.21
+    public_ipv4: false
+    public_ipv6: false
+  db:
+    type: cx22
+    private_ip: 10.10.0.30
+    public_ipv4: false
+    public_ipv6: false
+
+load_balancer:
+  type: lb11
+  private_ip: 10.10.0.40
+  services:
+    - name: http
+      protocol: tcp
+      listen_port: 80
+      destination_port: 30080
+    - name: https
+      protocol: tcp
+      listen_port: 443
+      destination_port: 30443
+  health_check:
+    protocol: tcp
+    port: 30080
+    interval: 10
+    timeout: 5
+    retries: 3
+
+db_volume:
+  name: infrazero-dev-db
+  size: 50
+  format: ext4
+
+placement_groups:
+  enabled: true
+  type: spread
+
+wireguard:
+  enabled: true
+  listen_port: 51820
+  allowed_cidrs:
+    - 10.50.0.0/24
+
+k3s:
+  token_name: k3s_join_token
+  server_taint: false
+
+s3_backend:
+  state_prefix: infrazero/dev
+
+bootstrap:
+  presign_expiry_seconds: 3600

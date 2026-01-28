@@ -1,0 +1,17 @@
+# OpenTofu/Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+**/*tfstate*
+
+# Rendered config
+/tofu/tofu.tfvars.json
+/tofu/backend.hcl
+
+# Build artifacts
+/build/
+
+# Logs
+*.log
+
+# Misc
+.DS_Store

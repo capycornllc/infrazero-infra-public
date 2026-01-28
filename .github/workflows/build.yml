@@ -1,0 +1,105 @@
+name: build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.s3_access_key_id }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.s3_secret_access_key }}
+      AWS_DEFAULT_REGION: ${{ secrets.s3_region }}
+      S3_ENDPOINT: ${{ secrets.s3_endpoint }}
+      INFRA_STATE_BUCKET: ${{ secrets.infra_state_bucket }}
+      OPS_SSH_KEYS_JSON: ${{ secrets.OPS_SSH_KEYS_JSON }}
+      HCLOUD_TOKEN: ${{ secrets.hetzner_cloud_token }}
+      TF_VAR_hcloud_token: ${{ secrets.hetzner_cloud_token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml jsonschema
+
+      - name: Read config values
+        run: |
+          python - <<'PY'
+          import os
+          import yaml
+          from pathlib import Path
+
+          cfg = yaml.safe_load(Path("config/infra.yaml").read_text()) or {}
+          bootstrap = cfg.get("bootstrap", {})
+          s3_backend = cfg.get("s3_backend", {})
+          db_volume = cfg.get("db_volume", {})
+
+          env_lines = [
+              f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 3600)}",
+              f"STATE_PREFIX={s3_backend.get('state_prefix', '')}",
+              f"DB_VOLUME_NAME={db_volume.get('name', '')}",
+          ]
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(env_lines) + "\n")
+          PY
+
+      - name: Validate config
+        run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
+
+      - name: Package and upload bootstraps
+        run: |
+          set -euo pipefail
+          mkdir -p build/bootstrap
+          chmod +x bootstrap/*.sh
+          for role in bastion egress node1 node2 db; do
+            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh"
+            sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
+            echo "$sha" > "build/bootstrap/${role}.sha256"
+
+            aws --endpoint-url "$S3_ENDPOINT" s3 cp "build/bootstrap/${role}.tar.zst" "s3://$INFRA_STATE_BUCKET/bootstrap/${role}.tar.zst"
+            url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/bootstrap/${role}.tar.zst" --expires-in "$BOOTSTRAP_PRESIGN_EXPIRY")
+            echo "$url" > "build/bootstrap/${role}.url"
+          done
+
+          manifest='{}'
+          for role in bastion egress node1 node2 db; do
+            sha=$(cat "build/bootstrap/${role}.sha256")
+            url=$(cat "build/bootstrap/${role}.url")
+            manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")
+          done
+          echo "$manifest" | jq '.' > build/bootstrap_artifacts.json
+
+      - name: Render backend + tfvars
+        run: |
+          python scripts/render-backend.py --config config/infra.yaml --output tofu/backend.hcl
+          python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
+
+      - name: Init OpenTofu
+        run: tofu -chdir=tofu init -backend-config=backend.hcl
+
+      - name: Destroy stack (keep volume)
+        run: |
+          chmod +x scripts/*.sh
+          pushd tofu
+          ../scripts/destroy-without-volume.sh
+          popd
+
+      - name: Import DB volume if exists
+        run: |
+          chmod +x scripts/*.sh
+          pushd tofu
+          DB_VOLUME_NAME="$DB_VOLUME_NAME" ../scripts/import-volume.sh
+          popd
+
+      - name: Apply OpenTofu
+        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json

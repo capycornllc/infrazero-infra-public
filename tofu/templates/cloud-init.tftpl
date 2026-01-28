@@ -1,0 +1,40 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - ca-certificates
+  - zstd
+  - tar
+
+write_files:
+  - path: /opt/infrazero/bootstrap/run.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      ROLE="${bootstrap_role}"
+      URL="${bootstrap_url}"
+      SHA="${bootstrap_sha256}"
+      export DB_VOLUME_NAME="${db_volume_name}"
+      export DB_VOLUME_FORMAT="${db_volume_format}"
+
+      WORKDIR="/opt/infrazero/bootstrap"
+      mkdir -p "$WORKDIR"
+      cd "$WORKDIR"
+
+      echo "[bootstrap] downloading $ROLE artifact"
+      curl -fsSL "$URL" -o "${ROLE}.tar.zst"
+      echo "${SHA}  ${ROLE}.tar.zst" | sha256sum -c -
+
+      echo "[bootstrap] extracting $ROLE artifact"
+      tar --zstd -xf "${ROLE}.tar.zst"
+      chmod +x common.sh "${ROLE}.sh"
+
+      echo "[bootstrap] running common + role scripts"
+      ./common.sh
+      "./${ROLE}.sh"
+
+runcmd:
+  - ["/opt/infrazero/bootstrap/run.sh"]
