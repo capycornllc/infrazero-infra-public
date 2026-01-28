@@ -36,7 +36,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `db_backup_bucket`
 - `app_private_bucket`
 - `app_public_bucket`
-- `s3_region`
+- `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 
 ## 6) Application Database
 - `app_db_name`

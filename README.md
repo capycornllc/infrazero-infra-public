@@ -24,7 +24,7 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `s3_secret_access_key`
 - `infra_state_bucket`
 - `s3_endpoint`
-- `s3_region`
+- `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 - `cloud_region` (used as fallback for backend region when `s3_region` is empty)
 - `OPS_SSH_KEYS_JSON` (JSON map of admin -> list of SSH public keys)
 
@@ -43,3 +43,4 @@ Full list (including future epics): `docs/secrets-list.md`
 - Bootstrap artifacts are uploaded to `s3://$infra_state_bucket/bootstrap/` and referenced in cloud-init via presigned URLs.
 - `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.
+- Backend config skips AWS region validation to allow Hetzner regions (e.g. `fsn1`).

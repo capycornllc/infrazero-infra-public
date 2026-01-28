@@ -25,11 +25,17 @@ def main() -> int:
         return 1
 
     endpoint = os.getenv("S3_ENDPOINT", "")
-    region = os.getenv("S3_REGION") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or os.getenv("CLOUD_REGION", "")
+    region = (
+        os.getenv("S3_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or os.getenv("CLOUD_REGION")
+        or "us-east-1"
+    )
     state_prefix = s3_cfg.get("state_prefix", "")
 
-    if not endpoint or not region or not state_prefix:
-        print("S3_ENDPOINT, S3_REGION, and s3_backend.state_prefix are required", file=sys.stderr)
+    if not endpoint or not state_prefix:
+        print("S3_ENDPOINT and s3_backend.state_prefix are required", file=sys.stderr)
         return 1
 
     key = f"{state_prefix}/terraform.tfstate"
@@ -42,6 +48,7 @@ def main() -> int:
         "skip_credentials_validation = true",
         "skip_metadata_api_check = true",
         "skip_requesting_account_id = true",
+        "skip_region_validation = true",
         "use_path_style = true",
     ])
 
