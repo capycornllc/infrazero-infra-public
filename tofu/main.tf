@@ -232,6 +232,11 @@ resource "hcloud_server" "bastion" {
     ipv6_enabled = var.servers.bastion.public_ipv6
   }
 
+  network {
+    network_id = hcloud_network.main.id
+    ip         = var.servers.bastion.private_ip
+  }
+
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.bastion.id]
   placement_group_id = local.pg_bastion_id
@@ -261,6 +266,11 @@ resource "hcloud_server" "egress" {
   public_net {
     ipv4_enabled = var.servers.egress.public_ipv4
     ipv6_enabled = var.servers.egress.public_ipv6
+  }
+
+  network {
+    network_id = hcloud_network.main.id
+    ip         = var.servers.egress.private_ip
   }
 
   ssh_keys           = local.ssh_key_ids
@@ -294,6 +304,11 @@ resource "hcloud_server" "node1" {
     ipv6_enabled = var.servers.node1.public_ipv6
   }
 
+  network {
+    network_id = hcloud_network.main.id
+    ip         = var.servers.node1.private_ip
+  }
+
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.node1.id]
   placement_group_id = local.pg_node1_id
@@ -323,6 +338,11 @@ resource "hcloud_server" "node2" {
   public_net {
     ipv4_enabled = var.servers.node2.public_ipv4
     ipv6_enabled = var.servers.node2.public_ipv6
+  }
+
+  network {
+    network_id = hcloud_network.main.id
+    ip         = var.servers.node2.private_ip
   }
 
   ssh_keys           = local.ssh_key_ids
@@ -356,6 +376,11 @@ resource "hcloud_server" "db" {
     ipv6_enabled = var.servers.db.public_ipv6
   }
 
+  network {
+    network_id = hcloud_network.main.id
+    ip         = var.servers.db.private_ip
+  }
+
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.db.id]
   placement_group_id = local.pg_db_id
@@ -374,36 +399,6 @@ resource "hcloud_server" "db" {
   }
 
   depends_on = [hcloud_network_subnet.main]
-}
-
-resource "hcloud_server_network" "bastion" {
-  server_id  = hcloud_server.bastion.id
-  network_id = hcloud_network.main.id
-  ip         = var.servers.bastion.private_ip
-}
-
-resource "hcloud_server_network" "egress" {
-  server_id  = hcloud_server.egress.id
-  network_id = hcloud_network.main.id
-  ip         = var.servers.egress.private_ip
-}
-
-resource "hcloud_server_network" "node1" {
-  server_id  = hcloud_server.node1.id
-  network_id = hcloud_network.main.id
-  ip         = var.servers.node1.private_ip
-}
-
-resource "hcloud_server_network" "node2" {
-  server_id  = hcloud_server.node2.id
-  network_id = hcloud_network.main.id
-  ip         = var.servers.node2.private_ip
-}
-
-resource "hcloud_server_network" "db" {
-  server_id  = hcloud_server.db.id
-  network_id = hcloud_network.main.id
-  ip         = var.servers.db.private_ip
 }
 
 resource "hcloud_load_balancer" "main" {

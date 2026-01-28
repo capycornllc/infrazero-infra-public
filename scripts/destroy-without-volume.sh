@@ -40,13 +40,6 @@ destroy_targets hcloud_load_balancer.main
 destroy_targets hcloud_volume_attachment.db
 
 destroy_targets \
-  hcloud_server_network.bastion \
-  hcloud_server_network.egress \
-  hcloud_server_network.node1 \
-  hcloud_server_network.node2 \
-  hcloud_server_network.db
-
-destroy_targets \
   hcloud_server.bastion \
   hcloud_server.egress \
   hcloud_server.node1 \
