@@ -5,7 +5,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 ## 1) Project Basics
 - `project_slug`
 - `cloud_region` (e.g. `nbg1`, `fsn1`, `hel1`, `ash`, `hil`, `sin`)
-- `s3_endpoint`
+- `s3_endpoint` (include scheme; workflows will prepend `https://` if missing)
 
 ## 2) GitHub Access
 - `github_username`

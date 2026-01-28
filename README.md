@@ -41,3 +41,4 @@ Full list (including future epics): `docs/secrets-list.md`
 - DB bootstrap mounts the attached volume at `/mnt/db` when present.
 - Bootstrap artifacts are uploaded to `s3://$infra_state_bucket/bootstrap/` and referenced in cloud-init via presigned URLs.
 - `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
+- If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.

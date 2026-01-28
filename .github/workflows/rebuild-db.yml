@@ -51,6 +51,17 @@ jobs:
               fh.write("\n".join(env_lines) + "\n")
           PY
 
+
+      - name: Normalize S3 endpoint
+        run: |
+          if [ -z "${S3_ENDPOINT}" ]; then
+            echo "S3_ENDPOINT is required" >&2
+            exit 1
+          fi
+          if [[ "${S3_ENDPOINT}" != http://* && "${S3_ENDPOINT}" != https://* ]]; then
+            echo "S3_ENDPOINT=https://${S3_ENDPOINT}" >> "$GITHUB_ENV"
+          fi
+
       - name: Validate config
         run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
 
