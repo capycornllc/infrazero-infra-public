@@ -20,7 +20,14 @@ destroy_targets() {
     return 0
   fi
 
-  tofu destroy -auto-approve "${targets[@]}"
+  local var_args=()
+  if [ -n "${TOFU_VAR_FILE:-}" ]; then
+    var_args+=("-var-file=${TOFU_VAR_FILE}")
+  elif [ -f "tofu.tfvars.json" ]; then
+    var_args+=("-var-file=tofu.tfvars.json")
+  fi
+
+  tofu destroy -auto-approve "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets \
