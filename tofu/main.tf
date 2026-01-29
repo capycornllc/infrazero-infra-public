@@ -120,6 +120,26 @@ resource "hcloud_firewall" "egress" {
   rule {
     direction  = "in"
     protocol   = "tcp"
+    port       = "any"
+    source_ips = var.wireguard.allowed_cidrs
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "udp"
+    port       = "any"
+    source_ips = var.wireguard.allowed_cidrs
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
     port       = "22"
     source_ips = [local.bastion_cidr]
   }
@@ -146,7 +166,7 @@ resource "hcloud_firewall" "node1" {
     direction  = "in"
     protocol   = "tcp"
     port       = "6443"
-    source_ips = [local.bastion_cidr, local.node2_cidr]
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.node2_cidr])
   }
 
   rule {
@@ -174,7 +194,13 @@ resource "hcloud_firewall" "node1" {
     direction  = "in"
     protocol   = "tcp"
     port       = "22"
-    source_ips = [local.bastion_cidr]
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
   }
 }
 
@@ -199,7 +225,13 @@ resource "hcloud_firewall" "node2" {
     direction  = "in"
     protocol   = "tcp"
     port       = "22"
-    source_ips = [local.bastion_cidr]
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
   }
 }
 
@@ -217,7 +249,13 @@ resource "hcloud_firewall" "db" {
     direction  = "in"
     protocol   = "tcp"
     port       = "22"
-    source_ips = [local.bastion_cidr]
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
   }
 }
 
