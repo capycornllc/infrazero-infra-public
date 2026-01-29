@@ -75,56 +75,7 @@ net.ipv4.conf.default.rp_filter=0
 EOF
 sysctl --system || true
 
-# Route WG subnet via bastion for all non-bastion hosts (netplan)
-WG_ROUTE_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
-WG_ROUTE_CIDR=""
-if [ -n "$WG_ROUTE_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
-  WG_ROUTE_CIDR=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)' "$WG_ROUTE_CIDR_RAW" 2>/dev/null || true)
-fi
-if [ -z "$WG_ROUTE_CIDR" ]; then
-  WG_ROUTE_CIDR="$WG_ROUTE_CIDR_RAW"
-fi
-
-if [ "${BOOTSTRAP_ROLE:-}" != "bastion" ] && [ -n "$WG_ROUTE_CIDR" ] && [ -n "${BASTION_PRIVATE_IP:-}" ]; then
-  if systemctl list-unit-files 2>/dev/null | grep -q "^infrazero-wg-route.service"; then
-    systemctl disable --now infrazero-wg-route.service || true
-    rm -f /etc/systemd/system/infrazero-wg-route.service
-    systemctl daemon-reload || true
-  fi
-
-  PRIVATE_IF=""
-  if [ -n "${PRIVATE_CIDR:-}" ]; then
-    for _ in $(seq 1 30); do
-      PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-      if [ -n "$PRIVATE_IF" ]; then
-        break
-      fi
-      sleep 2
-    done
-  fi
-
-  if [ -z "$PRIVATE_IF" ]; then
-    echo "[common] unable to determine private interface for $PRIVATE_CIDR; skipping WG route" >&2
-  elif command -v netplan >/dev/null 2>&1; then
-    echo "net.ipv4.conf.${PRIVATE_IF}.rp_filter=0" >> /etc/sysctl.d/99-infrazero-rpfilter.conf
-    sysctl --system || true
-
-    cat > /etc/netplan/60-infrazero-wg-route.yaml <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${PRIVATE_IF}:
-      routes:
-        - to: ${WG_ROUTE_CIDR}
-          via: ${BASTION_PRIVATE_IP}
-EOF
-
-    netplan apply || true
-  else
-    echo "[common] netplan not available; skipping WG route" >&2
-  fi
-fi
+# WG routing handled via SNAT on bastion; no per-host routes required.
 
 # Enable auditd
 systemctl enable --now auditd || true

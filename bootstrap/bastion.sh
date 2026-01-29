@@ -109,6 +109,8 @@ if [ -z "$WG_CIDR" ]; then
 fi
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
+  # SNAT WG clients to bastion private IP for private subnet access.
+  iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
   iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
   iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
