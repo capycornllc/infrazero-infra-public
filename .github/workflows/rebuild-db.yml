@@ -31,6 +31,12 @@ jobs:
       INFISICAL_POSTGRES_PASSWORD: ${{ secrets.infisical_postgres_password }}
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
+      WG_SERVER_PRIVATE_KEY: ${{ secrets.wg_server_private_key }}
+      WG_SERVER_PUBLIC_KEY: ${{ secrets.wg_server_public_key }}
+      WG_SERVER_ADDRESS: ${{ secrets.wg_server_address }}
+      WG_LISTEN_PORT: ${{ secrets.wg_listen_port }}
+      WG_ADMIN_PEERS_JSON: ${{ secrets.WG_ADMIN_PEERS_JSON }}
+      WG_PRESHARED_KEYS_JSON: ${{ secrets.WG_PRESHARED_KEYS_JSON }}
       HCLOUD_TOKEN: ${{ secrets.hetzner_cloud_token }}
       TF_VAR_hcloud_token: ${{ secrets.hetzner_cloud_token }}
     steps:

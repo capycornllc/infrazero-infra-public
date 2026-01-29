@@ -139,6 +139,11 @@ variable "egress_secrets" {
   sensitive = true
 }
 
+variable "bastion_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
 variable "db_backup_age_private_key" {
   type      = string
   sensitive = true

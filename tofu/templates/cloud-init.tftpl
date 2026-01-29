@@ -47,5 +47,14 @@ write_files:
 %{ endfor ~}
 %{ endif ~}
 
+%{ if length(bastion_env) > 0 ~}
+  - path: /etc/infrazero/bastion.env
+    permissions: "0600"
+    content: |
+%{ for line in bastion_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
 runcmd:
   - ["/opt/infrazero/bootstrap/run.sh"]

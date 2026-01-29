@@ -249,6 +249,10 @@ resource "hcloud_server" "bastion" {
     private_cidr    = var.private_cidr
     egress_env      = []
     db_backup_age_private_key = ""
+    bastion_env     = concat(local.bastion_env_lines, [
+      format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
+      format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
+    ])
   })
 
   labels = {
@@ -288,6 +292,7 @@ resource "hcloud_server" "egress" {
     private_cidr    = var.private_cidr
     egress_env      = local.egress_env_lines
     db_backup_age_private_key = var.db_backup_age_private_key
+    bastion_env     = []
   })
 
   labels = {
@@ -327,6 +332,7 @@ resource "hcloud_server" "node1" {
     private_cidr    = var.private_cidr
     egress_env      = []
     db_backup_age_private_key = ""
+    bastion_env     = []
   })
 
   labels = {
@@ -366,6 +372,7 @@ resource "hcloud_server" "node2" {
     private_cidr    = var.private_cidr
     egress_env      = []
     db_backup_age_private_key = ""
+    bastion_env     = []
   })
 
   labels = {
@@ -405,6 +412,7 @@ resource "hcloud_server" "db" {
     private_cidr    = var.private_cidr
     egress_env      = []
     db_backup_age_private_key = ""
+    bastion_env     = []
   })
 
   labels = {

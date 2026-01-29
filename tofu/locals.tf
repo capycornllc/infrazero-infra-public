@@ -14,4 +14,9 @@ locals {
     for key, value in var.egress_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
+
+  bastion_env_lines = [
+    for key, value in var.bastion_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
 }

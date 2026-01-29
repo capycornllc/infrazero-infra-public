@@ -41,6 +41,12 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `wg_server_private_key`
+- `wg_server_public_key`
+- `wg_server_address`
+- `wg_listen_port`
+- `WG_ADMIN_PEERS_JSON`
+- `WG_PRESHARED_KEYS_JSON`
 
 Full list (including future epics): `docs/secrets-list.md`
 

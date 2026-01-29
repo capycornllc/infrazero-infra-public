@@ -132,12 +132,22 @@ def main() -> int:
     if environment:
         egress_secrets["ENVIRONMENT"] = environment
 
+    bastion_secrets = {
+        "WG_SERVER_PRIVATE_KEY": require_env("WG_SERVER_PRIVATE_KEY"),
+        "WG_SERVER_PUBLIC_KEY": require_env("WG_SERVER_PUBLIC_KEY"),
+        "WG_SERVER_ADDRESS": require_env("WG_SERVER_ADDRESS"),
+        "WG_LISTEN_PORT": require_env("WG_LISTEN_PORT"),
+        "WG_ADMIN_PEERS_JSON": require_env("WG_ADMIN_PEERS_JSON"),
+        "WG_PRESHARED_KEYS_JSON": require_env("WG_PRESHARED_KEYS_JSON"),
+    }
+
     if missing_env:
         missing_env = sorted(set(missing_env))
-        print(f"Missing required environment variables for egress bootstrap: {', '.join(missing_env)}", file=sys.stderr)
+        print(f"Missing required environment variables for bootstrap: {', '.join(missing_env)}", file=sys.stderr)
         return 1
 
     config["egress_secrets"] = egress_secrets
+    config["bastion_secrets"] = bastion_secrets
     config["db_backup_age_private_key"] = db_backup_age_private_key
 
     if args.bootstrap_artifacts:
