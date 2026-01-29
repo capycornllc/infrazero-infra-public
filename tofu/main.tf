@@ -287,6 +287,7 @@ resource "hcloud_server" "bastion" {
     private_cidr    = var.private_cidr
     bastion_private_ip = var.servers.bastion.private_ip
     wg_server_address = var.wg_server_address
+    wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
@@ -333,6 +334,7 @@ resource "hcloud_server" "egress" {
     private_cidr    = var.private_cidr
     bastion_private_ip = var.servers.bastion.private_ip
     wg_server_address = var.wg_server_address
+    wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = local.egress_env_lines
     db_backup_age_private_key = var.db_backup_age_private_key
@@ -376,6 +378,7 @@ resource "hcloud_server" "node1" {
     private_cidr    = var.private_cidr
     bastion_private_ip = var.servers.bastion.private_ip
     wg_server_address = var.wg_server_address
+    wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
@@ -419,6 +422,7 @@ resource "hcloud_server" "node2" {
     private_cidr    = var.private_cidr
     bastion_private_ip = var.servers.bastion.private_ip
     wg_server_address = var.wg_server_address
+    wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
@@ -462,6 +466,7 @@ resource "hcloud_server" "db" {
     private_cidr    = var.private_cidr
     bastion_private_ip = var.servers.bastion.private_ip
     wg_server_address = var.wg_server_address
+    wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""

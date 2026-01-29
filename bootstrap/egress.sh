@@ -46,10 +46,16 @@ export AWS_DEFAULT_REGION="$S3_REGION"
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y docker.io docker-compose awscli age jq iptables
+  apt-get install -y docker.io docker-compose age jq iptables unzip
 fi
 
 systemctl enable --now docker
+
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+fi
 
 compose_cmd() {
   if command -v docker-compose >/dev/null 2>&1; then

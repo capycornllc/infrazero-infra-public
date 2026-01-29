@@ -91,7 +91,7 @@ if [ -z "$PRIVATE_IP" ]; then
 fi
 
 WG_IF="wg0"
-WG_CIDR="${WG_SERVER_ADDRESS}"
+WG_CIDR="${WG_CIDR:-${WG_SERVER_ADDRESS}}"
 
 iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
 iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
