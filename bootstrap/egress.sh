@@ -72,7 +72,7 @@ auth_enabled: false
 server:
   http_listen_port: 3100
 common:
-  path: /loki
+  path_prefix: /loki
   storage:
     filesystem:
       chunks_directory: /loki/chunks
@@ -114,6 +114,10 @@ services:
     volumes:
       - /opt/infrazero/egress/grafana-data:/var/lib/grafana
 EOF
+
+mkdir -p /opt/infrazero/egress/loki-data /opt/infrazero/egress/grafana-data
+chown -R 10001:10001 /opt/infrazero/egress/loki-data
+chown -R 472:472 /opt/infrazero/egress/grafana-data
 
 compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
 
