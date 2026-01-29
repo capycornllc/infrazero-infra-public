@@ -68,6 +68,13 @@ set_sshd_config "PermitRootLogin" "no"
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
+# Relax rp_filter for asymmetric routing (WG via bastion)
+cat > /etc/sysctl.d/99-infrazero-rpfilter.conf <<'EOF'
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+EOF
+sysctl --system || true
+
 # Route WG subnet via bastion for all non-bastion hosts (netplan)
 WG_ROUTE_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
 WG_ROUTE_CIDR=""
@@ -99,6 +106,9 @@ if [ "${BOOTSTRAP_ROLE:-}" != "bastion" ] && [ -n "$WG_ROUTE_CIDR" ] && [ -n "${
   if [ -z "$PRIVATE_IF" ]; then
     echo "[common] unable to determine private interface for $PRIVATE_CIDR; skipping WG route" >&2
   elif command -v netplan >/dev/null 2>&1; then
+    echo "net.ipv4.conf.${PRIVATE_IF}.rp_filter=0" >> /etc/sysctl.d/99-infrazero-rpfilter.conf
+    sysctl --system || true
+
     cat > /etc/netplan/60-infrazero-wg-route.yaml <<EOF
 network:
   version: 2
