@@ -68,6 +68,29 @@ set_sshd_config "PermitRootLogin" "no"
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
+# Route WG subnet via bastion for all non-bastion hosts
+if [ "${BOOTSTRAP_ROLE:-}" != "bastion" ] && [ -n "${WG_SERVER_ADDRESS:-}" ] && [ -n "${BASTION_PRIVATE_IP:-}" ]; then
+  ip route replace "$WG_SERVER_ADDRESS" via "$BASTION_PRIVATE_IP" || true
+
+  cat > /etc/systemd/system/infrazero-wg-route.service <<EOF
+[Unit]
+Description=Route WireGuard subnet via bastion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ip route replace ${WG_SERVER_ADDRESS} via ${BASTION_PRIVATE_IP}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now infrazero-wg-route.service
+fi
+
 # Enable auditd
 systemctl enable --now auditd || true
 

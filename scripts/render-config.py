@@ -138,10 +138,12 @@ def main() -> int:
     if environment:
         egress_secrets["ENVIRONMENT"] = environment
 
+    wg_server_address = require_env("WG_SERVER_ADDRESS")
+
     bastion_secrets = {
         "WG_SERVER_PRIVATE_KEY": require_env("WG_SERVER_PRIVATE_KEY"),
         "WG_SERVER_PUBLIC_KEY": require_env("WG_SERVER_PUBLIC_KEY"),
-        "WG_SERVER_ADDRESS": require_env("WG_SERVER_ADDRESS"),
+        "WG_SERVER_ADDRESS": wg_server_address,
         "WG_LISTEN_PORT": require_env("WG_LISTEN_PORT"),
         "WG_ADMIN_PEERS_JSON": require_env("WG_ADMIN_PEERS_JSON"),
         "WG_PRESHARED_KEYS_JSON": require_env("WG_PRESHARED_KEYS_JSON"),
@@ -155,6 +157,7 @@ def main() -> int:
     config["egress_secrets"] = egress_secrets
     config["bastion_secrets"] = bastion_secrets
     config["db_backup_age_private_key"] = db_backup_age_private_key
+    config["wg_server_address"] = wg_server_address
 
     if args.bootstrap_artifacts:
         artifacts = load_json(Path(args.bootstrap_artifacts))

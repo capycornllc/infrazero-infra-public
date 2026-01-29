@@ -138,6 +138,10 @@ variable "admin_users_json_b64" {
   type = string
 }
 
+variable "wg_server_address" {
+  type = string
+}
+
 variable "egress_secrets" {
   type      = map(string)
   sensitive = true
