@@ -12,16 +12,42 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd
 fi
 
-# Create ops user and copy root authorized_keys if present
-if ! id -u ops >/dev/null 2>&1; then
-  useradd -m -s /bin/bash ops
-  usermod -aG sudo ops
-fi
+# Create admin users from OPS_SSH_KEYS_JSON (base64) if provided
+if [ -n "${ADMIN_USERS_JSON_B64:-}" ]; then
+  mkdir -p /etc/infrazero
+  echo "$ADMIN_USERS_JSON_B64" | base64 -d > /etc/infrazero/admins.json
+  chmod 600 /etc/infrazero/admins.json
 
-if [ -f /root/.ssh/authorized_keys ]; then
-  install -d -m 0700 /home/ops/.ssh
-  install -m 0600 /root/.ssh/authorized_keys /home/ops/.ssh/authorized_keys
-  chown -R ops:ops /home/ops/.ssh
+  if ! getent group infrazero-admins >/dev/null 2>&1; then
+    groupadd infrazero-admins
+  fi
+  echo "%infrazero-admins ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-infrazero-admins
+  chmod 440 /etc/sudoers.d/90-infrazero-admins
+
+  jq -c 'to_entries[]' /etc/infrazero/admins.json | while read -r entry; do
+    username=$(echo "$entry" | jq -r '.key')
+    if [ -z "$username" ] || [ "$username" = "null" ]; then
+      continue
+    fi
+
+    if ! id -u "$username" >/dev/null 2>&1; then
+      useradd -m -s /bin/bash -G infrazero-admins "$username"
+    else
+      usermod -aG infrazero-admins "$username" || true
+    fi
+
+    install -d -m 0700 "/home/$username/.ssh"
+    : > "/home/$username/.ssh/authorized_keys"
+
+    echo "$entry" | jq -r '.value[]' | while IFS= read -r key; do
+      if [ -n "$key" ] && [ "$key" != "null" ]; then
+        echo "$key" >> "/home/$username/.ssh/authorized_keys"
+      fi
+    done
+
+    chmod 0600 "/home/$username/.ssh/authorized_keys"
+    chown -R "$username:$username" "/home/$username/.ssh"
+  done
 fi
 
 # SSH hardening

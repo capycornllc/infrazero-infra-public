@@ -247,6 +247,7 @@ resource "hcloud_server" "bastion" {
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
+    admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = concat(local.bastion_env_lines, [
@@ -290,6 +291,7 @@ resource "hcloud_server" "egress" {
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
+    admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = local.egress_env_lines
     db_backup_age_private_key = var.db_backup_age_private_key
     bastion_env     = []
@@ -330,6 +332,7 @@ resource "hcloud_server" "node1" {
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
+    admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []
@@ -370,6 +373,7 @@ resource "hcloud_server" "node2" {
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
+    admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []
@@ -410,6 +414,7 @@ resource "hcloud_server" "db" {
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
+    admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []

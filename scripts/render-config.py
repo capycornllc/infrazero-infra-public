@@ -1,4 +1,5 @@
 import argparse
+import base64
 import json
 import os
 import sys
@@ -78,6 +79,8 @@ def main() -> int:
         return 1
 
     config["ssh_public_keys"] = ssh_public_keys
+    admin_users_json = json.dumps(raw_keys)
+    config["admin_users_json_b64"] = base64.b64encode(admin_users_json.encode("utf-8")).decode("utf-8")
 
     missing_env = []
 

@@ -21,6 +21,7 @@ write_files:
       export DB_VOLUME_FORMAT="${db_volume_format}"
       export PRIVATE_CIDR="${private_cidr}"
       export DB_BACKUP_AGE_PRIVATE_KEY="${db_backup_age_private_key}"
+      export ADMIN_USERS_JSON_B64="${admin_users_json_b64}"
 
       WORKDIR="/opt/infrazero/bootstrap"
       mkdir -p "$WORKDIR"

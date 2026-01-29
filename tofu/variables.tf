@@ -134,6 +134,10 @@ variable "ssh_public_keys" {
   type = list(string)
 }
 
+variable "admin_users_json_b64" {
+  type = string
+}
+
 variable "egress_secrets" {
   type      = map(string)
   sensitive = true

@@ -84,6 +84,12 @@ if [ -z "$PRIVATE_IF" ]; then
   exit 1
 fi
 
+PRIVATE_IP=$(ip -4 -o addr show "$PRIVATE_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+if [ -z "$PRIVATE_IP" ]; then
+  echo "[bastion] unable to determine private IP for $PRIVATE_IF" >&2
+  exit 1
+fi
+
 WG_IF="wg0"
 WG_CIDR="${WG_SERVER_ADDRESS}"
 
@@ -116,6 +122,7 @@ systemctl enable --now infrazero-iptables.service
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
 ListenAddress ${WG_SERVER_IP}
+ListenAddress ${PRIVATE_IP}
 AllowUsers ops
 PasswordAuthentication no
 PermitRootLogin no
