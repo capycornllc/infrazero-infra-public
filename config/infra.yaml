@@ -6,7 +6,7 @@ location: fsn1
 network_zone: eu-central
 private_cidr: 10.10.0.0/24
 
-server_image: ubuntu-22.04
+server_image: ubuntu-24.04
 
 servers:
   bastion:
