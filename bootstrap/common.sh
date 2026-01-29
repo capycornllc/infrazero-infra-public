@@ -69,7 +69,15 @@ set_sshd_config "PermitRootLogin" "no"
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
 # Route WG subnet via bastion for all non-bastion hosts
-WG_ROUTE_CIDR="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
+WG_ROUTE_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
+WG_ROUTE_CIDR=""
+if [ -n "$WG_ROUTE_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
+  WG_ROUTE_CIDR=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)' "$WG_ROUTE_CIDR_RAW" 2>/dev/null || true)
+fi
+if [ -z "$WG_ROUTE_CIDR" ]; then
+  WG_ROUTE_CIDR="$WG_ROUTE_CIDR_RAW"
+fi
+
 if [ "${BOOTSTRAP_ROLE:-}" != "bastion" ] && [ -n "$WG_ROUTE_CIDR" ] && [ -n "${BASTION_PRIVATE_IP:-}" ]; then
   ip route replace "$WG_ROUTE_CIDR" via "$BASTION_PRIVATE_IP" || true
 

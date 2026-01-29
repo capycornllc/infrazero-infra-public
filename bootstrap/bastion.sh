@@ -78,28 +78,44 @@ net.ipv4.ip_forward=1
 EOF
 sysctl --system
 
-PRIVATE_IF=$(ip route show "$PRIVATE_CIDR" 2>/dev/null | awk '{print $3; exit}')
+PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 if [ -z "$PRIVATE_IF" ]; then
-  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR" >&2
-  exit 1
+  PRIVATE_IF=$(ip -4 route list | awk -v cidr="$PRIVATE_CIDR" '$1==cidr {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 fi
 
-PRIVATE_IP=$(ip -4 -o addr show "$PRIVATE_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
-if [ -z "$PRIVATE_IP" ]; then
-  echo "[bastion] unable to determine private IP for $PRIVATE_IF" >&2
-  exit 1
+SKIP_FORWARDING="false"
+if [ -z "$PRIVATE_IF" ]; then
+  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR; skipping WG forwarding" >&2
+  SKIP_FORWARDING="true"
+fi
+
+PRIVATE_IP=""
+if [ "$SKIP_FORWARDING" != "true" ]; then
+  PRIVATE_IP=$(ip -4 -o addr show "$PRIVATE_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+  if [ -z "$PRIVATE_IP" ]; then
+    echo "[bastion] unable to determine private IP for $PRIVATE_IF; skipping WG forwarding" >&2
+    SKIP_FORWARDING="true"
+  fi
 fi
 
 WG_IF="wg0"
-WG_CIDR="${WG_CIDR:-${WG_SERVER_ADDRESS}}"
+WG_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS}}"
+WG_CIDR=""
+if [ -n "$WG_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
+  WG_CIDR=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)' "$WG_CIDR_RAW" 2>/dev/null || true)
+fi
+if [ -z "$WG_CIDR" ]; then
+  WG_CIDR="$WG_CIDR_RAW"
+fi
 
-iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
-iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+if [ "$SKIP_FORWARDING" != "true" ]; then
+  iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
+  iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
+  mkdir -p /etc/iptables
+  iptables-save > /etc/iptables/rules.v4
 
-cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
+  cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
 [Unit]
 Description=Restore iptables rules for Infrazero
 After=network-online.target
@@ -114,15 +130,16 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now infrazero-iptables.service
+  systemctl daemon-reload
+  systemctl enable --now infrazero-iptables.service
+fi
 
 # Bind SSH to WireGuard address only
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
 ListenAddress ${WG_SERVER_IP}
-ListenAddress ${PRIVATE_IP}
-AllowUsers ops
+${PRIVATE_IP:+ListenAddress ${PRIVATE_IP}}
+AllowGroups infrazero-admins
 PasswordAuthentication no
 PermitRootLogin no
 EOF
