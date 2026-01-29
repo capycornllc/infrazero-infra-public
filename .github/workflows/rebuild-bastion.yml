@@ -153,4 +153,4 @@ jobs:
         run: tofu -chdir=tofu init -backend-config=backend.hcl
 
       - name: Replace bastion
-        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.bastion -replace=hcloud_server_network.bastion
+        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.bastion

@@ -153,4 +153,4 @@ jobs:
         run: tofu -chdir=tofu init -backend-config=backend.hcl
 
       - name: Replace node1 + node2
-        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.node1 -replace=hcloud_server.node2 -replace=hcloud_server_network.node1 -replace=hcloud_server_network.node2
+        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.node1 -replace=hcloud_server.node2

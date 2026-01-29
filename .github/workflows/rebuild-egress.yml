@@ -153,4 +153,4 @@ jobs:
         run: tofu -chdir=tofu init -backend-config=backend.hcl
 
       - name: Replace egress
-        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.egress -replace=hcloud_server_network.egress
+        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.egress

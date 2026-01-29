@@ -162,4 +162,4 @@ jobs:
           popd
 
       - name: Replace db server
-        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.db -replace=hcloud_server_network.db -replace=hcloud_volume_attachment.db
+        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.db
