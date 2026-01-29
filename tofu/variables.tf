@@ -134,6 +134,16 @@ variable "ssh_public_keys" {
   type = list(string)
 }
 
+variable "egress_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
+variable "db_backup_age_private_key" {
+  type      = string
+  sensitive = true
+}
+
 variable "hcloud_token" {
   type      = string
   sensitive = true

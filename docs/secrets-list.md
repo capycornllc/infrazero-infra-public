@@ -28,6 +28,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_postgres_db`
 - `infisical_postgres_user`
 - `infisical_postgres_password`
+- `infisical_encryption_key`
+- `infisical_auth_secret`
 
 ## 5) Object Storage / S3
 - `s3_access_key_id`

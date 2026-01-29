@@ -16,6 +16,21 @@ jobs:
       S3_ENDPOINT: ${{ secrets.s3_endpoint }}
       INFRA_STATE_BUCKET: ${{ secrets.infra_state_bucket }}
       OPS_SSH_KEYS_JSON: ${{ secrets.OPS_SSH_KEYS_JSON }}
+      S3_ACCESS_KEY_ID: ${{ secrets.s3_access_key_id }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.s3_secret_access_key }}
+      DB_BACKUP_BUCKET: ${{ secrets.db_backup_bucket }}
+      DB_BACKUP_AGE_PUBLIC_KEY: ${{ secrets.db_backup_age_public_key }}
+      DB_BACKUP_AGE_PRIVATE_KEY: ${{ secrets.db_backup_age_private_key }}
+      INFISICAL_PASSWORD: ${{ secrets.infisical_password }}
+      INFISICAL_EMAIL: ${{ secrets.infisical_email }}
+      INFISICAL_ORGANIZATION: ${{ secrets.infisical_organization }}
+      INFISICAL_NAME: ${{ secrets.infisical_name }}
+      INFISICAL_SURNAME: ${{ secrets.infisical_surname }}
+      INFISICAL_POSTGRES_DB: ${{ secrets.infisical_postgres_db }}
+      INFISICAL_POSTGRES_USER: ${{ secrets.infisical_postgres_user }}
+      INFISICAL_POSTGRES_PASSWORD: ${{ secrets.infisical_postgres_password }}
+      INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
+      INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       HCLOUD_TOKEN: ${{ secrets.hetzner_cloud_token }}
       TF_VAR_hcloud_token: ${{ secrets.hetzner_cloud_token }}
     steps:
@@ -64,6 +79,40 @@ jobs:
           if [[ "${S3_ENDPOINT}" != http://* && "${S3_ENDPOINT}" != https://* ]]; then
             echo "S3_ENDPOINT=https://${S3_ENDPOINT}" >> "$GITHUB_ENV"
           fi
+
+
+      - name: Normalize S3 region
+        run: |
+          if [ -z "${S3_REGION}" ]; then
+            if [ -z "${CLOUD_REGION}" ]; then
+              echo "S3_REGION or CLOUD_REGION is required" >&2
+              exit 1
+            fi
+            echo "S3_REGION=${CLOUD_REGION}" >> "$GITHUB_ENV"
+            echo "AWS_DEFAULT_REGION=${CLOUD_REGION}" >> "$GITHUB_ENV"
+          else
+            echo "AWS_DEFAULT_REGION=${S3_REGION}" >> "$GITHUB_ENV"
+          fi
+
+
+      - name: Display S3 settings
+        run: |
+          mask() {
+            local value="$1"
+            local length=${#value}
+            if [ $length -le 4 ]; then
+              printf '%s' "$value"
+              return
+            fi
+            local prefix=${value:0:2}
+            local suffix=${value: -2}
+            printf '%s****%s' "$prefix" "$suffix"
+          }
+
+          region_display="${S3_REGION:-${CLOUD_REGION:-}}"
+          echo "S3_REGION=${region_display}"
+          echo "AWS_ACCESS_KEY_ID=$(mask "${AWS_ACCESS_KEY_ID:-}")"
+          echo "AWS_SECRET_ACCESS_KEY=$(mask "${AWS_SECRET_ACCESS_KEY:-}")"
 
       - name: Validate config
         run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json

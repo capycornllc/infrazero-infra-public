@@ -9,4 +9,9 @@ locals {
 
   ssh_keys_map = { for idx, key in var.ssh_public_keys : idx => key }
   ssh_key_ids  = [for key in values(hcloud_ssh_key.ops) : key.id]
+
+  egress_env_lines = [
+    for key, value in var.egress_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
 }

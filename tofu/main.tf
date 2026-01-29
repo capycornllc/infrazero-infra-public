@@ -246,6 +246,9 @@ resource "hcloud_server" "bastion" {
     bootstrap_sha256 = var.bootstrap_artifacts["bastion"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
+    private_cidr    = var.private_cidr
+    egress_env      = []
+    db_backup_age_private_key = ""
   })
 
   labels = {
@@ -282,6 +285,9 @@ resource "hcloud_server" "egress" {
     bootstrap_sha256 = var.bootstrap_artifacts["egress"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
+    private_cidr    = var.private_cidr
+    egress_env      = local.egress_env_lines
+    db_backup_age_private_key = var.db_backup_age_private_key
   })
 
   labels = {
@@ -318,6 +324,9 @@ resource "hcloud_server" "node1" {
     bootstrap_sha256 = var.bootstrap_artifacts["node1"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
+    private_cidr    = var.private_cidr
+    egress_env      = []
+    db_backup_age_private_key = ""
   })
 
   labels = {
@@ -354,6 +363,9 @@ resource "hcloud_server" "node2" {
     bootstrap_sha256 = var.bootstrap_artifacts["node2"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
+    private_cidr    = var.private_cidr
+    egress_env      = []
+    db_backup_age_private_key = ""
   })
 
   labels = {
@@ -390,6 +402,9 @@ resource "hcloud_server" "db" {
     bootstrap_sha256 = var.bootstrap_artifacts["db"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
+    private_cidr    = var.private_cidr
+    egress_env      = []
+    db_backup_age_private_key = ""
   })
 
   labels = {

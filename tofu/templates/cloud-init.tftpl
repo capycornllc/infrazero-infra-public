@@ -19,6 +19,8 @@ write_files:
       SHA="${bootstrap_sha256}"
       export DB_VOLUME_NAME="${db_volume_name}"
       export DB_VOLUME_FORMAT="${db_volume_format}"
+      export PRIVATE_CIDR="${private_cidr}"
+      export DB_BACKUP_AGE_PRIVATE_KEY="${db_backup_age_private_key}"
 
       WORKDIR="/opt/infrazero/bootstrap"
       mkdir -p "$WORKDIR"
@@ -35,6 +37,15 @@ write_files:
       echo "[bootstrap] running common + role scripts"
       ./common.sh
       "./$ROLE.sh"
+
+%{ if length(egress_env) > 0 ~}
+  - path: /etc/infrazero/egress.env
+    permissions: "0600"
+    content: |
+%{ for line in egress_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
 
 runcmd:
   - ["/opt/infrazero/bootstrap/run.sh"]

@@ -28,6 +28,19 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 - `cloud_region` (used as fallback for backend region when `s3_region` is empty)
 - `OPS_SSH_KEYS_JSON` (JSON map of admin -> list of SSH public keys)
+- `db_backup_bucket`
+- `db_backup_age_public_key`
+- `db_backup_age_private_key`
+- `infisical_password`
+- `infisical_email`
+- `infisical_organization`
+- `infisical_name`
+- `infisical_surname`
+- `infisical_postgres_db`
+- `infisical_postgres_user`
+- `infisical_postgres_password`
+- `infisical_encryption_key`
+- `infisical_auth_secret`
 
 Full list (including future epics): `docs/secrets-list.md`
 
