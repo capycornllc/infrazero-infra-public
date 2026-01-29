@@ -89,6 +89,26 @@ resource "hcloud_firewall" "bastion" {
   rule {
     direction  = "in"
     protocol   = "tcp"
+    port       = "any"
+    source_ips = [var.private_cidr]
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "udp"
+    port       = "any"
+    source_ips = [var.private_cidr]
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = [var.private_cidr]
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
     port       = "22"
     source_ips = var.wireguard.allowed_cidrs
   }
