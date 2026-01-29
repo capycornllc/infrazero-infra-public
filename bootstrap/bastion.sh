@@ -72,6 +72,46 @@ done <<< "$peers"
 
 systemctl enable --now wg-quick@wg0
 
+# Enable routing between WireGuard and private subnet
+cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
+net.ipv4.ip_forward=1
+EOF
+sysctl --system
+
+PRIVATE_IF=$(ip route show "$PRIVATE_CIDR" 2>/dev/null | awk '{print $3; exit}')
+if [ -z "$PRIVATE_IF" ]; then
+  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR" >&2
+  exit 1
+fi
+
+WG_IF="wg0"
+WG_CIDR="${WG_SERVER_ADDRESS}"
+
+iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
+iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
+iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+
+cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
+[Unit]
+Description=Restore iptables rules for Infrazero
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-iptables.service
+
 # Bind SSH to WireGuard address only
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
