@@ -68,7 +68,7 @@ set_sshd_config "PermitRootLogin" "no"
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
-# Route WG subnet via bastion for all non-bastion hosts
+# Route WG subnet via bastion for all non-bastion hosts (netplan)
 WG_ROUTE_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
 WG_ROUTE_CIDR=""
 if [ -n "$WG_ROUTE_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
@@ -79,25 +79,41 @@ if [ -z "$WG_ROUTE_CIDR" ]; then
 fi
 
 if [ "${BOOTSTRAP_ROLE:-}" != "bastion" ] && [ -n "$WG_ROUTE_CIDR" ] && [ -n "${BASTION_PRIVATE_IP:-}" ]; then
-  ip route replace "$WG_ROUTE_CIDR" via "$BASTION_PRIVATE_IP" || true
+  if systemctl list-unit-files 2>/dev/null | grep -q "^infrazero-wg-route.service"; then
+    systemctl disable --now infrazero-wg-route.service || true
+    rm -f /etc/systemd/system/infrazero-wg-route.service
+    systemctl daemon-reload || true
+  fi
 
-  cat > /etc/systemd/system/infrazero-wg-route.service <<EOF
-[Unit]
-Description=Route WireGuard subnet via bastion
-After=network-online.target
-Wants=network-online.target
+  PRIVATE_IF=""
+  if [ -n "${PRIVATE_CIDR:-}" ]; then
+    for _ in $(seq 1 30); do
+      PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+      if [ -n "$PRIVATE_IF" ]; then
+        break
+      fi
+      sleep 2
+    done
+  fi
 
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/ip route replace ${WG_ROUTE_CIDR} via ${BASTION_PRIVATE_IP}
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+  if [ -z "$PRIVATE_IF" ]; then
+    echo "[common] unable to determine private interface for $PRIVATE_CIDR; skipping WG route" >&2
+  elif command -v netplan >/dev/null 2>&1; then
+    cat > /etc/netplan/60-infrazero-wg-route.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${PRIVATE_IF}:
+      routes:
+        - to: ${WG_ROUTE_CIDR}
+          via: ${BASTION_PRIVATE_IP}
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now infrazero-wg-route.service
+    netplan apply || true
+  else
+    echo "[common] netplan not available; skipping WG route" >&2
+  fi
 fi
 
 # Enable auditd
