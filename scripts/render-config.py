@@ -30,12 +30,15 @@ def main() -> int:
     config = load_yaml(config_path)
 
     project_slug = os.getenv("PROJECT_SLUG", "").strip()
+    cloud_region = os.getenv("CLOUD_REGION", "").strip()
     environment = str(config.get("environment", "")).strip()
     if project_slug:
         if environment:
             config["name_prefix"] = f"{project_slug}-{environment}"
         else:
             config["name_prefix"] = project_slug
+    if cloud_region:
+        config["location"] = cloud_region
 
     services = {svc.get("name") for svc in config.get("load_balancer", {}).get("services", [])}
     missing_services = [svc for svc in ("http", "https") if svc not in services]
