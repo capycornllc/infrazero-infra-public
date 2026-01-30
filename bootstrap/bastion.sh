@@ -145,7 +145,8 @@ if [ -z "$WG_CIDR" ]; then
   WG_CIDR="$WG_CIDR_RAW"
 fi
 
-PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+PRIVATE_ROUTE_LINE=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | head -n 1)
+PRIVATE_IF=$(echo "$PRIVATE_ROUTE_LINE" | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 if [ -z "$PRIVATE_IF" ]; then
   exit 0
 fi
@@ -154,7 +155,12 @@ if ! grep -qE '^[[:space:]]*100[[:space:]]+infrazero-egress$' /etc/iproute2/rt_t
   echo "100 infrazero-egress" >> /etc/iproute2/rt_tables
 fi
 
-ip route replace "$PRIVATE_CIDR" dev "$PRIVATE_IF" table infrazero-egress
+PRIVATE_GW=$(echo "$PRIVATE_ROUTE_LINE" | awk '{for (i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')
+if [ -n "$PRIVATE_GW" ]; then
+  ip route replace "$PRIVATE_CIDR" via "$PRIVATE_GW" dev "$PRIVATE_IF" table infrazero-egress
+else
+  ip route replace "$PRIVATE_CIDR" dev "$PRIVATE_IF" table infrazero-egress
+fi
 if [ -n "$WG_CIDR" ]; then
   ip route replace "$WG_CIDR" dev "$WG_IF" table infrazero-egress
 fi
