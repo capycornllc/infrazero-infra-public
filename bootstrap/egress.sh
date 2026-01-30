@@ -169,19 +169,7 @@ systemctl daemon-reload
 systemctl enable --now infrazero-iptables.service
 
 # Infisical + Postgres + Redis
-PRIVATE_IP=""
-if [ -n "${PRIVATE_CIDR:-}" ]; then
-  PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-  if [ -n "$PRIVATE_IF" ]; then
-    PRIVATE_IP=$(ip -4 -o addr show "$PRIVATE_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
-  fi
-fi
-
-DEFAULT_SITE_URL="http://localhost:8080"
-if [ -n "$PRIVATE_IP" ]; then
-  DEFAULT_SITE_URL="http://${PRIVATE_IP}:8080"
-fi
-INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"$DEFAULT_SITE_URL"}
+INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"http://localhost:8080"}
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
 REDIS_URL="redis://redis:6379"
 
@@ -218,7 +206,7 @@ services:
       - infisical-db
       - redis
     ports:
-      - "0.0.0.0:8080:8080"
+      - "127.0.0.1:8080:8080"
 EOF
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
