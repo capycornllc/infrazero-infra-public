@@ -108,7 +108,15 @@ def main() -> int:
     if not s3_endpoint:
         missing_env.append("S3_ENDPOINT")
 
-    db_backup_age_private_key = require_env("DB_BACKUP_AGE_PRIVATE_KEY")
+    infisical_restore_from_s3 = os.getenv("INFISICAL_RESTORE_FROM_S3", "").strip()
+    if not infisical_restore_from_s3:
+        infisical_restore_from_s3 = "false"
+    restore_requested = infisical_restore_from_s3.lower() == "true"
+
+    if restore_requested:
+        db_backup_age_private_key = require_env("DB_BACKUP_AGE_PRIVATE_KEY")
+    else:
+        db_backup_age_private_key = os.getenv("DB_BACKUP_AGE_PRIVATE_KEY", "").strip()
 
     egress_secrets = {
         "S3_ACCESS_KEY_ID": s3_access_key,
@@ -117,6 +125,7 @@ def main() -> int:
         "S3_REGION": s3_region,
         "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
         "DB_BACKUP_AGE_PUBLIC_KEY": require_env("DB_BACKUP_AGE_PUBLIC_KEY"),
+        "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
         "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
         "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
         "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),

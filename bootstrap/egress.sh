@@ -227,6 +227,7 @@ for i in {1..30}; do
 done
 
 INFISICAL_BOOTSTRAP_REQUIRED=1
+INFISICAL_RESTORE_FROM_S3="${INFISICAL_RESTORE_FROM_S3:-false}"
 
 restore_infisical() {
   local tmpdir
@@ -275,7 +276,12 @@ restore_infisical() {
   echo "[egress] restore complete"
 }
 
-restore_infisical
+if [ "${INFISICAL_RESTORE_FROM_S3,,}" = "true" ]; then
+  echo "[egress] infisical_restore_from_s3=true; attempting restore"
+  restore_infisical
+else
+  echo "[egress] infisical_restore_from_s3 not true; skipping restore"
+fi
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 

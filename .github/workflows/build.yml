@@ -31,6 +31,7 @@ jobs:
       INFISICAL_POSTGRES_PASSWORD: ${{ secrets.infisical_postgres_password }}
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
+      INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
       WG_SERVER_PRIVATE_KEY: ${{ secrets.wg_server_private_key }}
       WG_SERVER_PUBLIC_KEY: ${{ secrets.wg_server_public_key }}
       WG_SERVER_ADDRESS: ${{ secrets.wg_server_address }}

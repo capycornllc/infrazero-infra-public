@@ -16,7 +16,7 @@ Must include (order-sensitive):
 - Grafana + Loki first; all other roles forward logs here.
 - NAT/egress setup with persistence.
 - Self-hosted Infisical with local Postgres.
-- Infisical DB backups to S3 and auto-restore via latest-dump manifest.
+- Infisical DB backups to S3; restore from latest-dump manifest only when GitHub secret `infisical_restore_from_s3` is `true`.
 - Admin access path to Infisical UI (port forwarding or restricted ingress).
 - Age private key is short-lived and deleted after restore or if no dump exists.
 

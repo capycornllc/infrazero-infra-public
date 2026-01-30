@@ -251,7 +251,7 @@ Core resources:
 2) **Grafana + Loki first** (all other bootstraps must forward logs here).
 3) **NAT/egress setup** + systemd service for persistence.
 4) **Self-hosted Infisical** with **local PostgreSQL** on egress.
-5) **Infisical DB backups** to S3 and **auto-restore** of latest dump at boot.
+5) **Infisical DB backups** to S3; **restore** latest dump at boot only when GitHub secret `infisical_restore_from_s3` is `true`.
 6) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
 **Notes:**
 - Use a **latest-dump manifest** pattern (as in current repo) for Infisical DB restore.
