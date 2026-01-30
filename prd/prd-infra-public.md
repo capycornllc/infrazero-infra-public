@@ -250,9 +250,10 @@ Core resources:
 1) **Hardening baseline** (users, SSH, auditd, journald persistence, DNS fallback).
 2) **Grafana + Loki first** (all other bootstraps must forward logs here).
 3) **NAT/egress setup** + systemd service for persistence.
-4) **Self-hosted Infisical** with **local PostgreSQL** on egress.
+4) **Self-hosted Infisical** with **local PostgreSQL** on egress, served over HTTPS on the egress private IP (e.g., https://10.10.0.11:8080) using a local CA-issued cert.
 5) **Infisical DB backups** to S3; **restore** latest dump at boot only when GitHub secret `infisical_restore_from_s3` is `true`.
-6) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
+6) **Infisical bootstrap** is deferred to node1 (egress does not run the CLI bootstrap).
+7) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
 **Notes:**
 - Use a **latest-dump manifest** pattern (as in current repo) for Infisical DB restore.
 - **Age private keys are short-lived**: store only in tmpfs, delete after successful restore or if no dump found.
@@ -271,6 +272,7 @@ Core resources:
 - Hardening baseline.
 - k3s server install and NodePort readiness (30080/30443).
 - Argo CD bootstrap using repo URLs and paths from config file.
+- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
 - Log forwarding to egress Grafana/Loki.
 
 ### Epic 5: Node2 bootstrap (k3s agent)

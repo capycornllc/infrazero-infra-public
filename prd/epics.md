@@ -15,8 +15,9 @@ Must include (order-sensitive):
 - Hardening baseline (users, SSH, auditd, journald, DNS fallback).
 - Grafana + Loki first; all other roles forward logs here.
 - NAT/egress setup with persistence.
-- Self-hosted Infisical with local Postgres.
+- Self-hosted Infisical with local Postgres; UI served over HTTPS on the egress private IP (e.g., https://10.10.0.11:8080) using a local CA-issued cert.
 - Infisical DB backups to S3; restore from latest-dump manifest only when GitHub secret `infisical_restore_from_s3` is `true`.
+- Infisical bootstrap is deferred to node1 (egress does not run the CLI bootstrap).
 - Admin access path to Infisical UI (port forwarding or restricted ingress).
 - Age private key is short-lived and deleted after restore or if no dump exists.
 
@@ -36,6 +37,7 @@ Definition of done:
 - Hardening baseline.
 - k3s server installed and NodePorts 30080/30443 ready.
 - Argo CD bootstrapped using repo URLs/paths from config.
+- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
 - Logs forwarded to egress.
 
 ## EPIC-5: Node2 bootstrap (k3s agent)

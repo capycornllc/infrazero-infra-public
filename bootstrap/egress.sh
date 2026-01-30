@@ -46,7 +46,7 @@ export AWS_DEFAULT_REGION="$S3_REGION"
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip
+  apt-get install -y docker.io docker-compose age jq iptables unzip openssl
 fi
 
 systemctl enable --now docker
@@ -65,7 +65,7 @@ compose_cmd() {
   fi
 }
 
-mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups
+mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups /opt/infrazero/infisical/certs
 
 cat > /opt/infrazero/egress/loki-config.yaml <<'EOF'
 auth_enabled: false
@@ -175,8 +175,13 @@ systemctl daemon-reload
 systemctl enable --now infrazero-iptables.service
 
 # Infisical + Postgres + Redis
+INFISICAL_CERT_IP=${INFISICAL_CERT_IP:-"$PRIVATE_IP"}
 INFISICAL_BIND_ADDR=${INFISICAL_BIND_ADDR:-"$PRIVATE_IP"}
-INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"http://${INFISICAL_BIND_ADDR}:8080"}
+INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"https://${INFISICAL_CERT_IP}:8080"}
+if [ -n "${INFISICAL_SITE_URL:-}" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
+  echo "[egress] INFISICAL_SITE_URL must be https; overriding to https://${INFISICAL_CERT_IP}:8080"
+  INFISICAL_SITE_URL="https://${INFISICAL_CERT_IP}:8080"
+fi
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
 REDIS_URL="redis://redis:6379"
 
@@ -191,6 +196,102 @@ REDIS_URL=${REDIS_URL}
 POSTGRES_DB=${INFISICAL_POSTGRES_DB}
 POSTGRES_USER=${INFISICAL_POSTGRES_USER}
 POSTGRES_PASSWORD=${INFISICAL_POSTGRES_PASSWORD}
+EOF
+
+INFISICAL_CERTS_DIR="/opt/infrazero/infisical/certs"
+INFISICAL_CA_CERT="${INFISICAL_CERTS_DIR}/ca.crt"
+INFISICAL_CA_KEY="${INFISICAL_CERTS_DIR}/ca.key"
+INFISICAL_SERVER_CERT="${INFISICAL_CERTS_DIR}/infisical.crt"
+INFISICAL_SERVER_KEY="${INFISICAL_CERTS_DIR}/infisical.key"
+INFISICAL_OPENSSL_CONF="${INFISICAL_CERTS_DIR}/openssl.cnf"
+
+setup_infisical_tls() {
+  mkdir -p "$INFISICAL_CERTS_DIR"
+  chmod 700 "$INFISICAL_CERTS_DIR"
+
+  if [ ! -f "$INFISICAL_CA_CERT" ] || [ ! -f "$INFISICAL_CA_KEY" ]; then
+    echo "[egress] generating infisical CA"
+    openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+      -subj "/CN=Infisical Local CA" \
+      -keyout "$INFISICAL_CA_KEY" \
+      -out "$INFISICAL_CA_CERT"
+    chmod 600 "$INFISICAL_CA_KEY"
+    chmod 644 "$INFISICAL_CA_CERT"
+  else
+    echo "[egress] infisical CA already present"
+  fi
+
+  if [ ! -f "$INFISICAL_SERVER_CERT" ] || [ ! -f "$INFISICAL_SERVER_KEY" ]; then
+    echo "[egress] generating infisical TLS cert for ${INFISICAL_CERT_IP}"
+    cat > "$INFISICAL_OPENSSL_CONF" <<EOF
+[req]
+distinguished_name=req_distinguished_name
+req_extensions=v3_req
+prompt=no
+
+[req_distinguished_name]
+CN=infisical
+
+[v3_req]
+keyUsage=keyEncipherment, dataEncipherment, digitalSignature
+extendedKeyUsage=serverAuth
+subjectAltName=@alt_names
+
+[alt_names]
+IP.1=${INFISICAL_CERT_IP}
+EOF
+    openssl req -new -newkey rsa:4096 -nodes \
+      -keyout "$INFISICAL_SERVER_KEY" \
+      -out "${INFISICAL_CERTS_DIR}/infisical.csr" \
+      -config "$INFISICAL_OPENSSL_CONF"
+    openssl x509 -req \
+      -in "${INFISICAL_CERTS_DIR}/infisical.csr" \
+      -CA "$INFISICAL_CA_CERT" \
+      -CAkey "$INFISICAL_CA_KEY" \
+      -CAcreateserial \
+      -out "$INFISICAL_SERVER_CERT" \
+      -days 825 \
+      -extensions v3_req \
+      -extfile "$INFISICAL_OPENSSL_CONF"
+    rm -f "${INFISICAL_CERTS_DIR}/infisical.csr"
+    chmod 600 "$INFISICAL_SERVER_KEY"
+    chmod 644 "$INFISICAL_SERVER_CERT"
+  else
+    echo "[egress] infisical TLS cert already present"
+  fi
+
+  if [ -d /usr/local/share/ca-certificates ]; then
+    cp "$INFISICAL_CA_CERT" /usr/local/share/ca-certificates/infisical-local-ca.crt
+    update-ca-certificates >/dev/null 2>&1 || true
+  fi
+
+  echo "[egress] infisical CA cert at ${INFISICAL_CA_CERT}"
+  echo "[egress] import this CA cert into your client trust store to avoid browser warnings"
+}
+
+setup_infisical_tls
+
+cat > /opt/infrazero/infisical/nginx.conf <<'EOF'
+server {
+  listen 8080 ssl;
+  server_name _;
+
+  ssl_certificate /etc/nginx/certs/infisical.crt;
+  ssl_certificate_key /etc/nginx/certs/infisical.key;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers HIGH:!aNULL:!MD5;
+
+  location / {
+    proxy_pass http://infisical:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+  }
+}
 EOF
 
 cat > /opt/infrazero/infisical/docker-compose.yml <<EOF
@@ -212,8 +313,16 @@ services:
     depends_on:
       - infisical-db
       - redis
+  infisical-proxy:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    depends_on:
+      - infisical
     ports:
       - "${INFISICAL_BIND_ADDR}:8080:8080"
+    volumes:
+      - /opt/infrazero/infisical/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /opt/infrazero/infisical/certs:/etc/nginx/certs:ro
 EOF
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
@@ -226,7 +335,6 @@ for i in {1..30}; do
   sleep 2
 done
 
-INFISICAL_BOOTSTRAP_REQUIRED=1
 INFISICAL_RESTORE_FROM_S3="${INFISICAL_RESTORE_FROM_S3:-false}"
 
 restore_infisical() {
@@ -272,7 +380,6 @@ restore_infisical() {
   rm -f "$tmpdir/age.key"
   rm -rf "$tmpdir"
   unset DB_BACKUP_AGE_PRIVATE_KEY
-  INFISICAL_BOOTSTRAP_REQUIRED=0
   echo "[egress] restore complete"
 }
 
@@ -283,29 +390,10 @@ else
   echo "[egress] infisical_restore_from_s3 not true; skipping restore"
 fi
 
-compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
+compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical infisical-proxy
 
-if [ "$INFISICAL_BOOTSTRAP_REQUIRED" = "1" ]; then
-  # Install Infisical CLI for bootstrap
-  if ! command -v infisical >/dev/null 2>&1; then
-    curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash
-    apt-get install -y infisical
-  fi
-
-  export INFISICAL_API_URL="http://${INFISICAL_BIND_ADDR}:8080"
-  export INFISICAL_ADMIN_EMAIL="$INFISICAL_EMAIL"
-  export INFISICAL_ADMIN_PASSWORD="$INFISICAL_PASSWORD"
-  export INFISICAL_ADMIN_ORGANIZATION="$INFISICAL_ORGANIZATION"
-  export INFISICAL_ADMIN_FIRST_NAME="$INFISICAL_NAME"
-  export INFISICAL_ADMIN_LAST_NAME="$INFISICAL_SURNAME"
-
-  if ! infisical bootstrap --domain="$INFISICAL_API_URL" --email="$INFISICAL_EMAIL" --password="$INFISICAL_PASSWORD" --organization="$INFISICAL_ORGANIZATION" --first-name="$INFISICAL_NAME" --last-name="$INFISICAL_SURNAME" --ignore-if-bootstrapped; then
-    echo "[egress] bootstrap with name/surname flags failed; retrying without name/surname"
-    infisical bootstrap --domain="$INFISICAL_API_URL" --email="$INFISICAL_EMAIL" --password="$INFISICAL_PASSWORD" --organization="$INFISICAL_ORGANIZATION" --ignore-if-bootstrapped || true
-  fi
-else
-  echo "[egress] infisical backup restored; skipping bootstrap"
-fi
+echo "[egress] infisical https enabled at ${INFISICAL_SITE_URL}"
+echo "[egress] infisical bootstrap deferred to node1"
 
 cat > /opt/infrazero/infisical/backup.sh <<'EOF'
 #!/usr/bin/env bash
