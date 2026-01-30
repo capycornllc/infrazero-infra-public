@@ -143,6 +143,12 @@ if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
   exit 1
 fi
 
+PRIVATE_IP=$(ip -4 -o addr show dev "$PRIVATE_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
+if [ -z "$PRIVATE_IP" ]; then
+  echo "[egress] unable to determine private ip address" >&2
+  exit 1
+fi
+
 iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
 iptables -A FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
 iptables -A FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -169,7 +175,8 @@ systemctl daemon-reload
 systemctl enable --now infrazero-iptables.service
 
 # Infisical + Postgres + Redis
-INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"http://localhost:8080"}
+INFISICAL_BIND_ADDR=${INFISICAL_BIND_ADDR:-"$PRIVATE_IP"}
+INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"http://${INFISICAL_BIND_ADDR}:8080"}
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
 REDIS_URL="redis://redis:6379"
 
@@ -186,7 +193,7 @@ POSTGRES_USER=${INFISICAL_POSTGRES_USER}
 POSTGRES_PASSWORD=${INFISICAL_POSTGRES_PASSWORD}
 EOF
 
-cat > /opt/infrazero/infisical/docker-compose.yml <<'EOF'
+cat > /opt/infrazero/infisical/docker-compose.yml <<EOF
 version: "3.8"
 services:
   infisical-db:
@@ -206,7 +213,7 @@ services:
       - infisical-db
       - redis
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${INFISICAL_BIND_ADDR}:8080:8080"
 EOF
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
@@ -218,6 +225,8 @@ for i in {1..30}; do
   fi
   sleep 2
 done
+
+INFISICAL_BOOTSTRAP_REQUIRED=1
 
 restore_infisical() {
   local tmpdir
@@ -262,6 +271,7 @@ restore_infisical() {
   rm -f "$tmpdir/age.key"
   rm -rf "$tmpdir"
   unset DB_BACKUP_AGE_PRIVATE_KEY
+  INFISICAL_BOOTSTRAP_REQUIRED=0
   echo "[egress] restore complete"
 }
 
@@ -269,18 +279,27 @@ restore_infisical
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 
-# Install Infisical CLI for bootstrap
-if ! command -v infisical >/dev/null 2>&1; then
-  curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash
-  apt-get install -y infisical
+if [ "$INFISICAL_BOOTSTRAP_REQUIRED" = "1" ]; then
+  # Install Infisical CLI for bootstrap
+  if ! command -v infisical >/dev/null 2>&1; then
+    curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash
+    apt-get install -y infisical
+  fi
+
+  export INFISICAL_API_URL="http://${INFISICAL_BIND_ADDR}:8080"
+  export INFISICAL_ADMIN_EMAIL="$INFISICAL_EMAIL"
+  export INFISICAL_ADMIN_PASSWORD="$INFISICAL_PASSWORD"
+  export INFISICAL_ADMIN_ORGANIZATION="$INFISICAL_ORGANIZATION"
+  export INFISICAL_ADMIN_FIRST_NAME="$INFISICAL_NAME"
+  export INFISICAL_ADMIN_LAST_NAME="$INFISICAL_SURNAME"
+
+  if ! infisical bootstrap --domain="$INFISICAL_API_URL" --email="$INFISICAL_EMAIL" --password="$INFISICAL_PASSWORD" --organization="$INFISICAL_ORGANIZATION" --first-name="$INFISICAL_NAME" --last-name="$INFISICAL_SURNAME" --ignore-if-bootstrapped; then
+    echo "[egress] bootstrap with name/surname flags failed; retrying without name/surname"
+    infisical bootstrap --domain="$INFISICAL_API_URL" --email="$INFISICAL_EMAIL" --password="$INFISICAL_PASSWORD" --organization="$INFISICAL_ORGANIZATION" --ignore-if-bootstrapped || true
+  fi
+else
+  echo "[egress] infisical backup restored; skipping bootstrap"
 fi
-
-export INFISICAL_API_URL="http://127.0.0.1:8080"
-export INFISICAL_ADMIN_EMAIL="$INFISICAL_EMAIL"
-export INFISICAL_ADMIN_PASSWORD="$INFISICAL_PASSWORD"
-export INFISICAL_ADMIN_ORGANIZATION="$INFISICAL_ORGANIZATION"
-
-infisical bootstrap --domain="$INFISICAL_API_URL" --email="$INFISICAL_EMAIL" --password="$INFISICAL_PASSWORD" --organization="$INFISICAL_ORGANIZATION" --ignore-if-bootstrapped || true
 
 cat > /opt/infrazero/infisical/backup.sh <<'EOF'
 #!/usr/bin/env bash
