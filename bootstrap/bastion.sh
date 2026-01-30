@@ -78,14 +78,37 @@ net.ipv4.ip_forward=1
 EOF
 sysctl --system
 
-PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-if [ -z "$PRIVATE_IF" ]; then
-  PRIVATE_IF=$(ip -4 route list | awk -v cidr="$PRIVATE_CIDR" '$1==cidr {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-fi
+detect_private_if() {
+  local private_if=""
+  private_if=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  if [ -z "$private_if" ]; then
+    private_if=$(ip -4 route list | awk -v cidr="$PRIVATE_CIDR" '$1==cidr {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  fi
+  if [ -z "$private_if" ] && [ -n "${BASTION_PRIVATE_IP:-}" ]; then
+    private_if=$(ip -4 -o addr show | awk -v ip="$BASTION_PRIVATE_IP" '{split($4, parts, "/"); if (parts[1]==ip) {print $2; exit}}')
+  fi
+  if [ -z "$private_if" ]; then
+    local public_if=""
+    public_if=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+    if [ -n "$public_if" ]; then
+      private_if=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" {print $2; exit}')
+    fi
+  fi
+  echo "$private_if"
+}
+
+PRIVATE_IF=""
+for i in {1..30}; do
+  PRIVATE_IF=$(detect_private_if)
+  if [ -n "$PRIVATE_IF" ]; then
+    break
+  fi
+  sleep 2
+done
 
 SKIP_FORWARDING="false"
 if [ -z "$PRIVATE_IF" ]; then
-  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR; skipping WG forwarding" >&2
+  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR after retries; skipping WG forwarding" >&2
   SKIP_FORWARDING="true"
 fi
 
