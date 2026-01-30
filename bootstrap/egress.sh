@@ -113,11 +113,24 @@ services:
       - "3000:3000"
     volumes:
       - /opt/infrazero/egress/grafana-data:/var/lib/grafana
+      - /opt/infrazero/egress/grafana-provisioning:/etc/grafana/provisioning:ro
 EOF
 
-mkdir -p /opt/infrazero/egress/loki-data /opt/infrazero/egress/grafana-data
+mkdir -p /opt/infrazero/egress/loki-data /opt/infrazero/egress/grafana-data /opt/infrazero/egress/grafana-provisioning/datasources
 chown -R 10001:10001 /opt/infrazero/egress/loki-data
 chown -R 472:472 /opt/infrazero/egress/grafana-data
+
+cat > /opt/infrazero/egress/grafana-provisioning/datasources/loki.yml <<'EOF'
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+EOF
 
 compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
 
