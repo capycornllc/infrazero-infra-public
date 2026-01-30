@@ -28,6 +28,7 @@ require_env "WG_LISTEN_PORT"
 require_env "WG_ADMIN_PEERS_JSON"
 require_env "WG_PRESHARED_KEYS_JSON"
 require_env "EGRESS_LOKI_URL"
+require_env "EGRESS_PRIVATE_IP"
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
@@ -72,6 +73,14 @@ done <<< "$peers"
 
 systemctl enable --now wg-quick@wg0
 
+# Disable IPv6 on bastion (egress should be IPv4-only)
+cat > /etc/sysctl.d/99-infrazero-disable-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+net.ipv6.conf.lo.disable_ipv6=1
+EOF
+sysctl --system || true
+
 # Enable routing between WireGuard and private subnet
 cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
 net.ipv4.ip_forward=1
@@ -109,6 +118,77 @@ if [ -z "$WG_CIDR" ]; then
 fi
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
+  # Policy route bastion egress traffic via egress host, while keeping WG handshake on public.
+  cat > /usr/local/sbin/infrazero-egress-route.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="/etc/infrazero/bastion.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [ -z "${EGRESS_PRIVATE_IP:-}" ] || [ -z "${PRIVATE_CIDR:-}" ] || [ -z "${WG_LISTEN_PORT:-}" ]; then
+  exit 0
+fi
+
+WG_IF="wg0"
+WG_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
+WG_CIDR=""
+if [ -n "$WG_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
+  WG_CIDR=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)' "$WG_CIDR_RAW" 2>/dev/null || true)
+fi
+if [ -z "$WG_CIDR" ]; then
+  WG_CIDR="$WG_CIDR_RAW"
+fi
+
+PRIVATE_IF=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+if [ -z "$PRIVATE_IF" ]; then
+  exit 0
+fi
+
+if ! grep -qE '^[[:space:]]*100[[:space:]]+infrazero-egress$' /etc/iproute2/rt_tables; then
+  echo "100 infrazero-egress" >> /etc/iproute2/rt_tables
+fi
+
+ip route replace "$PRIVATE_CIDR" dev "$PRIVATE_IF" table infrazero-egress
+if [ -n "$WG_CIDR" ]; then
+  ip route replace "$WG_CIDR" dev "$WG_IF" table infrazero-egress
+fi
+ip route replace default via "$EGRESS_PRIVATE_IP" dev "$PRIVATE_IF" table infrazero-egress
+
+ip rule add fwmark 0x1 lookup main priority 100 2>/dev/null || true
+ip rule add lookup infrazero-egress priority 200 2>/dev/null || true
+
+iptables -t mangle -C OUTPUT -p udp --sport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1 2>/dev/null || \
+  iptables -t mangle -A OUTPUT -p udp --sport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1
+EOF
+
+  chmod +x /usr/local/sbin/infrazero-egress-route.sh
+
+  cat > /etc/systemd/system/infrazero-egress-route.service <<'EOF'
+[Unit]
+Description=Route bastion egress traffic via egress host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infrazero-egress-route.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now infrazero-egress-route.service
+
+  /usr/local/sbin/infrazero-egress-route.sh || true
+
   # SNAT WG clients to bastion private IP for private subnet access.
   iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
   iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
