@@ -166,13 +166,17 @@ if [ -n "$WG_CIDR" ]; then
 fi
 ip route replace default via "$EGRESS_PRIVATE_IP" dev "$PRIVATE_IF" table infrazero-egress
 
-PUBLIC_IP=$(ip -4 route show default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
-if [ -n "$PUBLIC_IP" ] && ! ip rule show | grep -q "from ${PUBLIC_IP}/32 lookup main"; then
-  ip rule add from "${PUBLIC_IP}/32" lookup main priority 90
+if ! ip rule show | grep -q "fwmark 0x1 lookup main"; then
+  ip rule add fwmark 0x1 lookup main priority 100
 fi
 if ! ip rule show | grep -q "lookup infrazero-egress"; then
   ip rule add lookup infrazero-egress priority 200
 fi
+
+iptables -t mangle -C OUTPUT -p udp --sport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1 2>/dev/null || \
+  iptables -t mangle -A OUTPUT -p udp --sport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1
+iptables -t mangle -C OUTPUT -p udp --dport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1 2>/dev/null || \
+  iptables -t mangle -A OUTPUT -p udp --dport "$WG_LISTEN_PORT" -j MARK --set-mark 0x1
 EOF
 
   chmod +x /usr/local/sbin/infrazero-egress-route.sh
