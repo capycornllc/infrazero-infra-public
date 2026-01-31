@@ -29,6 +29,8 @@ require_env "WG_ADMIN_PEERS_JSON"
 require_env "WG_PRESHARED_KEYS_JSON"
 require_env "EGRESS_LOKI_URL"
 
+DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
@@ -338,15 +340,40 @@ EOF
 systemctl daemon-reload
 systemctl enable --now infrazero-egress-routing.service
 
-# Bind SSH to WireGuard address only
+# Bind SSH to WireGuard address only (unless debug root password is set)
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
-ListenAddress ${WG_SERVER_IP}
-${PRIVATE_IP:+ListenAddress ${PRIVATE_IP}}
-AllowGroups infrazero-admins
-PasswordAuthentication no
-PermitRootLogin no
-EOF
+
+SSH_PASSWORD_AUTH="no"
+SSH_KBD_INTERACTIVE="no"
+SSH_CHALLENGE="no"
+SSH_PERMIT_ROOT="no"
+SSH_ALLOW_GROUPS="infrazero-admins"
+LISTEN_ADDRESSES=()
+
+if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
+  SSH_PASSWORD_AUTH="yes"
+  SSH_KBD_INTERACTIVE="yes"
+  SSH_CHALLENGE="yes"
+  SSH_PERMIT_ROOT="yes"
+  SSH_ALLOW_GROUPS="infrazero-admins root"
+  LISTEN_ADDRESSES=("0.0.0.0")
+else
+  LISTEN_ADDRESSES=("${WG_SERVER_IP}")
+  if [ -n "$PRIVATE_IP" ]; then
+    LISTEN_ADDRESSES+=("${PRIVATE_IP}")
+  fi
+fi
+
+{
+  for addr in "${LISTEN_ADDRESSES[@]}"; do
+    echo "ListenAddress ${addr}"
+  done
+  echo "AllowGroups ${SSH_ALLOW_GROUPS}"
+  echo "PasswordAuthentication ${SSH_PASSWORD_AUTH}"
+  echo "KbdInteractiveAuthentication ${SSH_KBD_INTERACTIVE}"
+  echo "ChallengeResponseAuthentication ${SSH_CHALLENGE}"
+  echo "PermitRootLogin ${SSH_PERMIT_ROOT}"
+} > /etc/ssh/sshd_config.d/infrazero.conf
 
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 

@@ -16,6 +16,7 @@ jobs:
       S3_ENDPOINT: ${{ secrets.s3_endpoint }}
       INFRA_STATE_BUCKET: ${{ secrets.infra_state_bucket }}
       OPS_SSH_KEYS_JSON: ${{ secrets.OPS_SSH_KEYS_JSON }}
+      DEBUG_ROOT_PASSWORD: ${{ secrets.DEBUG_ROOT_PASSWORD }}
       S3_ACCESS_KEY_ID: ${{ secrets.s3_access_key_id }}
       S3_SECRET_ACCESS_KEY: ${{ secrets.s3_secret_access_key }}
       DB_BACKUP_BUCKET: ${{ secrets.db_backup_bucket }}

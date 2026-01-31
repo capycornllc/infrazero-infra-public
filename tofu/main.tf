@@ -115,7 +115,7 @@ resource "hcloud_firewall" "bastion" {
     direction  = "in"
     protocol   = "tcp"
     port       = "22"
-    source_ips = var.wireguard.allowed_cidrs
+    source_ips = local.bastion_ssh_cidrs
   }
 }
 
@@ -323,6 +323,7 @@ resource "hcloud_server" "bastion" {
     wg_server_address = var.wg_server_address
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
+    debug_root_password = local.debug_root_password_escaped
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = concat(local.bastion_env_lines, [
@@ -370,6 +371,7 @@ resource "hcloud_server" "egress" {
     wg_server_address = var.wg_server_address
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
+    debug_root_password = local.debug_root_password_escaped
     egress_env      = local.egress_env_lines
     db_backup_age_private_key = var.db_backup_age_private_key
     bastion_env     = []
@@ -416,6 +418,7 @@ resource "hcloud_server" "k3s" {
     wg_server_address = var.wg_server_address
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
+    debug_root_password = local.debug_root_password_escaped
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []
@@ -460,6 +463,7 @@ resource "hcloud_server" "db" {
     wg_server_address = var.wg_server_address
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
+    debug_root_password = local.debug_root_password_escaped
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []

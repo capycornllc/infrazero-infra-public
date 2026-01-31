@@ -49,6 +49,9 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `WG_ADMIN_PEERS_JSON`
 - `WG_PRESHARED_KEYS_JSON`
 
+### Debug / break-glass access (optional)
+- `DEBUG_ROOT_PASSWORD`: if set, bootstraps set the root password on all servers, enable SSH password auth + PermitRootLogin, and bastion listens on all interfaces. Bastion SSH is opened to `0.0.0.0/0` while this is set. The value is embedded in cloud-init user data; remove the secret after troubleshooting.
+
 Full list (including future epics): `docs/secrets-list.md`
 
 ## Workflows

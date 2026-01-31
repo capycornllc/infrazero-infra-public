@@ -94,6 +94,9 @@ def main() -> int:
     def optional_env(name: str) -> str:
         return os.getenv(name, "").strip()
 
+    debug_root_password = optional_env("DEBUG_ROOT_PASSWORD")
+    config["debug_root_password"] = debug_root_password
+
     def parse_int_env(name: str, minimum: int | None = None) -> int | None:
         raw = os.getenv(name, "").strip()
         if not raw:

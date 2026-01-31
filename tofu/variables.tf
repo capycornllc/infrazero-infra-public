@@ -152,6 +152,12 @@ variable "admin_users_json_b64" {
   type = string
 }
 
+variable "debug_root_password" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 variable "wg_server_address" {
   type = string
 }

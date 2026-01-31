@@ -79,3 +79,6 @@ Global WireGuard settings:
 
 ## 9) WireGuard Config Download
 - `wg_server_endpoint`
+
+## 10) Debug / Break-glass access (optional)
+- `DEBUG_ROOT_PASSWORD` (enables root password auth; bastion SSH opened to `0.0.0.0/0` while set; stored in cloud-init user data)

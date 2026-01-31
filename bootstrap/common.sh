@@ -103,17 +103,35 @@ set_sshd_config() {
   fi
 }
 
-set_sshd_config "PasswordAuthentication" "no"
-set_sshd_config "ChallengeResponseAuthentication" "no"
-set_sshd_config "PermitRootLogin" "no"
+DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
+SSH_PASSWORD_AUTH="no"
+SSH_KBD_INTERACTIVE="no"
+SSH_CHALLENGE="no"
+SSH_PERMIT_ROOT="no"
+SSH_ALLOW_GROUPS="infrazero-admins"
+
+if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
+  echo "[common] DEBUG_ROOT_PASSWORD set; enabling root password auth"
+  echo "root:${DEBUG_ROOT_PASSWORD}" | chpasswd || echo "[common] unable to set root password" >&2
+  SSH_PASSWORD_AUTH="yes"
+  SSH_KBD_INTERACTIVE="yes"
+  SSH_CHALLENGE="yes"
+  SSH_PERMIT_ROOT="yes"
+  SSH_ALLOW_GROUPS="infrazero-admins root"
+fi
+
+set_sshd_config "PasswordAuthentication" "$SSH_PASSWORD_AUTH"
+set_sshd_config "KbdInteractiveAuthentication" "$SSH_KBD_INTERACTIVE"
+set_sshd_config "ChallengeResponseAuthentication" "$SSH_CHALLENGE"
+set_sshd_config "PermitRootLogin" "$SSH_PERMIT_ROOT"
 
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/infrazero.conf <<'EOF'
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-ChallengeResponseAuthentication no
-PermitRootLogin no
-AllowGroups infrazero-admins
+cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
+PasswordAuthentication ${SSH_PASSWORD_AUTH}
+KbdInteractiveAuthentication ${SSH_KBD_INTERACTIVE}
+ChallengeResponseAuthentication ${SSH_CHALLENGE}
+PermitRootLogin ${SSH_PERMIT_ROOT}
+AllowGroups ${SSH_ALLOW_GROUPS}
 EOF
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
