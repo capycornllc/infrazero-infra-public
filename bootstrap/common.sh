@@ -125,7 +125,7 @@ net.ipv4.conf.default.rp_filter=0
 EOF
 sysctl --system || true
 
-# WG routing handled via SNAT on bastion; no per-host routes required.
+# WG routing handled via network route (preferred) or SNAT on bastion; see bastion bootstrap.
 
 # Enable auditd
 systemctl enable --now auditd || true

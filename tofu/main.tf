@@ -18,6 +18,19 @@ resource "hcloud_network_subnet" "main" {
   ip_range     = var.private_cidr
 }
 
+resource "hcloud_network_route" "default_egress" {
+  network_id = hcloud_network.main.id
+  destination = "0.0.0.0/0"
+  gateway     = var.servers.egress.private_ip
+}
+
+resource "hcloud_network_route" "wireguard" {
+  count       = var.wireguard.enabled ? 1 : 0
+  network_id  = hcloud_network.main.id
+  destination = local.wg_cidr
+  gateway     = var.servers.bastion.private_ip
+}
+
 resource "hcloud_placement_group" "bastion" {
   count = var.placement_groups.enabled ? 1 : 0
 

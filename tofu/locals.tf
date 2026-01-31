@@ -15,6 +15,10 @@ locals {
   k3s_server_cidr       = "${var.k3s_nodes[0].private_ip}/32"
   k3s_agent_cidrs       = length(var.k3s_nodes) > 1 ? [for node in slice(var.k3s_nodes, 1, length(var.k3s_nodes)) : "${node.private_ip}/32"] : []
 
+  wg_prefix_length = tonumber(split("/", var.wg_server_address)[1])
+  wg_network_ip    = cidrhost(var.wg_server_address, 0)
+  wg_cidr          = "${local.wg_network_ip}/${local.wg_prefix_length}"
+
   egress_env_lines = [
     for key, value in var.egress_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))

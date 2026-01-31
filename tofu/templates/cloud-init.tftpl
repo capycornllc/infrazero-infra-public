@@ -31,6 +31,75 @@ write_files:
       mkdir -p "$WORKDIR"
       cd "$WORKDIR"
 
+      ensure_private_default_route() {
+        if ip route show default | grep -q "^default"; then
+          return 0
+        fi
+
+        local private_gw=""
+        if command -v python3 >/dev/null 2>&1; then
+          private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+          ) || true
+        fi
+
+        if [ -z "$private_gw" ]; then
+          echo "[bootstrap] unable to compute private gateway; skipping default route" >&2
+          return 0
+        fi
+
+        local priv_if=""
+        if command -v python3 >/dev/null 2>&1; then
+          priv_if=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    ifname = parts[1]
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(ifname)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+          ) || true
+        fi
+
+        if [ -z "$priv_if" ]; then
+          echo "[bootstrap] unable to determine private interface; skipping default route" >&2
+          return 0
+        fi
+
+        ip link set dev "$priv_if" up || true
+        ip route replace "$private_gw/32" dev "$priv_if" scope link || true
+        ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
+        echo "[bootstrap] default route set via $private_gw on $priv_if"
+      }
+
       wait_for_bootstrap_url() {
         local url="$1"
         echo "[bootstrap] waiting for bootstrap URL to be reachable"
@@ -47,6 +116,7 @@ write_files:
         return 1
       }
 
+      ensure_private_default_route
       wait_for_bootstrap_url "$URL"
 
       echo "[bootstrap] downloading $ROLE artifact"

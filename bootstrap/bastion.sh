@@ -121,6 +121,12 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
   fi
 fi
 
+PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+PUBLIC_IP=""
+if [ -n "$PUBLIC_IF" ]; then
+  PUBLIC_IP=$(ip -4 -o addr show "$PUBLIC_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+fi
+
 WG_IF="wg0"
 WG_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS}}"
 WG_CIDR=""
@@ -131,11 +137,25 @@ if [ -z "$WG_CIDR" ]; then
   WG_CIDR="$WG_CIDR_RAW"
 fi
 
+WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-false}"
+WG_ALLOW_WAN="${WG_ALLOW_WAN:-false}"
+
 if [ "$SKIP_FORWARDING" != "true" ]; then
-  # SNAT WG clients to bastion private IP for private subnet access.
-  iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
-  iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
-  iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  if [ "${WG_SNAT_ENABLED,,}" = "true" ]; then
+    # SNAT WG clients to bastion private IP for private subnet access.
+    iptables -t nat -C POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE \
+      || iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
+  fi
+
+  iptables -C FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT \
+    || iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
+  iptables -C FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT \
+    || iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+  if [ -n "$PUBLIC_IF" ] && [ "${WG_ALLOW_WAN,,}" != "true" ]; then
+    iptables -C FORWARD -i "$WG_IF" -o "$PUBLIC_IF" -j REJECT \
+      || iptables -A FORWARD -i "$WG_IF" -o "$PUBLIC_IF" -j REJECT
+  fi
 
   mkdir -p /etc/iptables
   iptables-save > /etc/iptables/rules.v4
@@ -158,6 +178,165 @@ EOF
   systemctl daemon-reload
   systemctl enable --now infrazero-iptables.service
 fi
+
+# Persist private network CIDR for routing helpers
+mkdir -p /etc/infrazero
+cat > /etc/infrazero/network.env <<EOF
+PRIVATE_CIDR=${PRIVATE_CIDR}
+EOF
+chmod 600 /etc/infrazero/network.env
+
+# Policy routing: steer bastion outbound via egress while keeping WG on public
+cat > /usr/local/sbin/infrazero-egress-routing.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+NETWORK_ENV="/etc/infrazero/network.env"
+BASTION_ENV="/etc/infrazero/bastion.env"
+
+if [ -f "$NETWORK_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NETWORK_ENV"
+  set +a
+fi
+
+if [ -f "$BASTION_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$BASTION_ENV"
+  set +a
+fi
+
+if [ -z "${PRIVATE_CIDR:-}" ]; then
+  echo "[bastion-routing] PRIVATE_CIDR missing; skipping policy routing" >&2
+  exit 0
+fi
+
+WG_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
+WG_CIDR=""
+if [ -n "$WG_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
+  WG_CIDR=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)' "$WG_CIDR_RAW" 2>/dev/null || true)
+fi
+if [ -z "$WG_CIDR" ]; then
+  WG_CIDR="$WG_CIDR_RAW"
+fi
+
+private_gw=""
+if command -v python3 >/dev/null 2>&1; then
+  private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+  ) || true
+fi
+
+if [ -z "$private_gw" ]; then
+  echo "[bastion-routing] unable to compute private gateway; skipping policy routing" >&2
+  exit 0
+fi
+
+private_if=""
+if command -v python3 >/dev/null 2>&1; then
+  private_if=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    ifname = parts[1]
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(ifname)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+  ) || true
+fi
+
+if [ -z "$private_if" ]; then
+  echo "[bastion-routing] unable to determine private interface; skipping policy routing" >&2
+  exit 0
+fi
+
+public_if=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+public_ip=""
+if [ -n "$public_if" ]; then
+  public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+fi
+
+if [ -z "$public_if" ]; then
+  echo "[bastion-routing] unable to determine public interface; skipping policy routing" >&2
+  exit 0
+fi
+
+table_id=100
+table_name="egress"
+if ! grep -qE "^${table_id}[[:space:]]+${table_name}$" /etc/iproute2/rt_tables; then
+  echo "${table_id} ${table_name}" >> /etc/iproute2/rt_tables
+fi
+
+ip route replace "$private_gw/32" dev "$private_if" scope link || true
+ip route replace "$PRIVATE_CIDR" dev "$private_if" scope link || true
+ip route replace default via "$private_gw" dev "$private_if" onlink table "$table_name"
+
+ip rule del pref 100 || true
+if [ -n "$WG_CIDR" ]; then
+  ip rule add pref 100 from "$WG_CIDR" lookup main
+  ip rule del pref 110 || true
+  ip rule add pref 110 to "$WG_CIDR" lookup main
+fi
+
+ip rule del pref 120 || true
+if [ -n "$public_ip" ]; then
+  ip rule add pref 120 from "$public_ip/32" lookup main
+fi
+
+ip rule del pref 200 || true
+ip rule add pref 200 lookup "$table_name"
+EOF
+
+chmod +x /usr/local/sbin/infrazero-egress-routing.sh
+/usr/local/sbin/infrazero-egress-routing.sh || true
+
+cat > /etc/systemd/system/infrazero-egress-routing.service <<'EOF'
+[Unit]
+Description=Infrazero bastion egress policy routing
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infrazero-egress-routing.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-egress-routing.service
 
 # Bind SSH to WireGuard address only
 mkdir -p /etc/ssh/sshd_config.d

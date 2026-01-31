@@ -162,9 +162,12 @@ if [ -z "$PRIVATE_IP" ]; then
   exit 1
 fi
 
-iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
-iptables -A FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
-iptables -A FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
+  || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
+iptables -C FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \
+  || iptables -A FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
+iptables -C FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT \
+  || iptables -A FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
