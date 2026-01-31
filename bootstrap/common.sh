@@ -113,6 +113,7 @@ SSH_ALLOW_GROUPS="infrazero-admins"
 if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
   echo "[common] DEBUG_ROOT_PASSWORD set; enabling root password auth"
   echo "root:${DEBUG_ROOT_PASSWORD}" | chpasswd || echo "[common] unable to set root password" >&2
+  passwd -u root >/dev/null 2>&1 || usermod -U root >/dev/null 2>&1 || true
   SSH_PASSWORD_AUTH="yes"
   SSH_KBD_INTERACTIVE="yes"
   SSH_CHALLENGE="yes"
