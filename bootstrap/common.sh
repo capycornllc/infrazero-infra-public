@@ -126,6 +126,34 @@ set_sshd_config "KbdInteractiveAuthentication" "$SSH_KBD_INTERACTIVE"
 set_sshd_config "ChallengeResponseAuthentication" "$SSH_CHALLENGE"
 set_sshd_config "PermitRootLogin" "$SSH_PERMIT_ROOT"
 
+DEBUG_SSH_BEGIN="# BEGIN INFRAZERO DEBUG SSH"
+DEBUG_SSH_END="# END INFRAZERO DEBUG SSH"
+
+strip_debug_block() {
+  if [ -f "$SSHD_CONFIG" ]; then
+    awk -v begin="$DEBUG_SSH_BEGIN" -v end="$DEBUG_SSH_END" '
+      $0==begin {skip=1; next}
+      $0==end {skip=0; next}
+      skip==1 {next}
+      {print}
+    ' "$SSHD_CONFIG" > "${SSHD_CONFIG}.tmp" && mv "${SSHD_CONFIG}.tmp" "$SSHD_CONFIG"
+  fi
+}
+
+strip_debug_block
+if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
+  cat >> "$SSHD_CONFIG" <<EOF
+${DEBUG_SSH_BEGIN}
+Match all
+  PermitRootLogin yes
+  PasswordAuthentication yes
+  KbdInteractiveAuthentication yes
+  ChallengeResponseAuthentication yes
+  AllowGroups infrazero-admins root
+${DEBUG_SSH_END}
+EOF
+fi
+
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
 PasswordAuthentication ${SSH_PASSWORD_AUTH}
