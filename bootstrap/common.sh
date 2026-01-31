@@ -80,7 +80,7 @@ install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     for _ in {1..5}; do
-      if apt-get update -y && apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd; then
+      if apt-get update -y && apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades; then
         return 0
       fi
       sleep 5
@@ -173,6 +173,30 @@ EOF
 sysctl --system || true
 
 # WG routing handled via network route (preferred) or SNAT on bastion; see bastion bootstrap.
+
+# Unattended upgrades (security-only, no reboot)
+if command -v unattended-upgrades >/dev/null 2>&1; then
+  cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+};
+
+Unattended-Upgrade::Package-Blacklist {
+        "linux-*";
+        "libc6";
+        "openssl";
+        "docker*";
+        "containerd*";
+        "kube*";
+};
+
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+EOF
+
+  systemctl enable unattended-upgrades || true
+fi
 
 # Enable auditd
 systemctl enable --now auditd || true
