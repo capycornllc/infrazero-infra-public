@@ -31,6 +31,24 @@ write_files:
       mkdir -p "$WORKDIR"
       cd "$WORKDIR"
 
+      wait_for_bootstrap_url() {
+        local url="$1"
+        echo "[bootstrap] waiting for bootstrap URL to be reachable"
+        for i in {1..60}; do
+          local code
+          code=$(curl -s -o /dev/null -w "%%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+          if [ -n "$code" ] && [ "$code" != "000" ]; then
+            echo "[bootstrap] bootstrap URL reachable (http $${code})"
+            return 0
+          fi
+          sleep 5
+        done
+        echo "[bootstrap] bootstrap URL not reachable after retries" >&2
+        return 1
+      }
+
+      wait_for_bootstrap_url "$URL"
+
       echo "[bootstrap] downloading $ROLE artifact"
       curl -fsSL "$URL" -o "$ROLE.tar.zst"
       echo "$SHA  $ROLE.tar.zst" | sha256sum -c -

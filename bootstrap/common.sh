@@ -6,12 +6,6 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[common] $(date -Is) start"
 
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd
-fi
-
 # Create admin users from OPS_SSH_KEYS_JSON (base64) if provided
 if [ -n "${ADMIN_USERS_JSON_B64:-}" ]; then
   mkdir -p /etc/infrazero
@@ -24,31 +18,78 @@ if [ -n "${ADMIN_USERS_JSON_B64:-}" ]; then
   echo "%infrazero-admins ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-infrazero-admins
   chmod 440 /etc/sudoers.d/90-infrazero-admins
 
-  jq -c 'to_entries[]' /etc/infrazero/admins.json | while read -r entry; do
-    username=$(echo "$entry" | jq -r '.key')
-    if [ -z "$username" ] || [ "$username" = "null" ]; then
-      continue
-    fi
+  tmp_keys="/tmp/infrazero-admin-keys"
+  : > "$tmp_keys"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY' > "$tmp_keys" || true
+import json
+from pathlib import Path
 
-    if ! id -u "$username" >/dev/null 2>&1; then
-      useradd -m -s /bin/bash -G infrazero-admins "$username"
-    else
-      usermod -aG infrazero-admins "$username" || true
-    fi
+data = json.loads(Path("/etc/infrazero/admins.json").read_text())
+def emit(user, key):
+    if not user or not key:
+        return
+    print(f"{user}|{key}")
 
-    install -d -m 0700 "/home/$username/.ssh"
-    : > "/home/$username/.ssh/authorized_keys"
+if isinstance(data, dict):
+    for user, keys in data.items():
+        if isinstance(keys, str):
+            keys = [keys]
+        if not isinstance(keys, list):
+            continue
+        for key in keys:
+            if isinstance(key, str):
+                key = key.strip()
+                if key:
+                    emit(str(user).strip(), key)
+PY
+  elif command -v jq >/dev/null 2>&1; then
+    jq -r 'to_entries[] | .key as $u | .value[] | select(. != null and . != "") | "\($u)|\(.)"' \
+      /etc/infrazero/admins.json > "$tmp_keys" || true
+  else
+    echo "[common] python3/jq not available; skipping admin user creation" >&2
+  fi
 
-    echo "$entry" | jq -r '.value[]' | while IFS= read -r key; do
-      if [ -n "$key" ] && [ "$key" != "null" ]; then
-        echo "$key" >> "/home/$username/.ssh/authorized_keys"
+  if [ -s "$tmp_keys" ]; then
+    declare -A seen_users
+    while IFS='|' read -r username key; do
+      if [ -z "$username" ] || [ -z "$key" ]; then
+        continue
       fi
-    done
 
-    chmod 0600 "/home/$username/.ssh/authorized_keys"
-    chown -R "$username:$username" "/home/$username/.ssh"
-  done
+      if ! id -u "$username" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash -G infrazero-admins "$username"
+      else
+        usermod -aG infrazero-admins "$username" || true
+      fi
+
+      install -d -m 0700 "/home/$username/.ssh"
+      if [ -z "${seen_users[$username]+x}" ]; then
+        : > "/home/$username/.ssh/authorized_keys"
+        seen_users["$username"]=1
+      fi
+      echo "$key" >> "/home/$username/.ssh/authorized_keys"
+      chmod 0600 "/home/$username/.ssh/authorized_keys"
+      chown -R "$username:$username" "/home/$username/.ssh"
+    done < "$tmp_keys"
+  fi
+  rm -f "$tmp_keys"
 fi
+
+install_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    for _ in {1..5}; do
+      if apt-get update -y && apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd; then
+        return 0
+      fi
+      sleep 5
+    done
+    echo "[common] apt-get failed after retries; continuing without packages" >&2
+  fi
+}
+
+install_packages
 
 # SSH hardening
 SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -65,6 +106,15 @@ set_sshd_config() {
 set_sshd_config "PasswordAuthentication" "no"
 set_sshd_config "ChallengeResponseAuthentication" "no"
 set_sshd_config "PermitRootLogin" "no"
+
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/infrazero.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+AllowGroups infrazero-admins
+EOF
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
