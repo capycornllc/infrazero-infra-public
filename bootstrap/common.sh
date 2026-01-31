@@ -170,6 +170,13 @@ cat > /etc/sysctl.d/99-infrazero-rpfilter.conf <<'EOF'
 net.ipv4.conf.all.rp_filter=0
 net.ipv4.conf.default.rp_filter=0
 EOF
+
+# Disable IPv6 cluster-wide
+cat > /etc/sysctl.d/99-infrazero-disable-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+net.ipv6.conf.lo.disable_ipv6=1
+EOF
 sysctl --system || true
 
 # WG routing handled via network route (preferred) or SNAT on bastion; see bastion bootstrap.
