@@ -66,6 +66,15 @@ set_sshd_config "PasswordAuthentication" "no"
 set_sshd_config "ChallengeResponseAuthentication" "no"
 set_sshd_config "PermitRootLogin" "no"
 
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/infrazero.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+AllowGroups infrazero-admins
+EOF
+
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
 # Relax rp_filter for asymmetric routing (WG via bastion)
