@@ -52,6 +52,24 @@ write_files:
 %{ endfor ~}
 %{ endif ~}
 
+%{ if length(node1_env) > 0 ~}
+  - path: /etc/infrazero/node1.env
+    permissions: "0600"
+    content: |
+%{ for line in node1_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(node2_env) > 0 ~}
+  - path: /etc/infrazero/node2.env
+    permissions: "0600"
+    content: |
+%{ for line in node2_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
 %{ if length(bastion_env) > 0 ~}
   - path: /etc/infrazero/bastion.env
     permissions: "0600"

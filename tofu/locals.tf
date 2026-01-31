@@ -24,4 +24,14 @@ locals {
     for key, value in var.bastion_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
+
+  node1_env_lines = [
+    for key, value in var.node1_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
+
+  node2_env_lines = [
+    for key, value in var.node2_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
 }

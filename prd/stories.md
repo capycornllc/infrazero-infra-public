@@ -37,8 +37,12 @@
 ## EPIC-4: Node1 bootstrap
 - As an operator, node1 installs k3s server and exposes NodePorts 30080/30443 for LB forwarding.
   - Acceptance: k3s server is Ready and NodePorts are open internally.
-- As an operator, Argo CD bootstraps using repo URLs/paths from config/infra.yaml.
+- As an operator, Argo CD bootstraps using repo from GitHub secrets (gh_gitops_repo) and path from config/infra.yaml.
   - Acceptance: Argo CD is installed and syncs the configured root app.
+- As an operator, Argo CD UI is reachable via argocd_fqdn with valid TLS.
+  - Acceptance: argocd_fqdn serves Argo CD over HTTPS with Let's Encrypt certs.
+- As an operator, node1 bootstraps Infisical when no restore is requested.
+  - Acceptance: admin + read-only tokens are generated, stored encrypted in S3, and referenced in latest-dump manifest.
 - As an operator, node1 logs are forwarded to egress.
   - Acceptance: node1 logs appear in Loki.
 

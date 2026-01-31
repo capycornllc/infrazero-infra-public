@@ -68,6 +68,13 @@ k3s:
   token_name: k3s_join_token
   server_taint: false
 
+argocd:
+  path: clusters/prod
+  target_revision: main
+  app_name: root-app
+  project: default
+  destination_namespace: default
+
 s3_backend:
   state_prefix: infrazero/dev
 

@@ -31,6 +31,12 @@ jobs:
       INFISICAL_POSTGRES_PASSWORD: ${{ secrets.infisical_postgres_password }}
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
+      ARGOCD_ADMIN_PASSWORD: ${{ secrets.argocd_admin_password }}
+      ARGOCD_FQDN: ${{ secrets.argocd_fqdn }}
+      GH_TOKEN: ${{ secrets.gh_token }}
+      GH_OWNER: ${{ secrets.gh_owner }}
+      GH_INFRA_REPO: ${{ secrets.gh_infra_repo }}
+      GH_GITOPS_REPO: ${{ secrets.gh_gitops_repo }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
       BASTION_FQDN: ${{ secrets.bastion_fqdn }}
       GRAFANA_FQDN: ${{ secrets.grafana_fqdn }}

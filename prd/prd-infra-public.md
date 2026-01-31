@@ -198,7 +198,7 @@ All secrets are stored as GitHub secrets (no Infisical):
 - `k3s_node_server_type`
 - `k3s_node_count`
 - WireGuard keys and peer JSON (if using WG)
-- Service FQDNs (`bastion_fqdn`, `grafana_fqdn`, `loki_fqdn`, `infisical_fqdn`, `db_fqdn`) or `internal_services_domains_json`
+- Service FQDNs (`bastion_fqdn`, `argocd_fqdn`, `grafana_fqdn`, `loki_fqdn`, `infisical_fqdn`, `db_fqdn`) or `internal_services_domains_json`
 - `deployed_apps_json`
 - `cloudflare_api_token` (DNS + ACME via DNS-01)
 - GitHub App + GHCR secrets (if Argo/GitOps is used)
@@ -280,8 +280,14 @@ Core resources:
 **Scope:**
 - Hardening baseline.
 - k3s server install and NodePort readiness (30080/30443).
-- Argo CD bootstrap using repo URLs and paths from config file.
-- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
+- Argo CD bootstrap using repo from GitHub secrets (gh_gitops_repo) and path from config file.
+- Argo CD UI accessible via `argocd_fqdn` GitHub secret with Let's Encrypt; admin password from `argocd_admin_password` GitHub secret.
+- After Argo CD bootstrap, start Infisical bootstrap script on node1 cloud-init (Infisical runs on egress, but bootstrap from node1 to store machine identity credentials).
+- Wait for Infisical to be up; if `infisical_restore_from_s3` is true and an Infisical backup is present on S3, skip Infisical bootstrap.
+- Otherwise, run Infisical bootstrap via API POST to `https://<infisical-domain>/api/v1/admin/bootstrap` with email/password/org (treat already-bootstrapped as no-op), extract the admin machine identity token from the response.
+- Save the admin token to the same S3 location as Infisical backups, encrypted with the DB backup public age key, and add token info to Infisical latest-dump manifest.
+- Use the admin token to create a read-only token; store it as a Kubernetes secret, also save it encrypted to S3, and mention it in the latest-dump manifest.
+- Infisical bootstrap runs from node1 against the infisical_fqdn.
 - Log forwarding to egress Grafana/Loki.
 
 ### Epic 5: Node2 bootstrap (k3s agent)

@@ -166,6 +166,16 @@ variable "bastion_secrets" {
   sensitive = true
 }
 
+variable "node1_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
+variable "node2_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
 variable "internal_services_domains" {
   type    = map(object({ fqdn = string }))
   default = {}

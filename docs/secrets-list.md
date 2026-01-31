@@ -15,12 +15,10 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `k3s_node_count`
 
 ## 2) GitHub Access
-- `github_username`
-- `github_infra_repo`
-- `github_gitops_repo`
-- `github_infra_recreate`
-- `github_gitops_recreate`
-- `github_token`
+- `gh_token`
+- `gh_owner` (required if `gh_gitops_repo` is not `owner/repo`)
+- `gh_infra_repo`
+- `gh_gitops_repo`
 
 ## 3) Hetzner Cloud Token
 - `hetzner_cloud_token`
@@ -40,6 +38,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 
 ## 4.1) Service FQDNs & DNS (Cloudflare)
 - `bastion_fqdn`
+- `argocd_fqdn`
 - `grafana_fqdn`
 - `loki_fqdn`
 - `infisical_fqdn`
@@ -76,6 +75,3 @@ Global WireGuard settings:
 - `wg_server_address`
 - `wg_server_private_key`
 - `wg_server_public_key`
-
-## 9) WireGuard Config Download
-- `wg_server_endpoint`

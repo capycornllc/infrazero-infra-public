@@ -180,6 +180,8 @@ def main() -> int:
         print(f"Invalid DNS inputs: {exc}", file=sys.stderr)
         return 1
 
+    argocd_fqdn = os.getenv("ARGOCD_FQDN", "").strip()
+
     records = []
     if internal_fqdns:
         if not all([bastion_private_ip, egress_ip, db_ip]):
@@ -200,14 +202,17 @@ def main() -> int:
             if ip:
                 records.append({"name": fqdn, "content": ip, "proxied": False})
 
-    if deployed_apps and not args.lb_ip.strip():
-        print("lb-ip is required when deployed_apps_json is provided.", file=sys.stderr)
+    if (deployed_apps or argocd_fqdn) and not args.lb_ip.strip():
+        print("lb-ip is required when deployed_apps_json or argocd_fqdn is provided.", file=sys.stderr)
         return 1
 
     for app in deployed_apps:
         fqdn = str(app.get("fqdn", "")).strip()
         if fqdn:
             records.append({"name": fqdn, "content": args.lb_ip, "proxied": True})
+
+    if argocd_fqdn:
+        records.append({"name": argocd_fqdn, "content": args.lb_ip, "proxied": False})
 
     if not records:
         print("No FQDNs provided; skipping DNS sync.")

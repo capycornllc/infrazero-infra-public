@@ -37,8 +37,12 @@ Goal: Stand up the k3s server and Argo CD from config-only repo inputs.
 Definition of done:
 - Hardening baseline.
 - k3s server installed and NodePorts 30080/30443 ready.
-- Argo CD bootstrapped using repo URLs/paths from config.
-- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
+ - Argo CD bootstrapped using repo from GitHub secrets (gh_gitops_repo) and path from config.
+- Argo CD UI available via argocd_fqdn with Let's Encrypt; admin password from argocd_admin_password.
+- Infisical bootstrap starts after Argo CD; if infisical_restore_from_s3 is true and a backup exists, skip bootstrap.
+- Otherwise bootstrap via API, store admin token encrypted in S3, add token metadata to latest-dump manifest.
+- Create a read-only token, store it as a Kubernetes secret and encrypted in S3, and record it in the manifest.
+- Infisical bootstrap runs from node1 against the infisical_fqdn.
 - Logs forwarded to egress.
 
 ## EPIC-5: Node2 bootstrap (k3s agent)

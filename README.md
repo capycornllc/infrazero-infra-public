@@ -42,6 +42,12 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `argocd_admin_password`
+- `argocd_fqdn`
+- `gh_token`
+- `gh_owner` (required if `gh_gitops_repo` is not `owner/repo`)
+- `gh_infra_repo`
+- `gh_gitops_repo`
 - `wg_server_private_key`
 - `wg_server_public_key`
 - `wg_server_address`

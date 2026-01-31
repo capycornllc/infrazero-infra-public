@@ -311,6 +311,8 @@ resource "hcloud_server" "bastion" {
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
+    node1_env       = []
+    node2_env       = []
     db_backup_age_private_key = ""
     bastion_env     = concat(local.bastion_env_lines, [
       format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
@@ -358,6 +360,8 @@ resource "hcloud_server" "egress" {
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = local.egress_env_lines
+    node1_env       = []
+    node2_env       = []
     db_backup_age_private_key = var.db_backup_age_private_key
     bastion_env     = []
   })
@@ -404,6 +408,13 @@ resource "hcloud_server" "k3s" {
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
+    node1_env       = each.key == local.k3s_server_key ? concat(local.node1_env_lines, [
+      format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
+    ]) : []
+    node2_env       = each.key != local.k3s_server_key ? concat(local.node2_env_lines, [
+      format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
+      format("K3S_SERVER_IP='%s'", local.k3s_server_private_ip),
+    ]) : []
     db_backup_age_private_key = ""
     bastion_env     = []
   })
@@ -448,6 +459,8 @@ resource "hcloud_server" "db" {
     wg_cidr         = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64 = var.admin_users_json_b64
     egress_env      = []
+    node1_env       = []
+    node2_env       = []
     db_backup_age_private_key = ""
     bastion_env     = []
   })

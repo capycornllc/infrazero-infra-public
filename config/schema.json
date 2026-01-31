@@ -16,6 +16,7 @@
     "placement_groups",
     "wireguard",
     "k3s",
+    "argocd",
     "s3_backend",
     "bootstrap"
   ],
@@ -96,6 +97,18 @@
       "properties": {
         "token_name": { "type": "string", "minLength": 1 },
         "server_taint": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "argocd": {
+      "type": "object",
+      "properties": {
+        "repo_url": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "target_revision": { "type": "string", "minLength": 1 },
+        "app_name": { "type": "string", "minLength": 1 },
+        "project": { "type": "string", "minLength": 1 },
+        "destination_namespace": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true
     },

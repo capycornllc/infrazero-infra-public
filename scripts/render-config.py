@@ -147,6 +147,7 @@ def main() -> int:
     s3_access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
     s3_secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
     s3_endpoint = os.getenv("S3_ENDPOINT", "").strip()
+    infra_state_bucket = os.getenv("INFRA_STATE_BUCKET", "").strip()
     s3_region = (
         os.getenv("S3_REGION")
         or os.getenv("AWS_REGION")
@@ -161,11 +162,19 @@ def main() -> int:
         missing_env.append("S3_SECRET_ACCESS_KEY")
     if not s3_endpoint:
         missing_env.append("S3_ENDPOINT")
+    if not infra_state_bucket:
+        missing_env.append("INFRA_STATE_BUCKET")
 
     bastion_server_type = require_env("BASTION_SERVER_TYPE")
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
+    argocd_admin_password = require_env("ARGOCD_ADMIN_PASSWORD")
+    argocd_fqdn = require_env("ARGOCD_FQDN")
+    gh_token = require_env("GH_TOKEN")
+    gh_owner = optional_env("GH_OWNER")
+    gh_infra_repo = optional_env("GH_INFRA_REPO")
+    gh_gitops_repo = require_env("GH_GITOPS_REPO")
 
     infisical_restore_from_s3 = os.getenv("INFISICAL_RESTORE_FROM_S3", "").strip()
     if not infisical_restore_from_s3:
@@ -251,7 +260,7 @@ def main() -> int:
                 deployed_apps.append(app)
 
     cloudflare_api_token = optional_env("CLOUDFLARE_API_TOKEN")
-    if (internal_services or deployed_apps) and not cloudflare_api_token:
+    if (internal_services or deployed_apps or argocd_fqdn) and not cloudflare_api_token:
         missing_env.append("CLOUDFLARE_API_TOKEN")
 
     if cloudflare_api_token:
@@ -260,6 +269,8 @@ def main() -> int:
     infisical_fqdn = internal_services.get("infisical", "")
     grafana_fqdn = internal_services.get("grafana", "")
     loki_fqdn = internal_services.get("loki", "")
+    if not infisical_fqdn:
+        missing_env.append("INFISICAL_FQDN")
     if infisical_fqdn:
         egress_secrets["INFISICAL_FQDN"] = infisical_fqdn
     if grafana_fqdn:
@@ -273,6 +284,87 @@ def main() -> int:
         egress_secrets["PROJECT_SLUG"] = project_slug
     if environment:
         egress_secrets["ENVIRONMENT"] = environment
+
+    argocd_config = config.get("argocd", {}) or {}
+    if not isinstance(argocd_config, dict):
+        errors.append("argocd must be an object")
+        argocd_config = {}
+    argocd_repo = str(argocd_config.get("repo_url", "")).strip()
+    argocd_path = str(argocd_config.get("path", "")).strip()
+    argocd_revision = str(argocd_config.get("target_revision", "main")).strip() or "main"
+    argocd_app_name = str(argocd_config.get("app_name", "root-app")).strip() or "root-app"
+    argocd_app_project = str(argocd_config.get("project", "default")).strip() or "default"
+    argocd_dest_namespace = str(argocd_config.get("destination_namespace", "default")).strip() or "default"
+
+    if not argocd_repo:
+        if "/" in gh_gitops_repo:
+            argocd_repo = f"https://github.com/{gh_gitops_repo}.git"
+        else:
+            if not gh_owner:
+                errors.append("GH_OWNER is required when GH_GITOPS_REPO does not include an owner")
+            else:
+                argocd_repo = f"https://github.com/{gh_owner}/{gh_gitops_repo}.git"
+
+    if not argocd_repo or not argocd_path:
+        errors.append("argocd.path is required and argocd repo must be set via argocd.repo_url or GH_GITOPS_REPO")
+
+    letsencrypt_email = optional_env("LETSENCRYPT_EMAIL")
+    s3_backend = config.get("s3_backend", {}) or {}
+    state_prefix = str(s3_backend.get("state_prefix", "")).strip()
+    k3s_config = config.get("k3s", {}) or {}
+    k3s_token_name = str(k3s_config.get("token_name", "")).strip()
+    if not k3s_token_name:
+        errors.append("k3s.token_name is required")
+
+    node1_secrets = {
+        "S3_ACCESS_KEY_ID": s3_access_key,
+        "S3_SECRET_ACCESS_KEY": s3_secret_key,
+        "S3_ENDPOINT": s3_endpoint,
+        "S3_REGION": s3_region,
+        "INFRA_STATE_BUCKET": infra_state_bucket,
+        "STATE_PREFIX": state_prefix,
+        "K3S_TOKEN_NAME": k3s_token_name,
+        "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
+        "DB_BACKUP_AGE_PUBLIC_KEY": require_env("DB_BACKUP_AGE_PUBLIC_KEY"),
+        "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
+        "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
+        "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
+        "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),
+        "INFISICAL_FQDN": infisical_fqdn,
+        "ARGOCD_ADMIN_PASSWORD": argocd_admin_password,
+        "ARGOCD_FQDN": argocd_fqdn,
+        "GH_TOKEN": gh_token,
+        "GH_OWNER": gh_owner,
+        "GH_INFRA_REPO": gh_infra_repo,
+        "GH_GITOPS_REPO": gh_gitops_repo,
+    }
+
+    node2_secrets = {
+        "S3_ACCESS_KEY_ID": s3_access_key,
+        "S3_SECRET_ACCESS_KEY": s3_secret_key,
+        "S3_ENDPOINT": s3_endpoint,
+        "S3_REGION": s3_region,
+        "INFRA_STATE_BUCKET": infra_state_bucket,
+        "STATE_PREFIX": state_prefix,
+        "K3S_TOKEN_NAME": k3s_token_name,
+    }
+
+    if cloudflare_api_token:
+        node1_secrets["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
+    if letsencrypt_email:
+        node1_secrets["LETSENCRYPT_EMAIL"] = letsencrypt_email
+
+    if argocd_repo and argocd_path:
+        node1_secrets.update(
+            {
+                "ARGOCD_APP_REPO": argocd_repo,
+                "ARGOCD_APP_PATH": argocd_path,
+                "ARGOCD_APP_REVISION": argocd_revision,
+                "ARGOCD_APP_NAME": argocd_app_name,
+                "ARGOCD_APP_PROJECT": argocd_app_project,
+                "ARGOCD_APP_DEST_NAMESPACE": argocd_dest_namespace,
+            }
+        )
 
     wg_server_address = require_env("WG_SERVER_ADDRESS")
 
@@ -305,6 +397,8 @@ def main() -> int:
 
     config["egress_secrets"] = egress_secrets
     config["bastion_secrets"] = bastion_secrets
+    config["node1_secrets"] = node1_secrets
+    config["node2_secrets"] = node2_secrets
     config["db_backup_age_private_key"] = db_backup_age_private_key
     config["wg_server_address"] = wg_server_address
 
