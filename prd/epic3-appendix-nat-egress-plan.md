@@ -17,7 +17,7 @@ We need to decide how to keep WireGuard working once the default route for priva
 We also need a decision on bastion outbound behavior:
 - **Chosen:** Keep bastion public IP, but steer its outbound traffic through egress NAT using policy routing, while preserving WireGuard client <-> bastion connectivity on the public interface.
 
-This plan defaults to **route-based** WG (preferred) while keeping SNAT as a configurable fallback to avoid regressions.
+This plan defaults to **SNAT-enabled WG** for maximum robustness (no dependency on WG subnet routes), while still adding the WG route for route-based correctness and observability.
 
 ## Plan (implementation steps)
 ### 1) Provider network routes (OpenTofu)

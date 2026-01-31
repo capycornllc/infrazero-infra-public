@@ -121,7 +121,7 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
   fi
 fi
 
-PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+PUBLIC_IF=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 PUBLIC_IP=""
 if [ -n "$PUBLIC_IF" ]; then
   PUBLIC_IP=$(ip -4 -o addr show "$PUBLIC_IF" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
@@ -137,7 +137,7 @@ if [ -z "$WG_CIDR" ]; then
   WG_CIDR="$WG_CIDR_RAW"
 fi
 
-WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-false}"
+WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-true}"
 WG_ALLOW_WAN="${WG_ALLOW_WAN:-false}"
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
@@ -280,7 +280,7 @@ if [ -z "$private_if" ]; then
   exit 0
 fi
 
-public_if=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+public_if=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 public_ip=""
 if [ -n "$public_if" ]; then
   public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
