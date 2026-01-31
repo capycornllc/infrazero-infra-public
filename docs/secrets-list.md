@@ -75,3 +75,6 @@ Global WireGuard settings:
 - `wg_server_address`
 - `wg_server_private_key`
 - `wg_server_public_key`
+
+
+
