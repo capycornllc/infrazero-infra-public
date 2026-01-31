@@ -157,6 +157,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sync Cloudflare DNS records for internal services and apps.")
     parser.add_argument("--config", default="config/infra.yaml")
     parser.add_argument("--lb-ip", required=True)
+    parser.add_argument("--bastion-public-ip", default="")
     args = parser.parse_args()
 
     token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
@@ -167,7 +168,8 @@ def main() -> int:
     config = load_yaml(Path(args.config))
     servers = config.get("servers", {})
 
-    bastion_ip = str(servers.get("bastion", {}).get("private_ip", "")).strip()
+    bastion_private_ip = str(servers.get("bastion", {}).get("private_ip", "")).strip()
+    bastion_public_ip = args.bastion_public_ip.strip()
     egress_ip = str(servers.get("egress", {}).get("private_ip", "")).strip()
     db_ip = str(servers.get("db", {}).get("private_ip", "")).strip()
 
@@ -180,11 +182,14 @@ def main() -> int:
 
     records = []
     if internal_fqdns:
-        if not all([bastion_ip, egress_ip, db_ip]):
+        if not all([bastion_private_ip, egress_ip, db_ip]):
             print("servers.bastion/egress/db.private_ip must be set in config/infra.yaml", file=sys.stderr)
             return 1
+        if "bastion" in internal_fqdns and not bastion_public_ip:
+            print("bastion-public-ip is required when bastion FQDN is provided.", file=sys.stderr)
+            return 1
         service_ip_map = {
-            "bastion": bastion_ip,
+            "bastion": bastion_public_ip or bastion_private_ip,
             "grafana": egress_ip,
             "loki": egress_ip,
             "infisical": egress_ip,

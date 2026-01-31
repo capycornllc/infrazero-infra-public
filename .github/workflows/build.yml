@@ -191,4 +191,5 @@ jobs:
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: |
           LB_IP=$(tofu -chdir=tofu output -raw load_balancer_public_ipv4)
-          python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP"
+          BASTION_IP=$(tofu -chdir=tofu output -raw bastion_public_ipv4)
+          python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP"
