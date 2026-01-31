@@ -29,36 +29,34 @@ variable "server_image" {
 variable "servers" {
   type = object({
     bastion = object({
-      type        = string
       private_ip  = string
       public_ipv4 = bool
       public_ipv6 = bool
     })
     egress = object({
-      type        = string
-      private_ip  = string
-      public_ipv4 = bool
-      public_ipv6 = bool
-    })
-    node1 = object({
-      type        = string
-      private_ip  = string
-      public_ipv4 = bool
-      public_ipv6 = bool
-    })
-    node2 = object({
-      type        = string
       private_ip  = string
       public_ipv4 = bool
       public_ipv6 = bool
     })
     db = object({
-      type        = string
       private_ip  = string
       public_ipv4 = bool
       public_ipv6 = bool
     })
   })
+}
+
+variable "k3s_nodes" {
+  type = list(object({
+    private_ip  = string
+    public_ipv4 = bool
+    public_ipv6 = bool
+  }))
+
+  validation {
+    condition     = length(var.k3s_nodes) >= 1
+    error_message = "k3s_nodes must include at least one node."
+  }
 }
 
 variable "load_balancer" {
@@ -123,6 +121,22 @@ variable "bootstrap" {
   })
 }
 
+variable "bastion_server_type" {
+  type = string
+}
+
+variable "egress_server_type" {
+  type = string
+}
+
+variable "db_server_type" {
+  type = string
+}
+
+variable "k3s_node_server_type" {
+  type = string
+}
+
 variable "bootstrap_artifacts" {
   type = map(object({
     url    = string
@@ -150,6 +164,16 @@ variable "egress_secrets" {
 variable "bastion_secrets" {
   type      = map(string)
   sensitive = true
+}
+
+variable "internal_services_domains" {
+  type    = map(object({ fqdn = string }))
+  default = {}
+}
+
+variable "deployed_apps" {
+  type    = any
+  default = []
 }
 
 variable "db_backup_age_private_key" {

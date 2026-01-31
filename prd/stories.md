@@ -7,6 +7,12 @@
   - Acceptance: build.yml destroys and recreates all resources except the DB volume; volume remains attached after apply.
 - As a platform engineer, I can publish bootstrap artifacts to S3 and inject presigned URLs + SHA256 into cloud-init.
   - Acceptance: cloud-init downloads, verifies SHA256, decompresses, and runs the role script.
+- As a platform engineer, I can set server types and k3s node count via GitHub secrets (no config edits).
+  - Acceptance: secrets override server types; OpenTofu creates the requested k3s node count using the provided node type.
+- As a platform engineer, I can provide internal service FQDNs and app FQDNs via secrets and have Cloudflare DNS records created/updated automatically.
+  - Acceptance: internal service FQDNs (bastion/grafana/loki/infisical/db) resolve to private IPs; deployed app FQDNs resolve to the LB public IP; DNS changes are idempotent.
+- As a platform engineer, I can pass structured JSON secrets for internal services and deployed apps without leaking them in logs.
+  - Acceptance: JSON is validated for shape; malformed JSON fails fast; secrets are not echoed in workflow logs.
 
 ## EPIC-2: Egress bootstrap
 - As an operator, I get Grafana + Loki installed before any other services so logs can be forwarded immediately.
@@ -17,6 +23,10 @@
   - Acceptance: Infisical service is healthy and UI is accessible via the approved access path.
 - As an operator, I get Infisical DB backups and auto-restore using latest-dump manifest.
   - Acceptance: on boot, restore uses latest manifest if present; Age private key is deleted after restore or if no dump exists.
+- As an operator, egress can obtain and renew Let's Encrypt certificates for internal service FQDNs via Cloudflare DNS-01.
+  - Acceptance: valid certs are issued for infisical/grafana/loki FQDNs using the Cloudflare token with no manual steps.
+- As an operator, Infisical, Grafana, and Loki are reachable over HTTPS via their FQDNs.
+  - Acceptance: accessing the service FQDNs shows valid TLS with no browser warnings from trusted internal clients.
 
 ## EPIC-3: Bastion bootstrap
 - As an operator, I have hardened bastion access with WireGuard (or restricted SSH) only.

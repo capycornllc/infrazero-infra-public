@@ -10,28 +10,23 @@ server_image: ubuntu-24.04
 
 servers:
   bastion:
-    type: cx23
     private_ip: 10.10.0.10
     public_ipv4: true
     public_ipv6: true
   egress:
-    type: cx23
     private_ip: 10.10.0.11
     public_ipv4: true
     public_ipv6: true
-  node1:
-    type: cx23
-    private_ip: 10.10.0.20
-    public_ipv4: false
-    public_ipv6: false
-  node2:
-    type: cx23
-    private_ip: 10.10.0.21
-    public_ipv4: false
-    public_ipv6: false
   db:
-    type: cx23
     private_ip: 10.10.0.30
+    public_ipv4: false
+    public_ipv6: false
+
+k3s_nodes:
+  - private_ip: 10.10.0.20
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.21
     public_ipv4: false
     public_ipv6: false
 

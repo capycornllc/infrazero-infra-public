@@ -32,6 +32,19 @@ jobs:
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
+      BASTION_FQDN: ${{ secrets.bastion_fqdn }}
+      GRAFANA_FQDN: ${{ secrets.grafana_fqdn }}
+      LOKI_FQDN: ${{ secrets.loki_fqdn }}
+      INFISICAL_FQDN: ${{ secrets.infisical_fqdn }}
+      DB_FQDN: ${{ secrets.db_fqdn }}
+      INTERNAL_SERVICES_DOMAINS_JSON: ${{ secrets.internal_services_domains_json }}
+      DEPLOYED_APPS_JSON: ${{ secrets.deployed_apps_json }}
+      BASTION_SERVER_TYPE: ${{ secrets.bastion_server_type }}
+      EGRESS_SERVER_TYPE: ${{ secrets.egress_server_type }}
+      DB_SERVER_TYPE: ${{ secrets.db_server_type }}
+      K3S_NODE_SERVER_TYPE: ${{ secrets.k3s_node_server_type }}
+      K3S_NODE_COUNT: ${{ secrets.k3s_node_count }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.cloudflare_api_token }}
       WG_SERVER_PRIVATE_KEY: ${{ secrets.wg_server_private_key }}
       WG_SERVER_PUBLIC_KEY: ${{ secrets.wg_server_public_key }}
       WG_SERVER_ADDRESS: ${{ secrets.wg_server_address }}
@@ -55,7 +68,7 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml jsonschema
+          pip install pyyaml jsonschema requests
 
       - name: Read config values
         run: |
@@ -173,3 +186,9 @@ jobs:
 
       - name: Apply OpenTofu
         run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json
+
+      - name: Sync Cloudflare DNS
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          LB_IP=$(tofu -chdir=tofu output -raw load_balancer_public_ipv4)
+          python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP"

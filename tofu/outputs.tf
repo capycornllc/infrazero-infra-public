@@ -14,8 +14,7 @@ output "private_ips" {
   value = {
     bastion = var.servers.bastion.private_ip
     egress  = var.servers.egress.private_ip
-    node1   = var.servers.node1.private_ip
-    node2   = var.servers.node2.private_ip
+    k3s_nodes = [for node in var.k3s_nodes : node.private_ip]
     db      = var.servers.db.private_ip
   }
 }

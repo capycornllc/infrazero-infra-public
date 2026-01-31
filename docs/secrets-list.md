@@ -7,6 +7,13 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `cloud_region` (e.g. `nbg1`, `fsn1`, `hel1`, `ash`, `hil`, `sin`; used as fallback if `s3_region` is empty)
 - `s3_endpoint` (include scheme; workflows will prepend `https://` if missing)
 
+## 1.1) Server sizing
+- `bastion_server_type`
+- `egress_server_type`
+- `db_server_type`
+- `k3s_node_server_type`
+- `k3s_node_count`
+
 ## 2) GitHub Access
 - `github_username`
 - `github_infra_repo`
@@ -30,6 +37,16 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+
+## 4.1) Service FQDNs & DNS (Cloudflare)
+- `bastion_fqdn`
+- `grafana_fqdn`
+- `loki_fqdn`
+- `infisical_fqdn`
+- `db_fqdn`
+- `internal_services_domains_json`
+- `deployed_apps_json`
+- `cloudflare_api_token`
 
 ## 5) Object Storage / S3
 - `s3_access_key_id`

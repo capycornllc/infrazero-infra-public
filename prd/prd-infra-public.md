@@ -192,7 +192,15 @@ All secrets are stored as GitHub secrets (no Infisical):
 - `s3_endpoint`
 - `s3_region`
 - `ops_ssh_keys_json`
+- `bastion_server_type`
+- `egress_server_type`
+- `db_server_type`
+- `k3s_node_server_type`
+- `k3s_node_count`
 - WireGuard keys and peer JSON (if using WG)
+- Service FQDNs (`bastion_fqdn`, `grafana_fqdn`, `loki_fqdn`, `infisical_fqdn`, `db_fqdn`) or `internal_services_domains_json`
+- `deployed_apps_json`
+- `cloudflare_api_token` (DNS + ACME via DNS-01)
 - GitHub App + GHCR secrets (if Argo/GitOps is used)
 
 ## 10) OpenTofu module structure
@@ -250,10 +258,11 @@ Core resources:
 1) **Hardening baseline** (users, SSH, auditd, journald persistence, DNS fallback).
 2) **Grafana + Loki first** (all other bootstraps must forward logs here).
 3) **NAT/egress setup** + systemd service for persistence.
-4) **Self-hosted Infisical** with **local PostgreSQL** on egress, served over HTTPS on the egress private IP (e.g., https://10.10.0.11:8080) using a local CA-issued cert.
-5) **Infisical DB backups** to S3; **restore** latest dump at boot only when GitHub secret `infisical_restore_from_s3` is `true`.
-6) **Infisical bootstrap** is deferred to node1 (egress does not run the CLI bootstrap).
-7) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
+4) **Self-hosted Infisical** with **local PostgreSQL** on egress, served over HTTPS on the Infisical service FQDN using Let's Encrypt (Cloudflare DNS-01).
+5) **Grafana + Loki** exposed via service FQDNs with valid HTTPS certificates.
+6) **Infisical DB backups** to S3; **restore** latest dump at boot only when GitHub secret `infisical_restore_from_s3` is `true`.
+7) **Infisical bootstrap** is deferred to node1 (egress does not run the CLI bootstrap).
+8) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
 **Notes:**
 - Use a **latest-dump manifest** pattern (as in current repo) for Infisical DB restore.
 - **Age private keys are short-lived**: store only in tmpfs, delete after successful restore or if no dump found.

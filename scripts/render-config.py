@@ -83,12 +83,66 @@ def main() -> int:
     config["admin_users_json_b64"] = base64.b64encode(admin_users_json.encode("utf-8")).decode("utf-8")
 
     missing_env = []
+    errors = []
 
     def require_env(name: str) -> str:
         value = os.getenv(name, "").strip()
         if not value:
             missing_env.append(name)
         return value
+
+    def optional_env(name: str) -> str:
+        return os.getenv(name, "").strip()
+
+    def parse_int_env(name: str, minimum: int | None = None) -> int | None:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            errors.append(f"{name} must be an integer")
+            return None
+        if minimum is not None and value < minimum:
+            errors.append(f"{name} must be >= {minimum}")
+            return None
+        return value
+
+    def parse_json_env(name: str):
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{name} is not valid JSON: {exc}")
+            return None
+
+    k3s_nodes = config.get("k3s_nodes")
+    if not k3s_nodes:
+        servers_cfg = config.get("servers", {})
+        legacy_nodes = []
+        for key in ("node1", "node2"):
+            node = servers_cfg.get(key)
+            if node:
+                legacy_nodes.append(node)
+        if legacy_nodes:
+            k3s_nodes = legacy_nodes
+
+    if not isinstance(k3s_nodes, list):
+        errors.append("k3s_nodes must be a list")
+        k3s_nodes = []
+
+    k3s_node_count = parse_int_env("K3S_NODE_COUNT", minimum=1)
+    if k3s_node_count is None:
+        k3s_node_count = len(k3s_nodes)
+
+    if k3s_node_count < 1:
+        errors.append("K3S_NODE_COUNT must be >= 1")
+    if len(k3s_nodes) < k3s_node_count:
+        errors.append("k3s_nodes must include at least K3S_NODE_COUNT entries")
+
+    config["k3s_nodes"] = k3s_nodes[:k3s_node_count]
 
     s3_access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
     s3_secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
@@ -107,6 +161,11 @@ def main() -> int:
         missing_env.append("S3_SECRET_ACCESS_KEY")
     if not s3_endpoint:
         missing_env.append("S3_ENDPOINT")
+
+    bastion_server_type = require_env("BASTION_SERVER_TYPE")
+    egress_server_type = require_env("EGRESS_SERVER_TYPE")
+    db_server_type = require_env("DB_SERVER_TYPE")
+    k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
 
     infisical_restore_from_s3 = os.getenv("INFISICAL_RESTORE_FROM_S3", "").strip()
     if not infisical_restore_from_s3:
@@ -142,6 +201,74 @@ def main() -> int:
     if infisical_site_url:
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
 
+    internal_services = {}
+    internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
+    service_keys = ("bastion", "grafana", "loki", "infisical", "db")
+    if internal_services_json is not None:
+        if not isinstance(internal_services_json, dict):
+            errors.append("INTERNAL_SERVICES_DOMAINS_JSON must be a JSON object")
+        else:
+            missing_keys = [key for key in service_keys if key not in internal_services_json]
+            if missing_keys:
+                errors.append(f"INTERNAL_SERVICES_DOMAINS_JSON missing keys: {', '.join(missing_keys)}")
+            for key in service_keys:
+                value = internal_services_json.get(key)
+                if not isinstance(value, dict):
+                    errors.append(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
+                    continue
+                fqdn = str(value.get("fqdn", "")).strip()
+                if not fqdn:
+                    errors.append(f"INTERNAL_SERVICES_DOMAINS_JSON.{key}.fqdn is required")
+                    continue
+                internal_services[key] = fqdn
+    else:
+        env_map = {
+            "bastion": "BASTION_FQDN",
+            "grafana": "GRAFANA_FQDN",
+            "loki": "LOKI_FQDN",
+            "infisical": "INFISICAL_FQDN",
+            "db": "DB_FQDN",
+        }
+        for key, env_name in env_map.items():
+            fqdn = optional_env(env_name)
+            if fqdn:
+                internal_services[key] = fqdn
+
+    deployed_apps = []
+    deployed_apps_json = parse_json_env("DEPLOYED_APPS_JSON")
+    if deployed_apps_json is not None:
+        if not isinstance(deployed_apps_json, list):
+            errors.append("DEPLOYED_APPS_JSON must be a JSON array")
+        else:
+            for idx, app in enumerate(deployed_apps_json):
+                if not isinstance(app, dict):
+                    errors.append(f"DEPLOYED_APPS_JSON[{idx}] must be an object")
+                    continue
+                fqdn = str(app.get("fqdn", "")).strip()
+                if not fqdn:
+                    errors.append(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required")
+                    continue
+                deployed_apps.append(app)
+
+    cloudflare_api_token = optional_env("CLOUDFLARE_API_TOKEN")
+    if (internal_services or deployed_apps) and not cloudflare_api_token:
+        missing_env.append("CLOUDFLARE_API_TOKEN")
+
+    if cloudflare_api_token:
+        egress_secrets["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
+
+    infisical_fqdn = internal_services.get("infisical", "")
+    grafana_fqdn = internal_services.get("grafana", "")
+    loki_fqdn = internal_services.get("loki", "")
+    if infisical_fqdn:
+        egress_secrets["INFISICAL_FQDN"] = infisical_fqdn
+    if grafana_fqdn:
+        egress_secrets["GRAFANA_FQDN"] = grafana_fqdn
+    if loki_fqdn:
+        egress_secrets["LOKI_FQDN"] = loki_fqdn
+    if not infisical_site_url and infisical_fqdn:
+        egress_secrets["INFISICAL_SITE_URL"] = f"https://{infisical_fqdn}"
+
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
     if environment:
@@ -157,6 +284,19 @@ def main() -> int:
         "WG_ADMIN_PEERS_JSON": require_env("WG_ADMIN_PEERS_JSON"),
         "WG_PRESHARED_KEYS_JSON": require_env("WG_PRESHARED_KEYS_JSON"),
     }
+
+    config["bastion_server_type"] = bastion_server_type
+    config["egress_server_type"] = egress_server_type
+    config["db_server_type"] = db_server_type
+    config["k3s_node_server_type"] = k3s_node_server_type
+    config["internal_services_domains"] = {key: {"fqdn": value} for key, value in internal_services.items()}
+    config["deployed_apps"] = deployed_apps
+
+    if errors:
+        print("Config rendering failed:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
 
     if missing_env:
         missing_env = sorted(set(missing_env))

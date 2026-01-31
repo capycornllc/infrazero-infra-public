@@ -15,7 +15,8 @@ Must include (order-sensitive):
 - Hardening baseline (users, SSH, auditd, journald, DNS fallback).
 - Grafana + Loki first; all other roles forward logs here.
 - NAT/egress setup with persistence.
-- Self-hosted Infisical with local Postgres; UI served over HTTPS on the egress private IP (e.g., https://10.10.0.11:8080) using a local CA-issued cert.
+- Self-hosted Infisical with local Postgres; UI served over HTTPS on the Infisical service FQDN using Let's Encrypt (Cloudflare DNS-01).
+- Grafana and Loki exposed via service FQDNs with valid HTTPS certificates.
 - Infisical DB backups to S3; restore from latest-dump manifest only when GitHub secret `infisical_restore_from_s3` is `true`.
 - Infisical bootstrap is deferred to node1 (egress does not run the CLI bootstrap).
 - Admin access path to Infisical UI (port forwarding or restricted ingress).

@@ -46,7 +46,7 @@ export AWS_DEFAULT_REGION="$S3_REGION"
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip openssl
+  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare
 fi
 
 systemctl enable --now docker
@@ -65,7 +65,7 @@ compose_cmd() {
   fi
 }
 
-mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups /opt/infrazero/infisical/certs
+mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups
 
 cat > /opt/infrazero/egress/loki-config.yaml <<'EOF'
 auth_enabled: false
@@ -188,12 +188,25 @@ systemctl daemon-reload
 systemctl enable --now infrazero-iptables.service
 
 # Infisical + Postgres + Redis
-INFISICAL_CERT_IP=${INFISICAL_CERT_IP:-"$PRIVATE_IP"}
+INFISICAL_FQDN="${INFISICAL_FQDN:-}"
+GRAFANA_FQDN="${GRAFANA_FQDN:-}"
+LOKI_FQDN="${LOKI_FQDN:-}"
+LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-${INFISICAL_EMAIL}}"
 INFISICAL_BIND_ADDR=${INFISICAL_BIND_ADDR:-"$PRIVATE_IP"}
-INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-"https://${INFISICAL_CERT_IP}:8080"}
-if [ -n "${INFISICAL_SITE_URL:-}" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
-  echo "[egress] INFISICAL_SITE_URL must be https; overriding to https://${INFISICAL_CERT_IP}:8080"
-  INFISICAL_SITE_URL="https://${INFISICAL_CERT_IP}:8080"
+INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-""}
+if [ -z "$INFISICAL_SITE_URL" ]; then
+  if [ -n "$INFISICAL_FQDN" ]; then
+    INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
+  else
+    INFISICAL_SITE_URL="http://${INFISICAL_BIND_ADDR}:8080"
+  fi
+fi
+if [ -n "$INFISICAL_FQDN" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
+  echo "[egress] INFISICAL_SITE_URL must be https for FQDN; overriding to https://${INFISICAL_FQDN}"
+  INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
+fi
+if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ]; then
+  require_env "CLOUDFLARE_API_TOKEN"
 fi
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
 REDIS_URL="redis://redis:6379"
@@ -211,101 +224,113 @@ POSTGRES_USER=${INFISICAL_POSTGRES_USER}
 POSTGRES_PASSWORD=${INFISICAL_POSTGRES_PASSWORD}
 EOF
 
-INFISICAL_CERTS_DIR="/opt/infrazero/infisical/certs"
-INFISICAL_CA_CERT="${INFISICAL_CERTS_DIR}/ca.crt"
-INFISICAL_CA_KEY="${INFISICAL_CERTS_DIR}/ca.key"
-INFISICAL_SERVER_CERT="${INFISICAL_CERTS_DIR}/infisical.crt"
-INFISICAL_SERVER_KEY="${INFISICAL_CERTS_DIR}/infisical.key"
-INFISICAL_OPENSSL_CONF="${INFISICAL_CERTS_DIR}/openssl.cnf"
+INFISICAL_TLS_CERT="/etc/letsencrypt/live/infrazero-services/fullchain.pem"
+INFISICAL_TLS_KEY="/etc/letsencrypt/live/infrazero-services/privkey.pem"
+INFISICAL_NGINX_CONF="/etc/nginx/conf.d/infrazero-services.conf"
+INFISICAL_UPSTREAM_ADDR="${INFISICAL_BIND_ADDR}"
+if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
+  INFISICAL_UPSTREAM_ADDR="127.0.0.1"
+fi
 
-setup_infisical_tls() {
-  mkdir -p "$INFISICAL_CERTS_DIR"
-  chmod 700 "$INFISICAL_CERTS_DIR"
-
-  if [ ! -f "$INFISICAL_CA_CERT" ] || [ ! -f "$INFISICAL_CA_KEY" ]; then
-    echo "[egress] generating infisical CA"
-    openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
-      -subj "/CN=Infisical Local CA" \
-      -keyout "$INFISICAL_CA_KEY" \
-      -out "$INFISICAL_CA_CERT"
-    chmod 600 "$INFISICAL_CA_KEY"
-    chmod 644 "$INFISICAL_CA_CERT"
-  else
-    echo "[egress] infisical CA already present"
-  fi
-
-  if [ ! -f "$INFISICAL_SERVER_CERT" ] || [ ! -f "$INFISICAL_SERVER_KEY" ]; then
-    echo "[egress] generating infisical TLS cert for ${INFISICAL_CERT_IP}"
-    cat > "$INFISICAL_OPENSSL_CONF" <<EOF
-[req]
-distinguished_name=req_distinguished_name
-req_extensions=v3_req
-prompt=no
-
-[req_distinguished_name]
-CN=infisical
-
-[v3_req]
-keyUsage=keyEncipherment, dataEncipherment, digitalSignature
-extendedKeyUsage=serverAuth
-subjectAltName=@alt_names
-
-[alt_names]
-IP.1=${INFISICAL_CERT_IP}
-EOF
-    openssl req -new -newkey rsa:4096 -nodes \
-      -keyout "$INFISICAL_SERVER_KEY" \
-      -out "${INFISICAL_CERTS_DIR}/infisical.csr" \
-      -config "$INFISICAL_OPENSSL_CONF"
-    openssl x509 -req \
-      -in "${INFISICAL_CERTS_DIR}/infisical.csr" \
-      -CA "$INFISICAL_CA_CERT" \
-      -CAkey "$INFISICAL_CA_KEY" \
-      -CAcreateserial \
-      -out "$INFISICAL_SERVER_CERT" \
-      -days 825 \
-      -extensions v3_req \
-      -extfile "$INFISICAL_OPENSSL_CONF"
-    rm -f "${INFISICAL_CERTS_DIR}/infisical.csr"
-    chmod 600 "$INFISICAL_SERVER_KEY"
-    chmod 644 "$INFISICAL_SERVER_CERT"
-  else
-    echo "[egress] infisical TLS cert already present"
-  fi
-
-  if [ -d /usr/local/share/ca-certificates ]; then
-    cp "$INFISICAL_CA_CERT" /usr/local/share/ca-certificates/infisical-local-ca.crt
-    update-ca-certificates >/dev/null 2>&1 || true
-  fi
-
-  echo "[egress] infisical CA cert at ${INFISICAL_CA_CERT}"
-  echo "[egress] import this CA cert into your client trust store to avoid browser warnings"
+write_https_server_block() {
+  local name="$1"
+  local upstream="$2"
+  cat >> "$INFISICAL_NGINX_CONF" <<EOF
+server {
+  listen 80;
+  server_name ${name};
+  return 301 https://\$host\$request_uri;
 }
 
-setup_infisical_tls
-
-cat > /opt/infrazero/infisical/nginx.conf <<'EOF'
 server {
-  listen 8080 ssl;
-  server_name _;
+  listen 443 ssl;
+  server_name ${name};
 
-  ssl_certificate /etc/nginx/certs/infisical.crt;
-  ssl_certificate_key /etc/nginx/certs/infisical.key;
+  ssl_certificate ${INFISICAL_TLS_CERT};
+  ssl_certificate_key ${INFISICAL_TLS_KEY};
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_ciphers HIGH:!aNULL:!MD5;
 
   location / {
-    proxy_pass http://infisical:8080;
+    proxy_pass ${upstream};
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection "upgrade";
   }
 }
 EOF
+}
+
+setup_service_tls() {
+  local domains=()
+  if [ -n "$INFISICAL_FQDN" ]; then
+    domains+=("$INFISICAL_FQDN")
+  fi
+  if [ -n "$GRAFANA_FQDN" ]; then
+    domains+=("$GRAFANA_FQDN")
+  fi
+  if [ -n "$LOKI_FQDN" ]; then
+    domains+=("$LOKI_FQDN")
+  fi
+
+  if [ "${#domains[@]}" -eq 0 ]; then
+    echo "[egress] no service FQDNs set; skipping Let's Encrypt"
+    return 0
+  fi
+
+  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    echo "[egress] CLOUDFLARE_API_TOKEN not set; skipping Let's Encrypt"
+    return 0
+  fi
+
+  mkdir -p /etc/letsencrypt /etc/letsencrypt/renewal-hooks/deploy
+  umask 077
+  cat > /etc/letsencrypt/cloudflare.ini <<EOF
+dns_cloudflare_api_token = ${CLOUDFLARE_API_TOKEN}
+EOF
+  umask 022
+
+  local domain_args=()
+  for domain in "${domains[@]}"; do
+    domain_args+=("-d" "$domain")
+  done
+
+  if certbot certonly --non-interactive --agree-tos --email "$LETSENCRYPT_EMAIL" \
+    --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+    --dns-cloudflare-propagation-seconds 30 \
+    --cert-name infrazero-services --expand "${domain_args[@]}"; then
+    echo "[egress] Let's Encrypt cert issued for ${domains[*]}"
+  else
+    echo "[egress] Let's Encrypt issuance failed" >&2
+    return 1
+  fi
+
+  cat > /etc/letsencrypt/renewal-hooks/deploy/infrazero-nginx-reload.sh <<'EOF'
+#!/usr/bin/env bash
+systemctl reload nginx
+EOF
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/infrazero-nginx-reload.sh
+
+  : > "$INFISICAL_NGINX_CONF"
+  if [ -n "$INFISICAL_FQDN" ]; then
+    write_https_server_block "$INFISICAL_FQDN" "http://${INFISICAL_UPSTREAM_ADDR}:8080"
+  fi
+  if [ -n "$GRAFANA_FQDN" ]; then
+    write_https_server_block "$GRAFANA_FQDN" "http://127.0.0.1:3000"
+  fi
+  if [ -n "$LOKI_FQDN" ]; then
+    write_https_server_block "$LOKI_FQDN" "http://127.0.0.1:3100"
+  fi
+
+  nginx -t
+  systemctl enable --now nginx
+  systemctl reload nginx
+  systemctl enable --now certbot.timer || true
+}
 
 cat > /opt/infrazero/infisical/docker-compose.yml <<EOF
 version: "3.8"
@@ -326,16 +351,8 @@ services:
     depends_on:
       - infisical-db
       - redis
-  infisical-proxy:
-    image: nginx:1.25-alpine
-    restart: unless-stopped
-    depends_on:
-      - infisical
     ports:
       - "${INFISICAL_BIND_ADDR}:8080:8080"
-    volumes:
-      - /opt/infrazero/infisical/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - /opt/infrazero/infisical/certs:/etc/nginx/certs:ro
 EOF
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
@@ -403,9 +420,15 @@ else
   echo "[egress] infisical_restore_from_s3 not true; skipping restore"
 fi
 
-compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical infisical-proxy
+compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 
-echo "[egress] infisical https enabled at ${INFISICAL_SITE_URL}"
+setup_service_tls || true
+
+if [ -n "$INFISICAL_FQDN" ]; then
+  echo "[egress] infisical https enabled at https://${INFISICAL_FQDN}"
+else
+  echo "[egress] infisical https not configured (missing INFISICAL_FQDN)"
+fi
 echo "[egress] infisical bootstrap deferred to node1"
 
 cat > /opt/infrazero/infisical/backup.sh <<'EOF'

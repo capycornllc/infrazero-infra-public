@@ -32,17 +32,10 @@ resource "hcloud_placement_group" "egress" {
   type = var.placement_groups.type
 }
 
-resource "hcloud_placement_group" "node1" {
+resource "hcloud_placement_group" "k3s" {
   count = var.placement_groups.enabled ? 1 : 0
 
-  name = "${var.name_prefix}-node1-pg"
-  type = var.placement_groups.type
-}
-
-resource "hcloud_placement_group" "node2" {
-  count = var.placement_groups.enabled ? 1 : 0
-
-  name = "${var.name_prefix}-node2-pg"
+  name = "${var.name_prefix}-k3s-pg"
   type = var.placement_groups.type
 }
 
@@ -56,8 +49,7 @@ resource "hcloud_placement_group" "db" {
 locals {
   pg_bastion_id = var.placement_groups.enabled ? hcloud_placement_group.bastion[0].id : null
   pg_egress_id  = var.placement_groups.enabled ? hcloud_placement_group.egress[0].id : null
-  pg_node1_id   = var.placement_groups.enabled ? hcloud_placement_group.node1[0].id : null
-  pg_node2_id   = var.placement_groups.enabled ? hcloud_placement_group.node2[0].id : null
+  pg_k3s_id     = var.placement_groups.enabled ? hcloud_placement_group.k3s[0].id : null
   pg_db_id      = var.placement_groups.enabled ? hcloud_placement_group.db[0].id : null
 }
 
@@ -165,8 +157,8 @@ resource "hcloud_firewall" "egress" {
   }
 }
 
-resource "hcloud_firewall" "node1" {
-  name = "${var.name_prefix}-node1-fw"
+resource "hcloud_firewall" "k3s_server" {
+  name = "${var.name_prefix}-k3s-server-fw"
 
   rule {
     direction  = "in"
@@ -186,28 +178,37 @@ resource "hcloud_firewall" "node1" {
     direction  = "in"
     protocol   = "tcp"
     port       = "6443"
-    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.node2_cidr])
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr], local.k3s_agent_cidrs)
   }
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "9345"
-    source_ips = [local.node2_cidr]
+  dynamic "rule" {
+    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
+    content {
+      direction  = "in"
+      protocol   = "tcp"
+      port       = "9345"
+      source_ips = local.k3s_agent_cidrs
+    }
   }
 
-  rule {
-    direction  = "in"
-    protocol   = "udp"
-    port       = "8472"
-    source_ips = [local.node2_cidr]
+  dynamic "rule" {
+    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
+    content {
+      direction  = "in"
+      protocol   = "udp"
+      port       = "8472"
+      source_ips = local.k3s_agent_cidrs
+    }
   }
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "10250"
-    source_ips = [local.node2_cidr]
+  dynamic "rule" {
+    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
+    content {
+      direction  = "in"
+      protocol   = "tcp"
+      port       = "10250"
+      source_ips = local.k3s_agent_cidrs
+    }
   }
 
   rule {
@@ -224,21 +225,21 @@ resource "hcloud_firewall" "node1" {
   }
 }
 
-resource "hcloud_firewall" "node2" {
-  name = "${var.name_prefix}-node2-fw"
+resource "hcloud_firewall" "k3s_agent" {
+  name = "${var.name_prefix}-k3s-agent-fw"
 
   rule {
     direction  = "in"
     protocol   = "udp"
     port       = "8472"
-    source_ips = [local.node1_cidr]
+    source_ips = [local.k3s_server_cidr]
   }
 
   rule {
     direction  = "in"
     protocol   = "tcp"
     port       = "10250"
-    source_ips = [local.node1_cidr]
+    source_ips = [local.k3s_server_cidr]
   }
 
   rule {
@@ -262,7 +263,7 @@ resource "hcloud_firewall" "db" {
     direction  = "in"
     protocol   = "tcp"
     port       = "5432"
-    source_ips = [local.node1_cidr, local.node2_cidr]
+    source_ips = local.k3s_node_cidrs
   }
 
   rule {
@@ -282,7 +283,7 @@ resource "hcloud_firewall" "db" {
 resource "hcloud_server" "bastion" {
   name        = "${var.name_prefix}-bastion"
   image       = var.server_image
-  server_type = var.servers.bastion.type
+  server_type = var.bastion_server_type
   location    = var.location
 
   public_net {
@@ -329,7 +330,7 @@ resource "hcloud_server" "bastion" {
 resource "hcloud_server" "egress" {
   name        = "${var.name_prefix}-egress"
   image       = var.server_image
-  server_type = var.servers.egress.type
+  server_type = var.egress_server_type
   location    = var.location
 
   public_net {
@@ -370,29 +371,31 @@ resource "hcloud_server" "egress" {
   depends_on = [hcloud_network_subnet.main]
 }
 
-resource "hcloud_server" "node1" {
-  name        = "${var.name_prefix}-node1"
+resource "hcloud_server" "k3s" {
+  for_each = local.k3s_nodes_map
+
+  name        = "${var.name_prefix}-node${tonumber(each.key) + 1}"
   image       = var.server_image
-  server_type = var.servers.node1.type
+  server_type = var.k3s_node_server_type
   location    = var.location
 
   public_net {
-    ipv4_enabled = var.servers.node1.public_ipv4
-    ipv6_enabled = var.servers.node1.public_ipv6
+    ipv4_enabled = each.value.public_ipv4
+    ipv6_enabled = each.value.public_ipv6
   }
 
   network {
     network_id = hcloud_network.main.id
-    ip         = var.servers.node1.private_ip
+    ip         = each.value.private_ip
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.node1.id]
-  placement_group_id = local.pg_node1_id
+  firewall_ids       = [each.key == local.k3s_server_key ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
+  placement_group_id = local.pg_k3s_id
   user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = "node1"
-    bootstrap_url   = var.bootstrap_artifacts["node1"].url
-    bootstrap_sha256 = var.bootstrap_artifacts["node1"].sha256
+    bootstrap_role  = each.key == local.k3s_server_key ? "node1" : "node2"
+    bootstrap_url   = var.bootstrap_artifacts[each.key == local.k3s_server_key ? "node1" : "node2"].url
+    bootstrap_sha256 = var.bootstrap_artifacts[each.key == local.k3s_server_key ? "node1" : "node2"].sha256
     db_volume_name  = var.db_volume.name
     db_volume_format = var.db_volume.format
     private_cidr    = var.private_cidr
@@ -408,51 +411,7 @@ resource "hcloud_server" "node1" {
   labels = {
     project     = var.project
     environment = var.environment
-    role        = "node1"
-  }
-
-  depends_on = [hcloud_network_subnet.main]
-}
-
-resource "hcloud_server" "node2" {
-  name        = "${var.name_prefix}-node2"
-  image       = var.server_image
-  server_type = var.servers.node2.type
-  location    = var.location
-
-  public_net {
-    ipv4_enabled = var.servers.node2.public_ipv4
-    ipv6_enabled = var.servers.node2.public_ipv6
-  }
-
-  network {
-    network_id = hcloud_network.main.id
-    ip         = var.servers.node2.private_ip
-  }
-
-  ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.node2.id]
-  placement_group_id = local.pg_node2_id
-  user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = "node2"
-    bootstrap_url   = var.bootstrap_artifacts["node2"].url
-    bootstrap_sha256 = var.bootstrap_artifacts["node2"].sha256
-    db_volume_name  = var.db_volume.name
-    db_volume_format = var.db_volume.format
-    private_cidr    = var.private_cidr
-    bastion_private_ip = var.servers.bastion.private_ip
-    wg_server_address = var.wg_server_address
-    wg_cidr         = var.wireguard.allowed_cidrs[0]
-    admin_users_json_b64 = var.admin_users_json_b64
-    egress_env      = []
-    db_backup_age_private_key = ""
-    bastion_env     = []
-  })
-
-  labels = {
-    project     = var.project
-    environment = var.environment
-    role        = "node2"
+    role        = each.key == local.k3s_server_key ? "node1" : "node${tonumber(each.key) + 1}"
   }
 
   depends_on = [hcloud_network_subnet.main]
@@ -461,7 +420,7 @@ resource "hcloud_server" "node2" {
 resource "hcloud_server" "db" {
   name        = "${var.name_prefix}-db"
   image       = var.server_image
-  server_type = var.servers.db.type
+  server_type = var.db_server_type
   location    = var.location
 
   public_net {
@@ -523,10 +482,10 @@ resource "hcloud_load_balancer_network" "main" {
   ip               = var.load_balancer.private_ip
 }
 
-resource "hcloud_load_balancer_target" "node1" {
+resource "hcloud_load_balancer_target" "k3s_server" {
   type             = "server"
   load_balancer_id = hcloud_load_balancer.main.id
-  server_id        = hcloud_server.node1.id
+  server_id        = hcloud_server.k3s[local.k3s_server_key].id
   use_private_ip   = true
 }
 
