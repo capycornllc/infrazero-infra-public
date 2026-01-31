@@ -36,7 +36,7 @@ write_files:
         echo "[bootstrap] waiting for bootstrap URL to be reachable"
         for i in {1..60}; do
           local code
-          code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+          code=$(curl -s -o /dev/null -w "%%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
           if [ -n "$code" ] && [ "$code" != "000" ]; then
             echo "[bootstrap] bootstrap URL reachable (http ${code})"
             return 0

@@ -109,6 +109,18 @@ variable "k3s" {
   })
 }
 
+variable "argocd" {
+  type = object({
+    repo_url              = optional(string)
+    path                  = optional(string)
+    target_revision       = optional(string)
+    app_name              = optional(string)
+    project               = optional(string)
+    destination_namespace = optional(string)
+  })
+  default = {}
+}
+
 variable "s3_backend" {
   type = object({
     state_prefix = string
