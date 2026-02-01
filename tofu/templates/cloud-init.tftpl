@@ -194,6 +194,7 @@ write_files:
       echo "[bootstrap] extracting $ROLE artifact"
       tar --zstd -xf "$ROLE.tar.zst"
       chmod +x common.sh "$ROLE.sh"
+      sed -i 's/\r$//' common.sh "$ROLE.sh" || true
 
       echo "[bootstrap] running common + role scripts"
       ./common.sh
