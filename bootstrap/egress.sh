@@ -14,6 +14,14 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+NETWORK_ENV="/etc/infrazero/network.env"
+if [ -f "$NETWORK_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NETWORK_ENV"
+  set +a
+fi
+
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -148,6 +156,11 @@ net.ipv4.ip_forward=1
 EOF
 sysctl --system
 
+PRIVATE_CIDR="${PRIVATE_CIDR:-}"
+if [ -z "$PRIVATE_CIDR" ]; then
+  echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
+fi
+
 PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
 
@@ -162,12 +175,19 @@ if [ -z "$PRIVATE_IP" ]; then
   exit 1
 fi
 
-iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
-  || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
-iptables -C FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \
-  || iptables -A FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
-iptables -C FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT \
-  || iptables -A FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+CHAIN="DOCKER-USER"
+if ! iptables -S "$CHAIN" >/dev/null 2>&1; then
+  CHAIN="FORWARD"
+fi
+
+if [ -n "$PRIVATE_CIDR" ]; then
+  iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
+    || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
+  iptables -C "$CHAIN" -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \
+    || iptables -I "$CHAIN" 1 -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
+  iptables -C "$CHAIN" -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT \
+    || iptables -I "$CHAIN" 1 -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+fi
 
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
