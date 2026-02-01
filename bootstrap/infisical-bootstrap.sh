@@ -6,6 +6,13 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[infisical-bootstrap] $(date -Is) start"
 
+LOCK_FILE="/var/lock/infisical-bootstrap.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[infisical-bootstrap] another instance is running; exiting"
+  exit 0
+fi
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -104,20 +111,28 @@ wait_for_url() {
   for _ in {1..60}; do
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
-    if [ -n "$code" ] && [ "$code" != "000" ]; then
-      return 0
-    fi
+    case "$code" in
+      200|301|302|401|403|404)
+        return 0
+        ;;
+      502|503|504|000|"")
+        ;;
+      *)
+        # Non-retryable response from upstream
+        return 0
+        ;;
+    esac
     sleep 5
   done
   return 1
 }
 
 wait_for_url "https://${INFISICAL_FQDN}" || {
-  echo "[infisical-bootstrap] infisical_fqdn not reachable" >&2
+  echo "[infisical-bootstrap] infisical_fqdn not ready (still returning 5xx/000)" >&2
   exit 1
 }
 wait_for_url "${INFISICAL_SITE_URL}" || {
-  echo "[infisical-bootstrap] INFISICAL_SITE_URL not reachable" >&2
+  echo "[infisical-bootstrap] INFISICAL_SITE_URL not ready (still returning 5xx/000)" >&2
   exit 1
 }
 
@@ -144,10 +159,23 @@ bootstrap_payload=$(jq -n \
   '{email:$email, password:$password, organization:$org}')
 
 bootstrap_tmp=$(mktemp)
-bootstrap_code=$(curl -sS -o "$bootstrap_tmp" -w "%{http_code}" \
-  -H "Content-Type: application/json" \
-  -d "$bootstrap_payload" \
-  "${INFISICAL_API_BASE}/v1/admin/bootstrap" || true)
+bootstrap_code=""
+for _ in {1..30}; do
+  bootstrap_code=$(curl -sS -o "$bootstrap_tmp" -w "%{http_code}" \
+    --connect-timeout 5 --max-time 15 \
+    -H "Content-Type: application/json" \
+    -d "$bootstrap_payload" \
+    "${INFISICAL_API_BASE}/v1/admin/bootstrap" || true)
+  case "$bootstrap_code" in
+    502|503|504|000|"")
+      echo "[infisical-bootstrap] bootstrap endpoint not ready (http ${bootstrap_code}); retrying"
+      sleep 5
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [[ "$bootstrap_code" != 2* ]]; then
   message=$(jq -r '.message // empty' "$bootstrap_tmp" 2>/dev/null || true)
