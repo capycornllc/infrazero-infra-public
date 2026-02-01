@@ -33,8 +33,9 @@ write_files:
       cd "$WORKDIR"
 
       ensure_private_default_route() {
+        local has_default="false"
         if ip route show default | grep -q "^default"; then
-          return 0
+          has_default="true"
         fi
 
         local private_gw=""
@@ -97,8 +98,18 @@ write_files:
 
         ip link set dev "$priv_if" up || true
         ip route replace "$private_gw/32" dev "$priv_if" scope link || true
-        ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
-        echo "[bootstrap] default route set via $private_gw on $priv_if"
+
+        local prefix_len=""
+        prefix_len=$(ip -4 -o addr show "$priv_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
+        if [ "$prefix_len" = "32" ]; then
+          ip route del "$PRIVATE_CIDR" dev "$priv_if" 2>/dev/null || true
+          ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+        fi
+
+        if [ "$has_default" != "true" ]; then
+          ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
+          echo "[bootstrap] default route set via $private_gw on $priv_if"
+        fi
       }
 
       wait_for_bootstrap_url() {
