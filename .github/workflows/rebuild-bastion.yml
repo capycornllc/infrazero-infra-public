@@ -34,6 +34,7 @@ jobs:
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
       INFISICAL_BOOTSTRAP_SECRETS: ${{ secrets.infisical_bootstrap_secrets }}
+      INFISICAL_PROJECT_NAME: ${{ secrets.infisical_project_name }}
       BASTION_FQDN: ${{ secrets.bastion_fqdn }}
       GRAFANA_FQDN: ${{ secrets.grafana_fqdn }}
       LOKI_FQDN: ${{ secrets.loki_fqdn }}

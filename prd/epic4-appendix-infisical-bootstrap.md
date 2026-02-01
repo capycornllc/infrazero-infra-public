@@ -15,6 +15,7 @@ This appendix defines the workflow and required inputs; implementation will be i
 Required on node1:
 - `INFISICAL_SITE_URL` (or `INFISICAL_FQDN` to build it)
 - `INFISICAL_EMAIL`, `INFISICAL_PASSWORD`, `INFISICAL_ORGANIZATION`, `INFISICAL_NAME`, `INFISICAL_SURNAME`
+- `INFISICAL_PROJECT_NAME` (project to create in Infisical)
 - `INFISICAL_RESTORE_FROM_S3` (`true`/`false`)
 - `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_REGION`
 - `DB_BACKUP_BUCKET`
@@ -118,6 +119,16 @@ curl -H "Authorization: Bearer $TOKEN" \
 Create:
 - **Admin token** (full access)
 - **Read-only token** (read-only permissions for CSI usage)
+
+Before creating the read-only token, **attach Token Auth** to the machine identity:
+```
+POST /api/v1/auth/token-auth/identities/<identityId>
+```
+
+Then create the token:
+```
+POST /api/v1/auth/token-auth/identities/<identityId>/tokens
+```
 
 ### 7) Encrypt and Store Tokens in S3
 Encrypt each token with Age using `DB_BACKUP_AGE_PUBLIC_KEY`:

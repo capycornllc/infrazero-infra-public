@@ -193,6 +193,8 @@ def main() -> int:
         infisical_restore_from_s3 = "false"
     restore_requested = infisical_restore_from_s3.lower() == "true"
 
+    infisical_project_name = require_env("INFISICAL_PROJECT_NAME")
+
     infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
     infisical_bootstrap_secrets = ""
     if infisical_bootstrap_secrets_raw:
@@ -435,6 +437,8 @@ def main() -> int:
         k3s_server_secrets["PROJECT_SLUG"] = project_slug
     if environment:
         k3s_server_secrets["ENVIRONMENT"] = environment
+    if infisical_project_name:
+        k3s_server_secrets["INFISICAL_PROJECT_NAME"] = infisical_project_name
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type

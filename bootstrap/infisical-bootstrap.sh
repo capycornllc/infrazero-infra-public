@@ -70,6 +70,7 @@ require_env "DB_BACKUP_AGE_PUBLIC_KEY"
 require_env "INFISICAL_EMAIL"
 require_env "INFISICAL_PASSWORD"
 require_env "INFISICAL_ORGANIZATION"
+require_env "INFISICAL_PROJECT_NAME"
 
 if [ -z "$INFISICAL_FQDN" ]; then
   echo "[infisical-bootstrap] INFISICAL_FQDN not set; cannot verify readiness" >&2
@@ -198,9 +199,13 @@ if [ -z "$ADMIN_TOKEN" ] || [ -z "$ADMIN_IDENTITY_ID" ] || [ -z "$ORG_ID" ]; the
   exit 1
 fi
 
-PROJECT_SLUG="${INFISICAL_PROJECT_SLUG:-${PROJECT_SLUG:-}}"
+PROJECT_NAME="${INFISICAL_PROJECT_NAME}"
+PROJECT_SLUG="${INFISICAL_PROJECT_SLUG:-}"
 if [ -z "$PROJECT_SLUG" ]; then
-  echo "[infisical-bootstrap] INFISICAL_PROJECT_SLUG or PROJECT_SLUG is required" >&2
+  PROJECT_SLUG=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+fi
+if [ -z "$PROJECT_SLUG" ]; then
+  echo "[infisical-bootstrap] unable to derive project slug" >&2
   exit 1
 fi
 
@@ -210,10 +215,12 @@ project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
   "${INFISICAL_API_BASE}/v1/projects/slug/${PROJECT_SLUG}" || true)
 
 if [ "$project_code" = "404" ]; then
+  project_description="${INFISICAL_PROJECT_DESCRIPTION:-${PROJECT_NAME} secrets}"
   create_payload=$(jq -n \
-    --arg name "$PROJECT_SLUG" \
+    --arg name "$PROJECT_NAME" \
     --arg slug "$PROJECT_SLUG" \
-    '{projectName:$name, slug:$slug, type:"secret-manager", shouldCreateDefaultEnvs:true}')
+    --arg desc "$project_description" \
+    '{projectName:$name, projectDescription:$desc, slug:$slug, template:"default", type:"secret-manager", shouldCreateDefaultEnvs:false}')
   project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
@@ -235,6 +242,20 @@ fi
 
 existing_envs=$(jq -r '.environments[]?.slug' "$project_tmp" 2>/dev/null | tr '\n' ' ')
 
+declare -a default_envs=("dev:Development:1" "staging:Staging:2" "prod:Production:3")
+for env_def in "${default_envs[@]}"; do
+  IFS=":" read -r env_slug env_name env_pos <<< "$env_def"
+  if echo "$existing_envs" | grep -qw "$env_slug"; then
+    continue
+  fi
+  env_payload=$(jq -n --arg name "$env_name" --arg slug "$env_slug" --argjson pos "$env_pos" '{name:$name, slug:$slug, position:$pos}')
+  curl -sS -o /dev/null \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$env_payload" \
+    "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/environments" || true
+done
+
 if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
   env_list=$(echo "$INFISICAL_BOOTSTRAP_SECRETS" | jq -r '
     [to_entries[] | .value[] | to_entries[] | .value | keys[]] | unique[]' 2>/dev/null)
@@ -245,18 +266,6 @@ fi
 if [ -z "$env_list" ]; then
   env_list="dev"
 fi
-
-for env_slug in $env_list; do
-  if echo "$existing_envs" | grep -qw "$env_slug"; then
-    continue
-  fi
-  env_payload=$(jq -n --arg name "$env_slug" --arg slug "$env_slug" '{name:$name, slug:$slug}')
-  curl -sS -o /dev/null \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$env_payload" \
-    "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/environments" || true
-done
 
 ensure_folder_path() {
   local env_slug="$1"
@@ -420,6 +429,27 @@ curl -sS -o /dev/null \
   -H "Content-Type: application/json" \
   -d "$membership_payload" \
   "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/memberships/identities/${READONLY_IDENTITY_ID}" || true
+
+token_auth_check=$(mktemp)
+token_auth_code=$(curl -sS -o "$token_auth_check" -w "%{http_code}" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${INFISICAL_API_BASE}/v1/auth/token-auth/identities/${READONLY_IDENTITY_ID}" || true)
+if [[ "$token_auth_code" != 2* ]]; then
+  token_auth_payload=$(jq -n '{
+    accessTokenTTL: 2592000,
+    accessTokenMaxTTL: 7776000,
+    accessTokenTrustedIps: [
+      {ipAddress: "0.0.0.0/0"},
+      {ipAddress: "::/0"}
+    ]
+  }')
+  curl -sS -o /dev/null \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$token_auth_payload" \
+    "${INFISICAL_API_BASE}/v1/auth/token-auth/identities/${READONLY_IDENTITY_ID}" || true
+fi
+rm -f "$token_auth_check"
 
 token_payload=$(jq -n --arg name "${readonly_identity_name}-token" '{name:$name}')
 token_tmp=$(mktemp)

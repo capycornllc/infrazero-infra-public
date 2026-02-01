@@ -39,6 +39,7 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `k3s_node_count` (optional; defaults to the number of `k3s_nodes`)
 - `k3s_join_token`
 - `infisical_password`
+- `infisical_project_name`
 - `infisical_email`
 - `infisical_organization`
 - `infisical_name`
