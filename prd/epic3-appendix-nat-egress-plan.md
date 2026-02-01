@@ -92,3 +92,43 @@ This plan defaults to **SNAT-enabled WG** for maximum robustness (no dependency 
 - **WG breakage** if bastion policy routing prefers egress for WG/public replies: mitigated by explicit WG/public `ip rule` ordering.
 - **No egress** if default route script miscomputes the gateway: mitigated by using `cidrhost` or Python ipaddress and only acting when no default route exists.
 - **Bootstrap failure before route**: mitigated by running the route setup at the top of `run.sh`.
+
+## Addendum (2026-02-01): WG stability + /32 route fix + debug SSH
+### Goal
+Restore WG client -> private node reachability and keep bastion egress working when private NICs are `/32` (Hetzner private nets), while preserving safe defaults and break-glass access.
+
+### Findings
+- Bastion and private nodes receive `/32` private addresses; DHCP adds a direct `PRIVATE_CIDR dev <if>` route that causes ARP for peers and results in `FAILED` neighbors.
+- The bastion policy-routing helper re-added the direct `PRIVATE_CIDR dev <if>` route, undoing any fix.
+- Cloud-init failed at the end because `curl github.com` (promtail) was hard-fail; this marks `cloud-init` as error and can mask earlier steps.
+- Debug root password should override SSH settings reliably; observed `PermitRootLogin without-password` indicates config ordering needs hardening.
+
+### Plan
+1) **Private subnet routing fix (all servers)**
+   - Add a small oneshot service that, when the private NIC is `/32`, deletes the direct `PRIVATE_CIDR dev <if>` route and replaces it with `PRIVATE_CIDR via <gw> dev <if> onlink`.
+   - Keep a host route to the gateway (`<gw>/32 dev <if> scope link`).
+   - Set per-interface `rp_filter=0` on the private NIC to avoid asymmetric drop.
+
+2) **Bastion policy routing: never reintroduce the bad route**
+   - Update `infrazero-egress-routing.sh` to **not** install `PRIVATE_CIDR dev <if>` in main table.
+   - If `/32`, explicitly set `PRIVATE_CIDR via <gw>` (consistent with step 1).
+   - Keep the egress routing table `default via <gw> dev <if> onlink` only.
+
+3) **WireGuard defaults (robust + safe)**
+   - Make **route-based WG the default** (`WG_SNAT_ENABLED=false`), with SNAT **opt-in**.
+   - Keep `WG_ALLOW_WAN=false` by default to avoid accidental full-tunnel.
+   - Document the flags and when to enable SNAT.
+
+4) **Debug root password reliability**
+   - When `DEBUG_ROOT_PASSWORD` is set, write a *late* drop-in (`/etc/ssh/sshd_config.d/99-infrazero-debug.conf`) that forces `PermitRootLogin yes`, password auth, and `AllowGroups infrazero-admins root`.
+   - Ensure `sshd_config` contains the include line, and reload sshd.
+   - When the secret is empty, keep password auth disabled and keep SSH restricted to WG/private interfaces + allowed CIDRs only.
+
+5) **Cloud-init resilience**
+   - Make promtail download best-effort (do not fail the entire bootstrap if GitHub is unreachable).
+
+### Validation
+- On bastion: `ip route` shows `PRIVATE_CIDR via <gw>` and no `PRIVATE_CIDR dev <if>` direct route; `ip neigh` for peers resolves.
+- From WG client: `ping`/`ssh` to private nodes succeeds.
+- `sshd -T` shows `PermitRootLogin yes` **only** when debug password set.
+- `cloud-init status` is not `error` due to optional promtail download.

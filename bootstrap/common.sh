@@ -103,6 +103,12 @@ set_sshd_config() {
   fi
 }
 
+ensure_sshd_include() {
+  if ! grep -Eq '^[#[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*.conf' "$SSHD_CONFIG"; then
+    echo "Include /etc/ssh/sshd_config.d/*.conf" >> "$SSHD_CONFIG"
+  fi
+}
+
 DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
 SSH_PASSWORD_AUTH="no"
 SSH_KBD_INTERACTIVE="no"
@@ -121,6 +127,7 @@ if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
   SSH_ALLOW_GROUPS="infrazero-admins root"
 fi
 
+ensure_sshd_include
 set_sshd_config "PasswordAuthentication" "$SSH_PASSWORD_AUTH"
 set_sshd_config "KbdInteractiveAuthentication" "$SSH_KBD_INTERACTIVE"
 set_sshd_config "ChallengeResponseAuthentication" "$SSH_CHALLENGE"
@@ -141,27 +148,29 @@ strip_debug_block() {
 }
 
 strip_debug_block
-if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
-  cat >> "$SSHD_CONFIG" <<EOF
-${DEBUG_SSH_BEGIN}
-Match all
-  PermitRootLogin yes
-  PasswordAuthentication yes
-  KbdInteractiveAuthentication yes
-  ChallengeResponseAuthentication yes
-  AllowGroups infrazero-admins root
-${DEBUG_SSH_END}
-EOF
-fi
 
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/infrazero.conf <<EOF
+rm -f /etc/ssh/sshd_config.d/infrazero.conf
+cat > /etc/ssh/sshd_config.d/90-infrazero.conf <<EOF
 PasswordAuthentication ${SSH_PASSWORD_AUTH}
 KbdInteractiveAuthentication ${SSH_KBD_INTERACTIVE}
 ChallengeResponseAuthentication ${SSH_CHALLENGE}
 PermitRootLogin ${SSH_PERMIT_ROOT}
 AllowGroups ${SSH_ALLOW_GROUPS}
 EOF
+
+if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
+  cat > /etc/ssh/sshd_config.d/99-infrazero-debug.conf <<'EOF'
+Match all
+  PermitRootLogin yes
+  PasswordAuthentication yes
+  KbdInteractiveAuthentication yes
+  ChallengeResponseAuthentication yes
+  AllowGroups infrazero-admins root
+EOF
+else
+  rm -f /etc/ssh/sshd_config.d/99-infrazero-debug.conf
+fi
 
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
@@ -180,6 +189,110 @@ EOF
 sysctl --system || true
 
 # WG routing handled via network route (preferred) or SNAT on bastion; see bastion bootstrap.
+
+# Persist network CIDR for routing helpers
+mkdir -p /etc/infrazero
+cat > /etc/infrazero/network.env <<EOF
+PRIVATE_CIDR=${PRIVATE_CIDR:-}
+EOF
+chmod 600 /etc/infrazero/network.env
+
+# Ensure /32 private NICs route the subnet via the gateway (Hetzner private nets)
+cat > /usr/local/sbin/infrazero-private-route.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+NETWORK_ENV="/etc/infrazero/network.env"
+if [ -f "$NETWORK_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NETWORK_ENV"
+  set +a
+fi
+
+if [ -z "${PRIVATE_CIDR:-}" ]; then
+  exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  exit 0
+fi
+
+private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+) || exit 0
+
+priv_if=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    ifname = parts[1]
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(ifname)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+) || exit 0
+
+prefix_len=$(ip -4 -o addr show "$priv_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
+if [ "$prefix_len" != "32" ]; then
+  exit 0
+fi
+
+ip link set dev "$priv_if" up || true
+sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
+
+ip route replace "${private_gw}/32" dev "$priv_if" scope link || true
+ip route del "$PRIVATE_CIDR" dev "$priv_if" 2>/dev/null || true
+ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+EOF
+
+chmod +x /usr/local/sbin/infrazero-private-route.sh
+/usr/local/sbin/infrazero-private-route.sh || true
+
+cat > /etc/systemd/system/infrazero-private-route.service <<'EOF'
+[Unit]
+Description=Infrazero private subnet route fix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infrazero-private-route.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-private-route.service
 
 # Unattended upgrades (security-only, no reboot)
 if command -v unattended-upgrades >/dev/null 2>&1; then

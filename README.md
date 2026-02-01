@@ -51,6 +51,11 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 
 ### Debug / break-glass access (optional)
 - `DEBUG_ROOT_PASSWORD`: if set, bootstraps set the root password on all servers, enable SSH password auth + PermitRootLogin, and bastion listens on all interfaces. Bastion SSH is opened to `0.0.0.0/0` while this is set. The value is embedded in cloud-init user data; remove the secret after troubleshooting.
+- If `DEBUG_ROOT_PASSWORD` is empty/unset, password auth stays disabled and bastion SSH remains restricted to WireGuard/private interfaces + allowed CIDRs.
+
+### WireGuard runtime toggles (optional)
+- `WG_SNAT_ENABLED=true`: SNAT WG client traffic to the bastion private IP (fallback when route-based WG isn’t working).
+- `WG_ALLOW_WAN=true`: allow WG clients to reach WAN via bastion (full-tunnel). Default is off.
 
 Full list (including future epics): `docs/secrets-list.md`
 

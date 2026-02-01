@@ -140,7 +140,7 @@ if [ -z "$WG_CIDR" ]; then
   WG_CIDR="$WG_CIDR_RAW"
 fi
 
-WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-true}"
+WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-false}"
 WG_ALLOW_WAN="${WG_ALLOW_WAN:-false}"
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
@@ -301,7 +301,13 @@ if ! grep -qE "^${table_id}[[:space:]]+${table_name}$" /etc/iproute2/rt_tables; 
 fi
 
 ip route replace "$private_gw/32" dev "$private_if" scope link || true
-ip route replace "$PRIVATE_CIDR" dev "$private_if" scope link || true
+prefix_len=$(ip -4 -o addr show "$private_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
+if [ "$prefix_len" = "32" ]; then
+  ip route del "$PRIVATE_CIDR" dev "$private_if" 2>/dev/null || true
+  ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$private_if" onlink metric 50 || true
+else
+  ip route replace "$PRIVATE_CIDR" dev "$private_if" scope link || true
+fi
 ip route replace default via "$private_gw" dev "$private_if" onlink table "$table_name"
 
 ip rule del pref 100 || true
@@ -344,19 +350,9 @@ systemctl enable --now infrazero-egress-routing.service
 # Bind SSH to WireGuard address only (unless debug root password is set)
 mkdir -p /etc/ssh/sshd_config.d
 
-SSH_PASSWORD_AUTH="no"
-SSH_KBD_INTERACTIVE="no"
-SSH_CHALLENGE="no"
-SSH_PERMIT_ROOT="no"
-SSH_ALLOW_GROUPS="infrazero-admins"
 LISTEN_ADDRESSES=()
 
 if [ -n "$DEBUG_ROOT_PASSWORD" ]; then
-  SSH_PASSWORD_AUTH="yes"
-  SSH_KBD_INTERACTIVE="yes"
-  SSH_CHALLENGE="yes"
-  SSH_PERMIT_ROOT="yes"
-  SSH_ALLOW_GROUPS="infrazero-admins root"
   LISTEN_ADDRESSES=("0.0.0.0")
 else
   LISTEN_ADDRESSES=("${WG_SERVER_IP}")
@@ -365,25 +361,24 @@ else
   fi
 fi
 
+rm -f /etc/ssh/sshd_config.d/infrazero.conf
 {
   for addr in "${LISTEN_ADDRESSES[@]}"; do
     echo "ListenAddress ${addr}"
   done
-  echo "AllowGroups ${SSH_ALLOW_GROUPS}"
-  echo "PasswordAuthentication ${SSH_PASSWORD_AUTH}"
-  echo "KbdInteractiveAuthentication ${SSH_KBD_INTERACTIVE}"
-  echo "ChallengeResponseAuthentication ${SSH_CHALLENGE}"
-  echo "PermitRootLogin ${SSH_PERMIT_ROOT}"
-} > /etc/ssh/sshd_config.d/infrazero.conf
+} > /etc/ssh/sshd_config.d/91-infrazero-bastion.conf
 
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
 # Promtail for journald to Loki
 if [ ! -f /usr/local/bin/promtail ]; then
-  curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"
-  unzip -o /tmp/promtail.zip -d /usr/local/bin
-  mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
-  chmod +x /usr/local/bin/promtail
+  if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+    unzip -o /tmp/promtail.zip -d /usr/local/bin
+    mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
+    chmod +x /usr/local/bin/promtail
+  else
+    echo "[bastion] promtail download failed; skipping"
+  fi
 fi
 
 mkdir -p /etc/promtail /var/lib/promtail
