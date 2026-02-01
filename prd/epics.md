@@ -41,6 +41,9 @@ Definition of done:
 - Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
 - Logs forwarded to egress.
 
+Appendix:
+- `prd/epic4-appendix-infisical-bootstrap.md`
+
 ## EPIC-5: Node2 bootstrap (k3s agent)
 Goal: Join node2 to the cluster with hardened baseline and logging.
 
