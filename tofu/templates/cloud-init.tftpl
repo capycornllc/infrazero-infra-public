@@ -116,8 +116,8 @@ write_files:
       }
 
       ensure_private_dns() {
-        local priv_if="${PRIVATE_IF:-}"
-        local private_gw="${PRIVATE_GW:-}"
+        local priv_if="$${PRIVATE_IF:-}"
+        local private_gw="$${PRIVATE_GW:-}"
 
         if [ -z "$priv_if" ] && [ -n "$private_gw" ]; then
           priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
