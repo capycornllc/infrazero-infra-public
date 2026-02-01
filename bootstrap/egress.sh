@@ -59,11 +59,23 @@ fi
 
 systemctl enable --now docker
 
-if ! command -v aws >/dev/null 2>&1; then
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
-fi
+ensure_dns() {
+  local default_if=""
+  default_if=$(ip -4 route show default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  if [ -z "$default_if" ]; then
+    return 0
+  fi
+
+  if [ -f /etc/systemd/resolved.conf ]; then
+    sed -i 's/^#\?FallbackDNS=.*/FallbackDNS=1.1.1.1 1.0.0.1 8.8.8.8/' /etc/systemd/resolved.conf || true
+    systemctl restart systemd-resolved || true
+  fi
+
+  if command -v resolvectl >/dev/null 2>&1; then
+    resolvectl dns "$default_if" 1.1.1.1 1.0.0.1 8.8.8.8 || true
+    resolvectl domain "$default_if" "~." || true
+  fi
+}
 
 compose_cmd() {
   if command -v docker-compose >/dev/null 2>&1; then
@@ -72,6 +84,77 @@ compose_cmd() {
     docker compose "$@"
   fi
 }
+
+# NAT/egress setup (before any external downloads)
+cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
+net.ipv4.ip_forward=1
+EOF
+sysctl --system
+
+PRIVATE_CIDR="${PRIVATE_CIDR:-}"
+if [ -z "$PRIVATE_CIDR" ]; then
+  echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
+fi
+
+PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
+
+if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
+  echo "[egress] unable to determine network interfaces" >&2
+  exit 1
+fi
+
+PRIVATE_IP=$(ip -4 -o addr show dev "$PRIVATE_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
+if [ -z "$PRIVATE_IP" ]; then
+  echo "[egress] unable to determine private ip address" >&2
+  exit 1
+fi
+
+CHAIN="DOCKER-USER"
+if ! iptables -S "$CHAIN" >/dev/null 2>&1; then
+  CHAIN="FORWARD"
+fi
+
+if [ -n "$PRIVATE_CIDR" ]; then
+  iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
+    || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
+  iptables -C "$CHAIN" -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \
+    || iptables -I "$CHAIN" 1 -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
+  iptables -C "$CHAIN" -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT \
+    || iptables -I "$CHAIN" 1 -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+fi
+
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+
+cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
+[Unit]
+Description=Restore iptables rules for Infrazero
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-iptables.service
+
+ensure_dns
+
+if ! command -v aws >/dev/null 2>&1; then
+  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
+    unzip -q /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+  else
+    echo "[egress] awscli download failed; continuing without aws" >&2
+  fi
+fi
 
 mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups
 
@@ -149,66 +232,6 @@ for i in {1..30}; do
   fi
   sleep 2
 done
-
-# NAT/egress setup
-cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
-net.ipv4.ip_forward=1
-EOF
-sysctl --system
-
-PRIVATE_CIDR="${PRIVATE_CIDR:-}"
-if [ -z "$PRIVATE_CIDR" ]; then
-  echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
-fi
-
-PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
-
-if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
-  echo "[egress] unable to determine network interfaces" >&2
-  exit 1
-fi
-
-PRIVATE_IP=$(ip -4 -o addr show dev "$PRIVATE_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
-if [ -z "$PRIVATE_IP" ]; then
-  echo "[egress] unable to determine private ip address" >&2
-  exit 1
-fi
-
-CHAIN="DOCKER-USER"
-if ! iptables -S "$CHAIN" >/dev/null 2>&1; then
-  CHAIN="FORWARD"
-fi
-
-if [ -n "$PRIVATE_CIDR" ]; then
-  iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
-    || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
-  iptables -C "$CHAIN" -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \
-    || iptables -I "$CHAIN" 1 -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
-  iptables -C "$CHAIN" -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT \
-    || iptables -I "$CHAIN" 1 -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-fi
-
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
-
-cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
-[Unit]
-Description=Restore iptables rules for Infrazero
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now infrazero-iptables.service
 
 # Infisical + Postgres + Redis
 INFISICAL_FQDN="${INFISICAL_FQDN:-}"
