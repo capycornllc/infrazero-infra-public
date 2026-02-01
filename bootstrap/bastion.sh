@@ -216,6 +216,17 @@ if [ -z "${PRIVATE_CIDR:-}" ]; then
   exit 0
 fi
 
+public_if=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+public_ip=""
+if [ -n "$public_if" ]; then
+  public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+fi
+
+if [ -z "$public_if" ]; then
+  echo "[bastion-routing] unable to determine public interface; skipping policy routing" >&2
+  exit 0
+fi
+
 WG_CIDR_RAW="${WG_CIDR:-${WG_SERVER_ADDRESS:-}}"
 WG_CIDR=""
 if [ -n "$WG_CIDR_RAW" ] && command -v python3 >/dev/null 2>&1; then
@@ -249,48 +260,64 @@ if [ -z "$private_gw" ]; then
   exit 0
 fi
 
-private_if=""
-if command -v python3 >/dev/null 2>&1; then
-  private_if=$(python3 - <<'PY'
+detect_private_if() {
+  local ifname=""
+  if command -v python3 >/dev/null 2>&1; then
+    ifname=$(python3 - <<'PY'
 import ipaddress
 import os
 import subprocess
+
 cidr = os.environ.get("PRIVATE_CIDR", "")
-try:
-    net = ipaddress.ip_network(cidr, strict=False)
-except Exception:
-    raise SystemExit(1)
+public_if = os.environ.get("PUBLIC_IF", "")
+
+def is_rfc1918(ip):
+    addr = ipaddress.ip_address(ip)
+    return addr.is_private
+
 output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
 for line in output.splitlines():
     parts = line.split()
     if len(parts) < 4:
         continue
     ifname = parts[1]
+    if ifname == "lo" or ifname == public_if:
+        continue
     addr = parts[3].split("/")[0]
     try:
-        if ipaddress.ip_address(addr) in net:
+        if cidr:
+            net = ipaddress.ip_network(cidr, strict=False)
+            if ipaddress.ip_address(addr) in net:
+                print(ifname)
+                raise SystemExit(0)
+        if is_rfc1918(addr):
             print(ifname)
             raise SystemExit(0)
     except Exception:
         continue
 raise SystemExit(1)
 PY
-  ) || true
-fi
+    ) || true
+  fi
+
+  if [ -z "$ifname" ]; then
+    ifname=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" {print $2; exit}')
+  fi
+  echo "$ifname"
+}
+
+private_if=""
+for _ in {1..30}; do
+  PRIVATE_IF_CANDIDATE=$(PUBLIC_IF="$public_if" detect_private_if)
+  if [ -n "$PRIVATE_IF_CANDIDATE" ]; then
+    private_if="$PRIVATE_IF_CANDIDATE"
+    break
+  fi
+  sleep 2
+done
 
 if [ -z "$private_if" ]; then
   echo "[bastion-routing] unable to determine private interface; skipping policy routing" >&2
-  exit 0
-fi
-
-public_if=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-public_ip=""
-if [ -n "$public_if" ]; then
-  public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
-fi
-
-if [ -z "$public_if" ]; then
-  echo "[bastion-routing] unable to determine public interface; skipping policy routing" >&2
   exit 0
 fi
 
@@ -299,6 +326,9 @@ table_name="egress"
 if ! grep -qE "^${table_id}[[:space:]]+${table_name}$" /etc/iproute2/rt_tables; then
   echo "${table_id} ${table_name}" >> /etc/iproute2/rt_tables
 fi
+
+ip link set dev "$private_if" up || true
+sysctl -w "net.ipv4.conf.${private_if}.rp_filter=0" >/dev/null 2>&1 || true
 
 ip route replace "$private_gw/32" dev "$private_if" scope link || true
 prefix_len=$(ip -4 -o addr show "$private_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
