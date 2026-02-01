@@ -33,6 +33,7 @@ jobs:
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
+      INFISICAL_BOOTSTRAP_SECRETS: ${{ secrets.infisical_bootstrap_secrets }}
       BASTION_FQDN: ${{ secrets.bastion_fqdn }}
       GRAFANA_FQDN: ${{ secrets.grafana_fqdn }}
       LOKI_FQDN: ${{ secrets.loki_fqdn }}
@@ -153,7 +154,11 @@ jobs:
           mkdir -p build/bootstrap
           chmod +x bootstrap/*.sh
           for role in bastion egress node1 node2 db; do
-            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh"
+            extra_files=()
+            if [ "$role" = "node1" ]; then
+              extra_files+=(infisical-bootstrap.sh)
+            fi
+            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh" "${extra_files[@]}"
             sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
             echo "$sha" > "build/bootstrap/${role}.sha256"
 

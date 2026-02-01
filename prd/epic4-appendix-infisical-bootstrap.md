@@ -182,15 +182,14 @@ stringData:
 ---
 
 ## Idempotency Rules
-- If `infisical/bootstrap/latest-tokens.json` exists, **do not create new tokens**.
-- If tokens exist, **skip bootstrap** and ensure the Kubernetes secret is present/updated.
+- If `infisical/bootstrap/latest-tokens.json` exists, **do not create new tokens** (skip bootstrap to avoid token churn).
+- The Kubernetes secret is created only when a read-only token is generated; if you skip bootstrap, you must already have the secret in the cluster.
 - If secrets already exist in Infisical, **upsert** (no failure).
 
 ---
 
 ## Failure Handling
 Hard-fail if:
-- `INFISICAL_RESTORE_FROM_S3=true` and backup manifest exists (bootstrap must not run).
 - Required env vars are missing.
 - S3 writes fail.
 

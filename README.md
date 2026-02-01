@@ -36,6 +36,7 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `db_backup_bucket`
 - `db_backup_age_public_key`
 - `db_backup_age_private_key`
+- `k3s_node_count` (optional; defaults to the number of `k3s_nodes`)
 - `k3s_join_token`
 - `infisical_password`
 - `infisical_email`
@@ -47,7 +48,10 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `infisical_restore_from_s3` (optional; `true` to restore from S3 before bootstrap)
+- `infisical_bootstrap_secrets` (optional JSON payload for Infisical bootstrap secrets)
 - `argocd_admin_password`
+- `argocd_fqdn`
 - `wg_server_private_key`
 - `wg_server_public_key`
 - `wg_server_address`

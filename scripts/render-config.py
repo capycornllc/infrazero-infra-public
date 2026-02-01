@@ -193,6 +193,19 @@ def main() -> int:
         infisical_restore_from_s3 = "false"
     restore_requested = infisical_restore_from_s3.lower() == "true"
 
+    infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
+    infisical_bootstrap_secrets = ""
+    if infisical_bootstrap_secrets_raw:
+        try:
+            parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
+        except json.JSONDecodeError as exc:
+            errors.append(f"INFISICAL_BOOTSTRAP_SECRETS is not valid JSON: {exc}")
+        else:
+            if not isinstance(parsed_bootstrap_secrets, dict):
+                errors.append("INFISICAL_BOOTSTRAP_SECRETS must be a JSON object")
+            else:
+                infisical_bootstrap_secrets = json.dumps(parsed_bootstrap_secrets)
+
     if restore_requested:
         db_backup_age_private_key = require_env("DB_BACKUP_AGE_PRIVATE_KEY")
     else:
@@ -405,6 +418,23 @@ def main() -> int:
             "INFISICAL_SURNAME": egress_secrets.get("INFISICAL_SURNAME", ""),
         }
     )
+    k3s_server_secrets.update(
+        {
+            "S3_ACCESS_KEY_ID": s3_access_key,
+            "S3_SECRET_ACCESS_KEY": s3_secret_key,
+            "S3_ENDPOINT": s3_endpoint,
+            "S3_REGION": s3_region,
+            "DB_BACKUP_BUCKET": egress_secrets.get("DB_BACKUP_BUCKET", ""),
+            "DB_BACKUP_AGE_PUBLIC_KEY": egress_secrets.get("DB_BACKUP_AGE_PUBLIC_KEY", ""),
+            "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
+        }
+    )
+    if infisical_bootstrap_secrets:
+        k3s_server_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
+    if project_slug:
+        k3s_server_secrets["PROJECT_SLUG"] = project_slug
+    if environment:
+        k3s_server_secrets["ENVIRONMENT"] = environment
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type

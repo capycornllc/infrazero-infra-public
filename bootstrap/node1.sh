@@ -223,28 +223,12 @@ spec:
 EOF
 fi
 
-INFISICAL_SITE_URL="${INFISICAL_SITE_URL:-}"
-if [ -z "$INFISICAL_SITE_URL" ] && [ -n "${INFISICAL_FQDN:-}" ]; then
-  INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
-fi
-
-if [ -n "$INFISICAL_SITE_URL" ] && [ -n "${INFISICAL_EMAIL:-}" ] && [ -n "${INFISICAL_PASSWORD:-}" ]; then
-  echo "[node1] attempting infisical bootstrap"
-  payload=$(jq -n \
-    --arg email "$INFISICAL_EMAIL" \
-    --arg password "$INFISICAL_PASSWORD" \
-    --arg org "$INFISICAL_ORGANIZATION" \
-    --arg first "$INFISICAL_NAME" \
-    --arg last "$INFISICAL_SURNAME" \
-    '{email:$email, password:$password, firstName:$first, lastName:$last, organizationName:$org}')
-  status=$(curl -sS -o /tmp/infisical-bootstrap.out -w "%{http_code}" \
-    -H "Content-Type: application/json" \
-    -d "$payload" \
-    "${INFISICAL_SITE_URL%/}/api/v1/auth/signup" || true)
-  if [ "$status" = "200" ] || [ "$status" = "201" ] || [ "$status" = "409" ]; then
-    echo "[node1] infisical bootstrap response: ${status}"
+if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
+  if [ -f "./infisical-bootstrap.sh" ]; then
+    chmod +x ./infisical-bootstrap.sh
+    ./infisical-bootstrap.sh
   else
-    echo "[node1] infisical bootstrap failed (http ${status})" >&2
+    echo "[node1] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
   fi
 fi
 

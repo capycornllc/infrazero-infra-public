@@ -36,6 +36,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `infisical_restore_from_s3` (`true` to restore from S3 before bootstrap)
+- `infisical_bootstrap_secrets` (JSON payload for Infisical bootstrap secrets)
 
 ## 4.1) Service FQDNs & DNS (Cloudflare)
 - `bastion_fqdn`
