@@ -194,6 +194,7 @@ sysctl --system || true
 mkdir -p /etc/infrazero
 cat > /etc/infrazero/network.env <<EOF
 PRIVATE_CIDR=${PRIVATE_CIDR:-}
+WG_CIDR=${WG_CIDR:-}
 EOF
 chmod 600 /etc/infrazero/network.env
 
@@ -293,6 +294,106 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now infrazero-private-route.service
+
+# Ensure WireGuard subnet routes to bastion via the private gateway on non-WG hosts
+cat > /usr/local/sbin/infrazero-wg-route.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+NETWORK_ENV="/etc/infrazero/network.env"
+if [ -f "$NETWORK_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NETWORK_ENV"
+  set +a
+fi
+
+if [ -z "${PRIVATE_CIDR:-}" ] || [ -z "${WG_CIDR:-}" ]; then
+  exit 0
+fi
+
+if ip link show wg0 >/dev/null 2>&1; then
+  # Bastion has wg0; kernel route exists already.
+  exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  exit 0
+fi
+
+private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+) || exit 0
+
+priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+if [ -z "$priv_if" ]; then
+  priv_if=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    ifname = parts[1]
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(ifname)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+  ) || exit 0
+fi
+
+ip link set dev "$priv_if" up || true
+sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
+
+/usr/local/sbin/infrazero-private-route.sh || true
+
+ip route replace "$WG_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+EOF
+
+chmod +x /usr/local/sbin/infrazero-wg-route.sh
+/usr/local/sbin/infrazero-wg-route.sh || true
+
+cat > /etc/systemd/system/infrazero-wg-route.service <<'EOF'
+[Unit]
+Description=Infrazero WireGuard subnet route
+After=network-online.target infrazero-private-route.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infrazero-wg-route.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-wg-route.service
 
 # Unattended upgrades (security-only, no reboot)
 if command -v unattended-upgrades >/dev/null 2>&1; then
