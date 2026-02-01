@@ -84,3 +84,20 @@ Full list (including future epics): `docs/secrets-list.md`
 - `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.
 - Backend config skips AWS region validation to allow Hetzner regions (e.g. `fsn1`).
+
+## Infisical backup (on-demand)
+On the **egress** node you can trigger an immediate Infisical backup:
+```bash
+sudo /opt/infrazero/infisical/backup.sh
+```
+
+This writes an encrypted dump to `s3://$db_backup_bucket/infisical/` and updates `infisical/latest-dump.json`.
+Logs are written to:
+```
+/var/log/infrazero-infisical-backup.log
+```
+
+Optional one-off systemd run:
+```bash
+sudo systemd-run --unit=infisical-backup-once --wait /opt/infrazero/infisical/backup.sh
+```
