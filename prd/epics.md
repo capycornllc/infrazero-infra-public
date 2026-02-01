@@ -58,7 +58,11 @@ Goal: Provide a durable DB setup with backup/restore and volume persistence.
 Definition of done:
 - Hardening baseline.
 - DB volume mounted without reformatting if it already exists.
-- Postgres configured with private allowlist (node1/node2 only).
+- Postgres configured with private allowlist (all k3s nodes; count is 1+).
 - Backups via cron to S3 (uses S3 creds, backup bucket, Age public key, DB creds).
 - Restore via latest-dump manifest; Age private key is short-lived and deleted after restore or if no dump exists.
 - Secrets stored securely on the server (root-only).
+
+Inputs:
+- `db_type` (currently `postgresql`).
+- `db_version` (currently `14.20`).
