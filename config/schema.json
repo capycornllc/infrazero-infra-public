@@ -99,6 +99,20 @@
       },
       "additionalProperties": true
     },
+    "argocd": {
+      "type": "object",
+      "required": ["repo_path"],
+      "properties": {
+        "repo_url": { "type": "string", "minLength": 1 },
+        "repo_revision": { "type": "string", "minLength": 1 },
+        "repo_path": { "type": "string", "minLength": 1 },
+        "app_name": { "type": "string", "minLength": 1 },
+        "app_project": { "type": "string", "minLength": 1 },
+        "destination_namespace": { "type": "string", "minLength": 1 },
+        "destination_server": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
     "s3_backend": {
       "type": "object",
       "required": ["state_prefix"],

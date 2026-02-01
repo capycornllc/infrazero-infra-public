@@ -30,4 +30,19 @@ locals {
     for key, value in var.bastion_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
+
+  k3s_env_lines = [
+    for key, value in var.k3s_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
+
+  k3s_server_env_lines = [
+    for key, value in var.k3s_server_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
+
+  k3s_agent_env_lines = [
+    for key, value in var.k3s_agent_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
 }

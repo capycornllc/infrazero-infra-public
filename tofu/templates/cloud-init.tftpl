@@ -217,5 +217,23 @@ write_files:
 %{ endfor ~}
 %{ endif ~}
 
+%{ if length(node_env) > 0 ~}
+  - path: /etc/infrazero/node.env
+    permissions: "0600"
+    content: |
+%{ for line in node_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(node_role_env) > 0 ~}
+  - path: /etc/infrazero/${bootstrap_role}.env
+    permissions: "0600"
+    content: |
+%{ for line in node_role_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
 runcmd:
   - ["/opt/infrazero/bootstrap/run.sh"]

@@ -237,6 +237,7 @@ done
 INFISICAL_FQDN="${INFISICAL_FQDN:-}"
 GRAFANA_FQDN="${GRAFANA_FQDN:-}"
 LOKI_FQDN="${LOKI_FQDN:-}"
+ARGOCD_FQDN="${ARGOCD_FQDN:-}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-${INFISICAL_EMAIL}}"
 INFISICAL_BIND_ADDR=${INFISICAL_BIND_ADDR:-"$PRIVATE_IP"}
 INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-""}
@@ -251,7 +252,7 @@ if [ -n "$INFISICAL_FQDN" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
   echo "[egress] INFISICAL_SITE_URL must be https for FQDN; overriding to https://${INFISICAL_FQDN}"
   INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
 fi
-if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ]; then
+if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ] || [ -n "$ARGOCD_FQDN" ]; then
   require_env "CLOUDFLARE_API_TOKEN"
 fi
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
@@ -277,6 +278,8 @@ INFISICAL_UPSTREAM_ADDR="${INFISICAL_BIND_ADDR}"
 if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
   INFISICAL_UPSTREAM_ADDR="127.0.0.1"
 fi
+ARGOCD_UPSTREAM_ADDR="${ARGOCD_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
+ARGOCD_UPSTREAM_PORT="${ARGOCD_UPSTREAM_PORT:-30080}"
 
 write_https_server_block() {
   local name="$1"
@@ -321,6 +324,9 @@ setup_service_tls() {
   fi
   if [ -n "$LOKI_FQDN" ]; then
     domains+=("$LOKI_FQDN")
+  fi
+  if [ -n "$ARGOCD_FQDN" ]; then
+    domains+=("$ARGOCD_FQDN")
   fi
 
   if [ "${#domains[@]}" -eq 0 ]; then
@@ -370,6 +376,13 @@ EOF
   fi
   if [ -n "$LOKI_FQDN" ]; then
     write_https_server_block "$LOKI_FQDN" "http://127.0.0.1:3100"
+  fi
+  if [ -n "$ARGOCD_FQDN" ]; then
+    if [ -n "$ARGOCD_UPSTREAM_ADDR" ]; then
+      write_https_server_block "$ARGOCD_FQDN" "http://${ARGOCD_UPSTREAM_ADDR}:${ARGOCD_UPSTREAM_PORT}"
+    else
+      echo "[egress] ARGOCD_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping argocd proxy" >&2
+    fi
   fi
 
   nginx -t

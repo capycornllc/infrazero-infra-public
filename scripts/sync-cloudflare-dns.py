@@ -8,7 +8,8 @@ import requests
 import yaml
 
 
-SERVICE_KEYS = ("bastion", "grafana", "loki", "infisical", "db")
+REQUIRED_SERVICE_KEYS = ("bastion", "grafana", "loki", "infisical", "db")
+OPTIONAL_SERVICE_KEYS = ("argocd",)
 
 
 def load_yaml(path: Path):
@@ -31,7 +32,17 @@ def resolve_internal_fqdns():
     if internal_services_json is not None:
         if not isinstance(internal_services_json, dict):
             raise ValueError("INTERNAL_SERVICES_DOMAINS_JSON must be a JSON object")
-        for key in SERVICE_KEYS:
+        for key in REQUIRED_SERVICE_KEYS:
+            value = internal_services_json.get(key)
+            if not isinstance(value, dict):
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
+            fqdn = str(value.get("fqdn", "")).strip()
+            if not fqdn:
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key}.fqdn is required")
+            internal_services[key] = fqdn
+        for key in OPTIONAL_SERVICE_KEYS:
+            if key not in internal_services_json:
+                continue
             value = internal_services_json.get(key)
             if not isinstance(value, dict):
                 raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
@@ -47,6 +58,7 @@ def resolve_internal_fqdns():
         "loki": "LOKI_FQDN",
         "infisical": "INFISICAL_FQDN",
         "db": "DB_FQDN",
+        "argocd": "ARGOCD_FQDN",
     }
     for key, env_name in env_map.items():
         fqdn = os.getenv(env_name, "").strip()
@@ -193,6 +205,7 @@ def main() -> int:
             "grafana": egress_ip,
             "loki": egress_ip,
             "infisical": egress_ip,
+            "argocd": egress_ip,
             "db": db_ip,
         }
         for key, fqdn in internal_fqdns.items():

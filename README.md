@@ -28,10 +28,15 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `s3_endpoint`
 - `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 - `cloud_region` (used as fallback for backend region when `s3_region` is empty)
+- `gh_token`
+- `gh_owner`
+- `gh_infra_repo`
+- `gh_gitops_repo`
 - `OPS_SSH_KEYS_JSON` (JSON map of admin -> list of SSH public keys)
 - `db_backup_bucket`
 - `db_backup_age_public_key`
 - `db_backup_age_private_key`
+- `k3s_join_token`
 - `infisical_password`
 - `infisical_email`
 - `infisical_organization`
@@ -42,6 +47,7 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `argocd_admin_password`
 - `wg_server_private_key`
 - `wg_server_public_key`
 - `wg_server_address`

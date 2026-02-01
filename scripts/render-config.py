@@ -121,9 +121,9 @@ def main() -> int:
             errors.append(f"{name} is not valid JSON: {exc}")
             return None
 
+    servers_cfg = config.get("servers", {})
     k3s_nodes = config.get("k3s_nodes")
     if not k3s_nodes:
-        servers_cfg = config.get("servers", {})
         legacy_nodes = []
         for key in ("node1", "node2"):
             node = servers_cfg.get(key)
@@ -146,6 +146,24 @@ def main() -> int:
         errors.append("k3s_nodes must include at least K3S_NODE_COUNT entries")
 
     config["k3s_nodes"] = k3s_nodes[:k3s_node_count]
+
+    k3s_cfg = config.get("k3s", {}) or {}
+    k3s_token_name = str(k3s_cfg.get("token_name", "")).strip()
+    if not k3s_token_name:
+        k3s_token_name = "K3S_TOKEN"
+    k3s_token = os.getenv(k3s_token_name, "").strip()
+    if not k3s_token:
+        k3s_token = os.getenv(k3s_token_name.upper(), "").strip()
+    if not k3s_token:
+        k3s_token = os.getenv("K3S_TOKEN", "").strip()
+    if not k3s_token:
+        missing_env.append(k3s_token_name)
+
+    k3s_server_private_ip = ""
+    if config["k3s_nodes"]:
+        k3s_server_private_ip = str(config["k3s_nodes"][0].get("private_ip", "")).strip()
+    if not k3s_server_private_ip:
+        errors.append("k3s_nodes[0].private_ip is required for k3s server")
 
     s3_access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
     s3_secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
@@ -206,15 +224,18 @@ def main() -> int:
 
     internal_services = {}
     internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
-    service_keys = ("bastion", "grafana", "loki", "infisical", "db")
+    required_service_keys = ("bastion", "grafana", "loki", "infisical", "db")
+    optional_service_keys = ("argocd",)
     if internal_services_json is not None:
         if not isinstance(internal_services_json, dict):
             errors.append("INTERNAL_SERVICES_DOMAINS_JSON must be a JSON object")
         else:
-            missing_keys = [key for key in service_keys if key not in internal_services_json]
+            missing_keys = [key for key in required_service_keys if key not in internal_services_json]
             if missing_keys:
                 errors.append(f"INTERNAL_SERVICES_DOMAINS_JSON missing keys: {', '.join(missing_keys)}")
-            for key in service_keys:
+            for key in (*required_service_keys, *optional_service_keys):
+                if key not in internal_services_json:
+                    continue
                 value = internal_services_json.get(key)
                 if not isinstance(value, dict):
                     errors.append(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
@@ -231,6 +252,7 @@ def main() -> int:
             "loki": "LOKI_FQDN",
             "infisical": "INFISICAL_FQDN",
             "db": "DB_FQDN",
+            "argocd": "ARGOCD_FQDN",
         }
         for key, env_name in env_map.items():
             fqdn = optional_env(env_name)
@@ -263,14 +285,20 @@ def main() -> int:
     infisical_fqdn = internal_services.get("infisical", "")
     grafana_fqdn = internal_services.get("grafana", "")
     loki_fqdn = internal_services.get("loki", "")
+    argocd_fqdn = internal_services.get("argocd", "")
     if infisical_fqdn:
         egress_secrets["INFISICAL_FQDN"] = infisical_fqdn
     if grafana_fqdn:
         egress_secrets["GRAFANA_FQDN"] = grafana_fqdn
     if loki_fqdn:
         egress_secrets["LOKI_FQDN"] = loki_fqdn
+    if argocd_fqdn:
+        egress_secrets["ARGOCD_FQDN"] = argocd_fqdn
+    if k3s_server_private_ip:
+        egress_secrets["K3S_SERVER_PRIVATE_IP"] = k3s_server_private_ip
     if not infisical_site_url and infisical_fqdn:
-        egress_secrets["INFISICAL_SITE_URL"] = f"https://{infisical_fqdn}"
+        infisical_site_url = f"https://{infisical_fqdn}"
+        egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
 
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
@@ -287,6 +315,96 @@ def main() -> int:
         "WG_ADMIN_PEERS_JSON": require_env("WG_ADMIN_PEERS_JSON"),
         "WG_PRESHARED_KEYS_JSON": require_env("WG_PRESHARED_KEYS_JSON"),
     }
+
+    gh_token = optional_env("GH_TOKEN")
+    gh_owner = optional_env("GH_OWNER")
+    gh_infra_repo = optional_env("GH_INFRA_REPO")
+    gh_gitops_repo = optional_env("GH_GITOPS_REPO")
+
+    def resolve_repo_url(repo: str, owner: str) -> tuple[str, list[str]]:
+        if not repo:
+            return "", []
+        repo = repo.strip()
+        if repo.startswith("http://") or repo.startswith("https://"):
+            return repo, []
+        if "/" in repo:
+            repo_ref = repo
+        else:
+            if not owner:
+                return "", ["GH_OWNER is required when GH_GITOPS_REPO is not owner/repo"]
+            repo_ref = f"{owner}/{repo}"
+        if repo_ref.endswith(".git"):
+            return f"https://github.com/{repo_ref}", []
+        return f"https://github.com/{repo_ref}.git", []
+
+    argocd_cfg = config.get("argocd", {}) or {}
+    argocd_repo_path = str(argocd_cfg.get("repo_path", "")).strip()
+    argocd_repo_revision = str(argocd_cfg.get("repo_revision", "")).strip() or "main"
+    argocd_app_name = str(argocd_cfg.get("app_name", "")).strip() or "root"
+    argocd_app_project = str(argocd_cfg.get("app_project", "")).strip() or "default"
+    argocd_dest_namespace = str(argocd_cfg.get("destination_namespace", "")).strip() or "argocd"
+    argocd_dest_server = str(argocd_cfg.get("destination_server", "")).strip() or "https://kubernetes.default.svc"
+
+    argocd_repo_url, repo_errors = resolve_repo_url(gh_gitops_repo, gh_owner)
+    if repo_errors:
+        errors.extend(repo_errors)
+
+    argocd_enabled = bool(argocd_repo_path and argocd_repo_url)
+    if argocd_repo_path and not gh_gitops_repo:
+        missing_env.append("GH_GITOPS_REPO")
+    if gh_gitops_repo and not argocd_repo_path:
+        errors.append("argocd.repo_path is required when GH_GITOPS_REPO is set")
+
+    argocd_admin_password = optional_env("ARGOCD_ADMIN_PASSWORD")
+    if argocd_enabled and not argocd_admin_password:
+        missing_env.append("ARGOCD_ADMIN_PASSWORD")
+    if argocd_enabled and not gh_token:
+        missing_env.append("GH_TOKEN")
+
+    egress_private_ip = str(servers_cfg.get("egress", {}).get("private_ip", "")).strip()
+    k3s_secrets = {
+        "K3S_TOKEN": k3s_token,
+        "K3S_SERVER_IP": k3s_server_private_ip,
+        "K3S_SERVER_URL": f"https://{k3s_server_private_ip}:6443" if k3s_server_private_ip else "",
+        "K3S_SERVER_TAINT": str(bool(k3s_cfg.get("server_taint", False))).lower(),
+        "EGRESS_LOKI_URL": f"http://{egress_private_ip}:3100/loki/api/v1/push" if egress_private_ip else "",
+    }
+
+    k3s_server_secrets = {}
+    k3s_agent_secrets = {}
+
+    if argocd_admin_password:
+        k3s_server_secrets["ARGOCD_ADMIN_PASSWORD"] = argocd_admin_password
+    if gh_token:
+        k3s_server_secrets["GH_TOKEN"] = gh_token
+    if argocd_fqdn:
+        k3s_server_secrets["ARGOCD_FQDN"] = argocd_fqdn
+    if argocd_enabled:
+        k3s_server_secrets.update(
+            {
+                "ARGOCD_APP_REPO_URL": argocd_repo_url,
+                "ARGOCD_APP_PATH": argocd_repo_path,
+                "ARGOCD_APP_REVISION": argocd_repo_revision,
+                "ARGOCD_APP_NAME": argocd_app_name,
+                "ARGOCD_APP_PROJECT": argocd_app_project,
+                "ARGOCD_APP_DEST_NAMESPACE": argocd_dest_namespace,
+                "ARGOCD_APP_DEST_SERVER": argocd_dest_server,
+            }
+        )
+
+    if infisical_fqdn:
+        k3s_server_secrets["INFISICAL_FQDN"] = infisical_fqdn
+    if infisical_site_url:
+        k3s_server_secrets["INFISICAL_SITE_URL"] = infisical_site_url
+    k3s_server_secrets.update(
+        {
+            "INFISICAL_PASSWORD": egress_secrets.get("INFISICAL_PASSWORD", ""),
+            "INFISICAL_EMAIL": egress_secrets.get("INFISICAL_EMAIL", ""),
+            "INFISICAL_ORGANIZATION": egress_secrets.get("INFISICAL_ORGANIZATION", ""),
+            "INFISICAL_NAME": egress_secrets.get("INFISICAL_NAME", ""),
+            "INFISICAL_SURNAME": egress_secrets.get("INFISICAL_SURNAME", ""),
+        }
+    )
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type
@@ -308,6 +426,9 @@ def main() -> int:
 
     config["egress_secrets"] = egress_secrets
     config["bastion_secrets"] = bastion_secrets
+    config["k3s_secrets"] = k3s_secrets
+    config["k3s_server_secrets"] = k3s_server_secrets
+    config["k3s_agent_secrets"] = k3s_agent_secrets
     config["db_backup_age_private_key"] = db_backup_age_private_key
     config["wg_server_address"] = wg_server_address
 

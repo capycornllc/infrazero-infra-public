@@ -330,6 +330,8 @@ resource "hcloud_server" "bastion" {
       format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
       format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
     ])
+    node_env        = []
+    node_role_env   = []
   })
 
   labels = {
@@ -375,6 +377,8 @@ resource "hcloud_server" "egress" {
     egress_env      = local.egress_env_lines
     db_backup_age_private_key = var.db_backup_age_private_key
     bastion_env     = []
+    node_env        = []
+    node_role_env   = []
   })
 
   labels = {
@@ -422,6 +426,8 @@ resource "hcloud_server" "k3s" {
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []
+    node_env        = local.k3s_env_lines
+    node_role_env   = each.key == local.k3s_server_key ? local.k3s_server_env_lines : local.k3s_agent_env_lines
   })
 
   labels = {
@@ -467,6 +473,8 @@ resource "hcloud_server" "db" {
     egress_env      = []
     db_backup_age_private_key = ""
     bastion_env     = []
+    node_env        = []
+    node_role_env   = []
   })
 
   labels = {

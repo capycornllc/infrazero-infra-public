@@ -68,6 +68,14 @@ k3s:
   token_name: k3s_join_token
   server_taint: false
 
+argocd:
+  repo_revision: main
+  repo_path: clusters/dev
+  app_name: root
+  app_project: default
+  destination_namespace: argocd
+  destination_server: https://kubernetes.default.svc
+
 s3_backend:
   state_prefix: infrazero/dev
 

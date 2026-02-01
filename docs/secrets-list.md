@@ -13,14 +13,13 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `db_server_type`
 - `k3s_node_server_type`
 - `k3s_node_count`
+- `k3s_join_token`
 
 ## 2) GitHub Access
-- `github_username`
-- `github_infra_repo`
-- `github_gitops_repo`
-- `github_infra_recreate`
-- `github_gitops_recreate`
-- `github_token`
+- `gh_token` (GitHub PAT for repo/bootstrap automation)
+- `gh_owner` (default GitHub owner/org)
+- `gh_infra_repo` (infra repo name or owner/repo)
+- `gh_gitops_repo` (gitops repo name or owner/repo)
 
 ## 3) Hetzner Cloud Token
 - `hetzner_cloud_token`
@@ -40,6 +39,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 
 ## 4.1) Service FQDNs & DNS (Cloudflare)
 - `bastion_fqdn`
+- `argocd_fqdn`
 - `grafana_fqdn`
 - `loki_fqdn`
 - `infisical_fqdn`

@@ -172,6 +172,21 @@ variable "bastion_secrets" {
   sensitive = true
 }
 
+variable "k3s_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
+variable "k3s_server_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
+variable "k3s_agent_secrets" {
+  type      = map(string)
+  sensitive = true
+}
+
 variable "internal_services_domains" {
   type    = map(object({ fqdn = string }))
   default = {}
