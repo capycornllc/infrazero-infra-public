@@ -72,7 +72,19 @@ fi
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl ca-certificates jq awscli age
+  apt-get install -y curl ca-certificates jq age unzip
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
+    unzip -q /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+  fi
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "[infisical-bootstrap] aws cli not available; cannot continue" >&2
+  exit 1
 fi
 
 export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
