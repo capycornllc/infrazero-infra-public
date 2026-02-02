@@ -201,6 +201,9 @@ fi
       fi
     done
   fi
+  if [ -n "${WG_CIDR:-}" ]; then
+    echo "host ${APP_DB_NAME} ${APP_DB_USER} ${WG_CIDR} scram-sha-256"
+  fi
   echo "$HBA_END"
 } >> "$HBA_CONF"
 
