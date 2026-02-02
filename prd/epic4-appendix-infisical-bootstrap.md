@@ -1,18 +1,18 @@
-# Epic 4 Appendix: Infisical Bootstrap (Node1)
+# Epic 2 Appendix: Infisical Bootstrap (Egress)
 
 ## Goal
-Run Infisical bootstrap as a **separate script on node1** after k3s/Argo CD are up. The script must:
+Run Infisical bootstrap as a **separate script on egress** after Infisical is up. The script must:
 - Decide whether to bootstrap based on `infisical_restore_from_s3` and the presence of a backup in S3.
-- If bootstrapping: create admin + read-only tokens, store both encrypted in S3 (using the same Age public key as backups), and write a JSON manifest.
+- If bootstrapping: create the admin token, store it encrypted in S3 (using the same Age public key as backups), and write a JSON manifest.
+- Create the Infisical project (if missing) and add the admin user to the project.
 - Load secrets from GitHub secret `infisical_bootstrap_secrets` into Infisical, creating folders as needed.
-- Create a Kubernetes Secret with the read-only token for the CSI provider.
 
-This appendix defines the workflow and required inputs; implementation will be in a dedicated node1 script (e.g., `bootstrap/infisical-bootstrap.sh`), invoked by `bootstrap/node1.sh` after k3s is healthy.
+This appendix defines the workflow and required inputs; implementation will be in `bootstrap/infisical-bootstrap.sh`, invoked by `bootstrap/egress.sh` after Infisical is healthy.
 
 ---
 
 ## Inputs (environment variables)
-Required on node1:
+Required on egress:
 - `INFISICAL_SITE_URL` (or `INFISICAL_FQDN` to build it)
 - `INFISICAL_EMAIL`, `INFISICAL_PASSWORD`, `INFISICAL_ORGANIZATION`, `INFISICAL_NAME`, `INFISICAL_SURNAME`
 - `INFISICAL_PROJECT_NAME` (project to create in Infisical)
@@ -20,13 +20,13 @@ Required on node1:
 - `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_REGION`
 - `DB_BACKUP_BUCKET`
 - `DB_BACKUP_AGE_PUBLIC_KEY` (Age pubkey used for Infisical backups)
-- `INFISICAL_BOOTSTRAP_SECRETS` (JSON payload from GitHub secret `infisical_bootstrap_secrets`)
-- `ENVIRONMENT` (e.g., `dev`, `staging`, `prod`)
 
 Optional:
+- `INFISICAL_BOOTSTRAP_SECRETS` (JSON payload from GitHub secret `infisical_bootstrap_secrets`)
+- `ENVIRONMENT` (e.g., `dev`, `staging`, `prod`)
 - `PROJECT_SLUG`
-- `INFISICAL_READONLY_SECRET_NAME` (default: `infisical-readonly-token`)
-- `INFISICAL_READONLY_SECRET_NAMESPACE` (default: `kube-system`)
+- `INFISICAL_PROJECT_SLUG`
+- `INFISICAL_PROJECT_DESCRIPTION`
 
 ---
 
@@ -35,7 +35,7 @@ Optional:
 2) **Check S3 for backup manifest** at:
    - `s3://$DB_BACKUP_BUCKET/infisical/latest-dump.json`
 3) **If** `INFISICAL_RESTORE_FROM_S3=true` **and** `latest-dump.json` exists:
-   - **Do not bootstrap** on node1. (Restore runs on egress.)
+   - **Do not bootstrap** on egress. (Restore runs on egress.)
    - Exit successfully.
 4) **Else**, proceed with bootstrap.
 
@@ -43,7 +43,7 @@ Rationale: If a backup exists and restore is requested, bootstrap should not ove
 
 ---
 
-## Bootstrap Flow (Node1 Script)
+## Bootstrap Flow (Egress Script)
 ### 1) Wait for Infisical API
 Ensure **`INFISICAL_FQDN`** is reachable first, then verify `INFISICAL_SITE_URL` is healthy (HTTPS).
 Do not proceed until the FQDN responds successfully.
@@ -72,7 +72,7 @@ curl -X POST \
 Result: JSON with admin user, organization, and an **Instance Admin Machine Identity token**.
 
 ### 3) Idempotency (Already Bootstrapped)
-If bootstrap already happened, the API may return an error. The script must handle this as a non-fatal condition.
+If bootstrap already happened, the API may return an error. The script must handle this as a non-fatal condition **only if** `infisical/bootstrap/latest-tokens.json` already exists in S3.
 
 CLI alternative (if used):
 ```
@@ -115,28 +115,16 @@ curl -H "Authorization: Bearer $TOKEN" \
   https://<infisical-domain>/api/v1/projects
 ```
 
-### 6) Create Tokens
-Create:
-- **Admin token** (full access)
-- **Read-only token** (read-only permissions for CSI usage)
+### 6) Create Project + Add Admin Membership
+- Create the project if it does not exist.
+- After the project is created, add the admin user to the project (membership) so the admin can manage it directly.
 
-Before creating the read-only token, **attach Token Auth** to the machine identity:
-```
-POST /api/v1/auth/token-auth/identities/<identityId>
-```
-
-Then create the token:
-```
-POST /api/v1/auth/token-auth/identities/<identityId>/tokens
-```
-
-### 7) Encrypt and Store Tokens in S3
-Encrypt each token with Age using `DB_BACKUP_AGE_PUBLIC_KEY`:
+### 7) Encrypt and Store Admin Token in S3
+Encrypt the admin token with Age using `DB_BACKUP_AGE_PUBLIC_KEY`:
 - `admin.token.age`
-- `readonly.token.age`
 
 Upload to:
-- `s3://$DB_BACKUP_BUCKET/infisical/bootstrap/`
+- `s3://$DB_BACKUP_BUCKET/infisical/bootstrap/<timestamp>/admin.token.age`
 
 Create a **manifest** (JSON) and upload to:
 - `s3://$DB_BACKUP_BUCKET/infisical/bootstrap/latest-tokens.json`
@@ -146,10 +134,8 @@ Example manifest:
 {
   "created_at": "2026-02-01T18:07:00Z",
   "infisical_site_url": "https://infisical.example.com",
-  "admin_token_key": "infisical/bootstrap/admin.token.age",
-  "admin_token_sha256": "sha256-hex",
-  "readonly_token_key": "infisical/bootstrap/readonly.token.age",
-  "readonly_token_sha256": "sha256-hex"
+  "admin_token_key": "infisical/bootstrap/20260201T180700Z/admin.token.age",
+  "admin_token_sha256": "sha256-hex"
 }
 ```
 
@@ -174,27 +160,10 @@ Process:
 - For each `secret_name`, select value using `ENVIRONMENT` key.
 - Upsert secrets in the target folder.
 
-### 9) Create Kubernetes Secret for CSI
-Create a k8s secret containing the **read-only token** for the Infisical CSI provider.
-
-Suggested shape:
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: infisical-readonly-token
-  namespace: kube-system
-type: Opaque
-stringData:
-  token: "<readonly_token>"
-  host: "https://infisical.example.com"
-```
-
 ---
 
 ## Idempotency Rules
-- If `infisical/bootstrap/latest-tokens.json` exists, **do not create new tokens** (skip bootstrap to avoid token churn).
-- The Kubernetes secret is created only when a read-only token is generated; if you skip bootstrap, you must already have the secret in the cluster.
+- If `infisical/bootstrap/latest-tokens.json` exists and the instance is already bootstrapped, exit successfully.
 - If secrets already exist in Infisical, **upsert** (no failure).
 
 ---
@@ -210,4 +179,4 @@ Soft-fail (log + continue) if:
 ---
 
 ## Expected Script Name + Location
-- `bootstrap/infisical-bootstrap.sh` (called from `bootstrap/node1.sh` after k3s ready)
+- `bootstrap/infisical-bootstrap.sh` (called from `bootstrap/egress.sh` after Infisical is healthy)

@@ -242,6 +242,7 @@ def main() -> int:
         "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),
         "INFISICAL_NAME": require_env("INFISICAL_NAME"),
         "INFISICAL_SURNAME": require_env("INFISICAL_SURNAME"),
+        "INFISICAL_PROJECT_NAME": infisical_project_name,
         "INFISICAL_POSTGRES_DB": require_env("INFISICAL_POSTGRES_DB"),
         "INFISICAL_POSTGRES_USER": require_env("INFISICAL_POSTGRES_USER"),
         "INFISICAL_POSTGRES_PASSWORD": require_env("INFISICAL_POSTGRES_PASSWORD"),
@@ -267,6 +268,9 @@ def main() -> int:
     infisical_site_url = os.getenv("INFISICAL_SITE_URL", "").strip()
     if infisical_site_url:
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
+
+    if infisical_bootstrap_secrets:
+        egress_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
 
     internal_services = {}
     internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")

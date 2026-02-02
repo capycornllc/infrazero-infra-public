@@ -223,15 +223,6 @@ spec:
 EOF
 fi
 
-if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
-  if [ -f "./infisical-bootstrap.sh" ]; then
-    chmod +x ./infisical-bootstrap.sh
-    ./infisical-bootstrap.sh
-  else
-    echo "[node1] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
-  fi
-fi
-
 # Promtail for journald to Loki
 if [ ! -f /usr/local/bin/promtail ]; then
   if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then

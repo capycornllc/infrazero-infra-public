@@ -23,12 +23,8 @@ load_env() {
   fi
 }
 
+load_env /etc/infrazero/egress.env
 load_env /etc/infrazero/node.env
-load_env /etc/infrazero/node1.env
-
-if [ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/k3s/k3s.yaml ]; then
-  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-fi
 
 require_env() {
   local name="$1"
@@ -184,7 +180,11 @@ done
 if [[ "$bootstrap_code" != 2* ]]; then
   message=$(jq -r '.message // empty' "$bootstrap_tmp" 2>/dev/null || true)
   if echo "$message" | grep -qi "bootstrapped"; then
-    echo "[infisical-bootstrap] instance already bootstrapped; aborting (no tokens manifest present)" >&2
+    if [ "$tokens_manifest_exists" = "true" ]; then
+      echo "[infisical-bootstrap] instance already bootstrapped; tokens manifest exists; exiting"
+      exit 0
+    fi
+    echo "[infisical-bootstrap] instance already bootstrapped; no tokens manifest present" >&2
     exit 1
   fi
   echo "[infisical-bootstrap] bootstrap failed (http ${bootstrap_code})" >&2
@@ -193,10 +193,8 @@ if [[ "$bootstrap_code" != 2* ]]; then
 fi
 
 ADMIN_TOKEN=$(jq -r '.identity.credentials.token // empty' "$bootstrap_tmp")
-ADMIN_IDENTITY_ID=$(jq -r '.identity.id // empty' "$bootstrap_tmp")
-ORG_ID=$(jq -r '.organization.id // empty' "$bootstrap_tmp")
 
-if [ -z "$ADMIN_TOKEN" ] || [ -z "$ADMIN_IDENTITY_ID" ] || [ -z "$ORG_ID" ]; then
+if [ -z "$ADMIN_TOKEN" ]; then
   echo "[infisical-bootstrap] bootstrap response missing required fields" >&2
   cat "$bootstrap_tmp" >&2 || true
   exit 1
@@ -242,6 +240,45 @@ if [ -z "$PROJECT_ID" ]; then
   cat "$project_tmp" >&2 || true
   exit 1
 fi
+
+admin_role_slug=""
+roles_tmp=$(mktemp)
+roles_code=$(curl -sS -o "$roles_tmp" -w "%{http_code}" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/roles" || true)
+if [[ "$roles_code" == 2* ]]; then
+  admin_role_slug=$(jq -r '.roles[] | select((.slug|test("admin|owner";"i")) or (.name|test("admin|owner";"i"))) | .slug' "$roles_tmp" | head -n 1)
+  if [ -z "$admin_role_slug" ]; then
+    admin_role_slug=$(jq -r '.roles[0].slug // empty' "$roles_tmp")
+  fi
+fi
+rm -f "$roles_tmp"
+
+if [ -z "$admin_role_slug" ]; then
+  admin_role_slug="member"
+fi
+
+membership_payload=$(jq -n \
+  --arg email "$INFISICAL_EMAIL" \
+  --arg role "$admin_role_slug" \
+  '{emails:[$email], roleSlugs:[$role]}')
+membership_tmp=$(mktemp)
+membership_code=$(curl -sS -o "$membership_tmp" -w "%{http_code}" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "$membership_payload" \
+  "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/memberships" || true)
+if [[ "$membership_code" != 2* ]]; then
+  message=$(jq -r '.message // empty' "$membership_tmp" 2>/dev/null || true)
+  if echo "$message" | grep -qi "already"; then
+    echo "[infisical-bootstrap] admin already added to project; continuing"
+  else
+    echo "[infisical-bootstrap] failed to add admin to project (http ${membership_code})" >&2
+    cat "$membership_tmp" >&2 || true
+    exit 1
+  fi
+fi
+rm -f "$membership_tmp"
 
 existing_envs=$(jq -r '.environments[]?.slug' "$project_tmp" 2>/dev/null | tr '\n' ' ')
 
@@ -372,151 +409,32 @@ else
   echo "[infisical-bootstrap] INFISICAL_BOOTSTRAP_SECRETS not set; skipping secrets population"
 fi
 
-readonly_role_slug=""
-roles_tmp=$(mktemp)
-roles_code=$(curl -sS -o "$roles_tmp" -w "%{http_code}" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/roles" || true)
-if [[ "$roles_code" == 2* ]]; then
-  readonly_role_slug=$(jq -r '.roles[] | select((.slug|test("read|viewer";"i")) or (.name|test("read|viewer";"i"))) | .slug' "$roles_tmp" | head -n 1)
-fi
-rm -f "$roles_tmp"
-
-if [ -z "$readonly_role_slug" ]; then
-  readonly_role_slug="readonly"
-  role_payload=$(jq -n \
-    --arg slug "$readonly_role_slug" \
-    --arg name "Read Only" \
-    '{slug:$slug, name:$name, permissions:[{subject:"secrets", action:"read", inverted:false}], description:"Read-only secrets role"}')
-  curl -sS -o /dev/null \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$role_payload" \
-    "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/roles" || true
-fi
-
-readonly_identity_name="${PROJECT_SLUG}-readonly"
-identity_tmp=$(mktemp)
-identity_code=$(curl -sS -o "$identity_tmp" -w "%{http_code}" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  "${INFISICAL_API_BASE}/v1/identities?orgId=${ORG_ID}" || true)
-READONLY_IDENTITY_ID=""
-if [[ "$identity_code" == 2* ]]; then
-  READONLY_IDENTITY_ID=$(jq -r --arg name "$readonly_identity_name" '.identities[] | select(.identity.name==$name) | .identity.id' "$identity_tmp" | head -n 1)
-fi
-rm -f "$identity_tmp"
-
-if [ -z "$READONLY_IDENTITY_ID" ]; then
-  identity_payload=$(jq -n --arg name "$readonly_identity_name" --arg org "$ORG_ID" '{name:$name, organizationId:$org, role:"member"}')
-  identity_code=$(curl -sS -o "$identity_tmp" -w "%{http_code}" \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$identity_payload" \
-    "${INFISICAL_API_BASE}/v1/identities" || true)
-  if [[ "$identity_code" != 2* ]]; then
-    echo "[infisical-bootstrap] failed to create read-only identity" >&2
-    cat "$identity_tmp" >&2 || true
-    exit 1
-  fi
-  READONLY_IDENTITY_ID=$(jq -r '.identity.id // empty' "$identity_tmp")
-fi
-
-if [ -z "$READONLY_IDENTITY_ID" ]; then
-  echo "[infisical-bootstrap] unable to resolve read-only identity id" >&2
-  exit 1
-fi
-
-membership_payload=$(jq -n --arg role "$readonly_role_slug" '{role:$role}')
-curl -sS -o /dev/null \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "$membership_payload" \
-  "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/memberships/identities/${READONLY_IDENTITY_ID}" || true
-
-token_auth_check=$(mktemp)
-token_auth_code=$(curl -sS -o "$token_auth_check" -w "%{http_code}" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  "${INFISICAL_API_BASE}/v1/auth/token-auth/identities/${READONLY_IDENTITY_ID}" || true)
-if [[ "$token_auth_code" != 2* ]]; then
-  token_auth_payload=$(jq -n '{
-    accessTokenTTL: 2592000,
-    accessTokenMaxTTL: 7776000,
-    accessTokenTrustedIps: [
-      {ipAddress: "0.0.0.0/0"},
-      {ipAddress: "::/0"}
-    ]
-  }')
-  curl -sS -o /dev/null \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$token_auth_payload" \
-    "${INFISICAL_API_BASE}/v1/auth/token-auth/identities/${READONLY_IDENTITY_ID}" || true
-fi
-rm -f "$token_auth_check"
-
-token_payload=$(jq -n --arg name "${readonly_identity_name}-token" '{name:$name}')
-token_tmp=$(mktemp)
-token_code=$(curl -sS -o "$token_tmp" -w "%{http_code}" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "$token_payload" \
-  "${INFISICAL_API_BASE}/v1/auth/token-auth/identities/${READONLY_IDENTITY_ID}/tokens" || true)
-
-if [[ "$token_code" != 2* ]]; then
-  echo "[infisical-bootstrap] failed to create read-only token" >&2
-  cat "$token_tmp" >&2 || true
-  exit 1
-fi
-
-READONLY_TOKEN=$(jq -r '.accessToken // empty' "$token_tmp")
-rm -f "$token_tmp"
-
-if [ -z "$READONLY_TOKEN" ]; then
-  echo "[infisical-bootstrap] read-only token missing from response" >&2
-  exit 1
-fi
-
 tmpdir=$(mktemp -d /run/infisical-bootstrap.XXXX)
 chmod 700 "$tmpdir"
 printf '%s' "$ADMIN_TOKEN" > "$tmpdir/admin.token"
-printf '%s' "$READONLY_TOKEN" > "$tmpdir/readonly.token"
 
 age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$tmpdir/admin.token.age" "$tmpdir/admin.token"
-age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$tmpdir/readonly.token.age" "$tmpdir/readonly.token"
 
 admin_sha=$(sha256sum "$tmpdir/admin.token.age" | awk '{print $1}')
-readonly_sha=$(sha256sum "$tmpdir/readonly.token.age" | awk '{print $1}')
 
 token_timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 token_prefix="infisical/bootstrap/${token_timestamp}"
 admin_key="${token_prefix}/admin.token.age"
-readonly_key="${token_prefix}/readonly.token.age"
 
 aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/admin.token.age" "s3://${DB_BACKUP_BUCKET}/${admin_key}"
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/readonly.token.age" "s3://${DB_BACKUP_BUCKET}/${readonly_key}"
 
 manifest=$(jq -n \
   --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg site "$INFISICAL_SITE_URL" \
   --arg admin_key "$admin_key" \
   --arg admin_sha "$admin_sha" \
-  --arg readonly_key "$readonly_key" \
-  --arg readonly_sha "$readonly_sha" \
-  '{created_at:$created_at, infisical_site_url:$site, admin_token_key:$admin_key, admin_token_sha256:$admin_sha, readonly_token_key:$readonly_key, readonly_token_sha256:$readonly_sha}')
+  '{created_at:$created_at, infisical_site_url:$site, admin_token_key:$admin_key, admin_token_sha256:$admin_sha}')
 
 echo "$manifest" > "$tmpdir/latest-tokens.json"
 aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/latest-tokens.json" "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}"
 
-rm -f "$tmpdir/admin.token" "$tmpdir/readonly.token"
-rm -f "$tmpdir/admin.token.age" "$tmpdir/readonly.token.age" "$tmpdir/latest-tokens.json"
+rm -f "$tmpdir/admin.token"
+rm -f "$tmpdir/admin.token.age" "$tmpdir/latest-tokens.json"
 rmdir "$tmpdir" || true
-
-secret_name="${INFISICAL_READONLY_SECRET_NAME:-infisical-readonly-token}"
-secret_namespace="${INFISICAL_READONLY_SECRET_NAMESPACE:-kube-system}"
-kubectl get namespace "$secret_namespace" >/dev/null 2>&1 || kubectl create namespace "$secret_namespace"
-kubectl -n "$secret_namespace" create secret generic "$secret_name" \
-  --from-literal=token="$READONLY_TOKEN" \
-  --from-literal=host="$INFISICAL_SITE_URL" \
-  --dry-run=client -o yaml | kubectl apply -f -
 
 echo "[infisical-bootstrap] $(date -Is) complete"

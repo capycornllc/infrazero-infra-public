@@ -157,7 +157,7 @@ jobs:
           chmod +x bootstrap/*.sh
           for role in bastion egress node1 node2 db; do
             extra_files=()
-            if [ "$role" = "node1" ]; then
+            if [ "$role" = "egress" ]; then
               extra_files+=(infisical-bootstrap.sh)
             fi
             tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh" "${extra_files[@]}"

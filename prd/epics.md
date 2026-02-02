@@ -18,9 +18,12 @@ Must include (order-sensitive):
 - Self-hosted Infisical with local Postgres; UI served over HTTPS on the Infisical service FQDN using Let's Encrypt (Cloudflare DNS-01).
 - Grafana and Loki exposed via service FQDNs with valid HTTPS certificates.
 - Infisical DB backups to S3; restore from latest-dump manifest only when GitHub secret `infisical_restore_from_s3` is `true`.
-- Infisical bootstrap is deferred to node1 (egress does not run the CLI bootstrap).
+- Infisical bootstrap runs on egress after restore checks, stores the admin token manifest in S3.
 - Admin access path to Infisical UI (port forwarding or restricted ingress).
 - Age private key is short-lived and deleted after restore or if no dump exists.
+
+Appendix:
+- `prd/epic4-appendix-infisical-bootstrap.md`
 
 ## EPIC-3: Bastion bootstrap
 Goal: Secure admin ingress with hardened access and logging to egress.
@@ -38,11 +41,7 @@ Definition of done:
 - Hardening baseline.
 - k3s server installed and NodePorts 30080/30443 ready.
 - Argo CD bootstrapped using repo URLs/paths from config.
-- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
 - Logs forwarded to egress.
-
-Appendix:
-- `prd/epic4-appendix-infisical-bootstrap.md`
 
 ## EPIC-5: Node2 bootstrap (k3s agent)
 Goal: Join node2 to the cluster with hardened baseline and logging.

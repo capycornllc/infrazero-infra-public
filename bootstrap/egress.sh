@@ -252,6 +252,8 @@ if [ -n "$INFISICAL_FQDN" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
   echo "[egress] INFISICAL_SITE_URL must be https for FQDN; overriding to https://${INFISICAL_FQDN}"
   INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
 fi
+export INFISICAL_SITE_URL
+export INFISICAL_FQDN
 if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ] || [ -n "$ARGOCD_FQDN" ]; then
   require_env "CLOUDFLARE_API_TOKEN"
 fi
@@ -488,7 +490,15 @@ if [ -n "$INFISICAL_FQDN" ]; then
 else
   echo "[egress] infisical https not configured (missing INFISICAL_FQDN)"
 fi
-echo "[egress] infisical bootstrap deferred to node1"
+
+if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
+  if [ -f "./infisical-bootstrap.sh" ]; then
+    chmod +x ./infisical-bootstrap.sh
+    ./infisical-bootstrap.sh
+  else
+    echo "[egress] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
+  fi
+fi
 
 cat > /opt/infrazero/infisical/backup.sh <<'EOF'
 #!/usr/bin/env bash

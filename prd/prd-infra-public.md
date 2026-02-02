@@ -261,7 +261,7 @@ Core resources:
 4) **Self-hosted Infisical** with **local PostgreSQL** on egress, served over HTTPS on the Infisical service FQDN using Let's Encrypt (Cloudflare DNS-01).
 5) **Grafana + Loki** exposed via service FQDNs with valid HTTPS certificates.
 6) **Infisical DB backups** to S3; **restore** latest dump at boot only when GitHub secret `infisical_restore_from_s3` is `true`.
-7) **Infisical bootstrap** is deferred to node1 (egress does not run the CLI bootstrap).
+7) **Infisical bootstrap** runs on egress after restore checks and writes the admin token manifest to S3.
 8) **Port forwarding / access path** to Infisical UI (admin access via bastion/WG or restricted public ingress).
 **Notes:**
 - Use a **latest-dump manifest** pattern (as in current repo) for Infisical DB restore.
@@ -281,7 +281,6 @@ Core resources:
 - Hardening baseline.
 - k3s server install and NodePort readiness (30080/30443).
 - Argo CD bootstrap using repo URLs and paths from config file.
-- Infisical bootstrap run from node1 against the egress HTTPS endpoint (trusting the local CA).
 - Log forwarding to egress Grafana/Loki.
 
 ### Epic 5: Node2 bootstrap (k3s agent)

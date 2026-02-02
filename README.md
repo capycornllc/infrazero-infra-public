@@ -104,7 +104,7 @@ sudo /opt/infrazero/bootstrap/node2.sh     # second k3s node (if present)
 sudo /opt/infrazero/bootstrap/db.sh        # database host
 ```
 
-Infisical bootstrap (runs from node1, safe to re-run):
+Infisical bootstrap (runs from egress, safe to re-run):
 ```bash
 sudo /opt/infrazero/bootstrap/infisical-bootstrap.sh
 ```
