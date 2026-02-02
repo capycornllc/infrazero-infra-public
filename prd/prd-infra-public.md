@@ -281,6 +281,7 @@ Core resources:
 - Hardening baseline.
 - k3s server install and NodePort readiness (30080/30443).
 - Argo CD bootstrap using repo URLs and paths from config file.
+- Infisical admin token secret synced from S3 into `kube-system`.
 - Log forwarding to egress Grafana/Loki.
 
 ### Epic 5: Node2 bootstrap (k3s agent)

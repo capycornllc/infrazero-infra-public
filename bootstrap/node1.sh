@@ -124,6 +124,15 @@ if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
   kubectl -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":"web","nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":"websecure","nodePort":30443}]}}' || true
 fi
 
+if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
+  if [ -f "./infisical-admin-secret.sh" ]; then
+    chmod +x ./infisical-admin-secret.sh
+    ./infisical-admin-secret.sh
+  else
+    echo "[node1] infisical-admin-secret.sh missing; skipping infisical admin secret sync" >&2
+  fi
+fi
+
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 retry 10 5 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 

@@ -109,6 +109,11 @@ Infisical bootstrap (runs from egress, safe to re-run):
 sudo /opt/infrazero/bootstrap/infisical-bootstrap.sh
 ```
 
+Infisical admin token sync (runs from node1, safe to re-run):
+```bash
+sudo /opt/infrazero/bootstrap/infisical-admin-secret.sh
+```
+
 ## Bootstrap logs
 On each server, check these logs first:
 - `/var/log/infrazero-bootstrap.log` (aggregated bootstrap output)

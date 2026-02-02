@@ -471,6 +471,7 @@ def main() -> int:
             "S3_REGION": s3_region,
             "DB_BACKUP_BUCKET": egress_secrets.get("DB_BACKUP_BUCKET", ""),
             "DB_BACKUP_AGE_PUBLIC_KEY": egress_secrets.get("DB_BACKUP_AGE_PUBLIC_KEY", ""),
+            "DB_BACKUP_AGE_PRIVATE_KEY": require_env("DB_BACKUP_AGE_PRIVATE_KEY"),
             "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
         }
     )

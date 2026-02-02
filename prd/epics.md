@@ -41,6 +41,7 @@ Definition of done:
 - Hardening baseline.
 - k3s server installed and NodePorts 30080/30443 ready.
 - Argo CD bootstrapped using repo URLs/paths from config.
+- Infisical admin token secret synced from S3 into `kube-system`.
 - Logs forwarded to egress.
 
 ## EPIC-5: Node2 bootstrap (k3s agent)
