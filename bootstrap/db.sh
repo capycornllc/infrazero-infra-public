@@ -302,11 +302,16 @@ psql_as_postgres() {
   sudo -u postgres psql -v ON_ERROR_STOP=1 "$@"
 }
 
+sql_escape() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
 user_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${APP_DB_USER}'" || true)
+escaped_app_db_password=$(sql_escape "$APP_DB_PASSWORD")
 if [ "$user_exists" != "1" ]; then
-  psql_as_postgres -v "pass=${APP_DB_PASSWORD}" -c "CREATE ROLE \"${APP_DB_USER}\" WITH LOGIN PASSWORD :'pass';"
+  psql_as_postgres -c "CREATE ROLE \"${APP_DB_USER}\" WITH LOGIN PASSWORD '${escaped_app_db_password}';"
 else
-  psql_as_postgres -v "pass=${APP_DB_PASSWORD}" -c "ALTER ROLE \"${APP_DB_USER}\" WITH PASSWORD :'pass';"
+  psql_as_postgres -c "ALTER ROLE \"${APP_DB_USER}\" WITH PASSWORD '${escaped_app_db_password}';"
 fi
 
 db_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${APP_DB_NAME}'" || true)
