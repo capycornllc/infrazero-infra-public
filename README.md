@@ -36,6 +36,11 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `db_backup_bucket`
 - `db_backup_age_public_key`
 - `db_backup_age_private_key`
+- `db_type` (currently `postgresql`)
+- `db_version` (currently `14.20`)
+- `app_db_name`
+- `app_db_user`
+- `app_db_password`
 - `k3s_node_count` (optional; defaults to the number of `k3s_nodes`)
 - `k3s_join_token`
 - `infisical_password`
@@ -100,4 +105,17 @@ Logs are written to:
 Optional one-off systemd run:
 ```bash
 sudo systemd-run --unit=infisical-backup-once --wait /opt/infrazero/infisical/backup.sh
+```
+
+## DB restore (manual)
+On the **db** node you can restore a specific backup from S3. The script will:
+- Download the object from S3
+- Detect whether it is age-encrypted or plaintext
+- Prompt for an Age private key if needed
+- Wipe and recreate the database before restoring
+
+```bash
+sudo /opt/infrazero/db/restore.sh db/20260201T120000Z.sql.gz.age
+# or full path:
+sudo /opt/infrazero/db/restore.sh s3://<bucket>/db/20260201T120000Z.sql.gz.age
 ```

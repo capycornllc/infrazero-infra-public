@@ -147,6 +147,12 @@ def main() -> int:
 
     config["k3s_nodes"] = k3s_nodes[:k3s_node_count]
 
+    k3s_node_cidrs = []
+    for node in config["k3s_nodes"]:
+        ip = str(node.get("private_ip", "")).strip()
+        if ip:
+            k3s_node_cidrs.append(f"{ip}/32")
+
     k3s_cfg = config.get("k3s", {}) or {}
     k3s_token_name = str(k3s_cfg.get("token_name", "")).strip()
     if not k3s_token_name:
@@ -187,6 +193,16 @@ def main() -> int:
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
+
+    db_type = require_env("DB_TYPE")
+    db_version = require_env("DB_VERSION")
+    app_db_name = require_env("APP_DB_NAME")
+    app_db_user = require_env("APP_DB_USER")
+    app_db_password = require_env("APP_DB_PASSWORD")
+    if db_type and db_type.lower() not in ("postgresql", "postgres"):
+        errors.append("DB_TYPE must be 'postgresql'")
+    if db_version and db_version != "14.20":
+        errors.append("DB_VERSION must be '14.20'")
 
     infisical_restore_from_s3 = os.getenv("INFISICAL_RESTORE_FROM_S3", "").strip()
     if not infisical_restore_from_s3:
@@ -231,6 +247,21 @@ def main() -> int:
         "INFISICAL_POSTGRES_PASSWORD": require_env("INFISICAL_POSTGRES_PASSWORD"),
         "INFISICAL_ENCRYPTION_KEY": require_env("INFISICAL_ENCRYPTION_KEY"),
         "INFISICAL_AUTH_SECRET": require_env("INFISICAL_AUTH_SECRET"),
+    }
+
+    db_secrets = {
+        "DB_TYPE": db_type,
+        "DB_VERSION": db_version,
+        "APP_DB_NAME": app_db_name,
+        "APP_DB_USER": app_db_user,
+        "APP_DB_PASSWORD": app_db_password,
+        "S3_ACCESS_KEY_ID": s3_access_key,
+        "S3_SECRET_ACCESS_KEY": s3_secret_key,
+        "S3_ENDPOINT": s3_endpoint,
+        "S3_REGION": s3_region,
+        "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
+        "DB_BACKUP_AGE_PUBLIC_KEY": require_env("DB_BACKUP_AGE_PUBLIC_KEY"),
+        "K3S_NODE_CIDRS": ",".join(k3s_node_cidrs),
     }
 
     infisical_site_url = os.getenv("INFISICAL_SITE_URL", "").strip()
@@ -460,6 +491,7 @@ def main() -> int:
 
     config["egress_secrets"] = egress_secrets
     config["bastion_secrets"] = bastion_secrets
+    config["db_secrets"] = db_secrets
     config["k3s_secrets"] = k3s_secrets
     config["k3s_server_secrets"] = k3s_server_secrets
     config["k3s_agent_secrets"] = k3s_agent_secrets

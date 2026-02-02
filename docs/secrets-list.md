@@ -61,6 +61,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 
 ## 6) Application Database
+- `db_type` (currently `postgresql`)
+- `db_version` (currently `14.20`)
 - `app_db_name`
 - `app_db_user`
 - `app_db_password`

@@ -31,6 +31,11 @@ locals {
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
 
+  db_env_lines = [
+    for key, value in var.db_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
+
   k3s_env_lines = [
     for key, value in var.k3s_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
