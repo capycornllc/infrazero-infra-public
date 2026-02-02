@@ -91,6 +91,30 @@ Full list (including future epics): `docs/secrets-list.md`
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.
 - Backend config skips AWS region validation to allow Hetzner regions (e.g. `fsn1`).
 
+## Bootstrap scripts (manual re-run)
+If cloud-init fails or you need to re-run a role bootstrap, the scripts are designed to be **idempotent** and can be run manually on the target host. After the initial run, the extracted scripts live under `/opt/infrazero/bootstrap/`.
+
+Common + role scripts:
+```bash
+sudo /opt/infrazero/bootstrap/common.sh
+sudo /opt/infrazero/bootstrap/bastion.sh   # bastion host
+sudo /opt/infrazero/bootstrap/egress.sh    # egress host
+sudo /opt/infrazero/bootstrap/node1.sh     # first k3s server node
+sudo /opt/infrazero/bootstrap/node2.sh     # second k3s node (if present)
+sudo /opt/infrazero/bootstrap/db.sh        # database host
+```
+
+Infisical bootstrap (runs from node1, safe to re-run):
+```bash
+sudo /opt/infrazero/bootstrap/infisical-bootstrap.sh
+```
+
+## Bootstrap logs
+On each server, check these logs first:
+- `/var/log/infrazero-bootstrap.log` (aggregated bootstrap output)
+- `/var/log/cloud-init.log`
+- `/var/log/cloud-init-output.log`
+
 ## Infisical backup (on-demand)
 On the **egress** node you can trigger an immediate Infisical backup:
 ```bash

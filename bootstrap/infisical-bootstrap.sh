@@ -148,9 +148,12 @@ if [ "$restore_requested" = "true" ]; then
 fi
 
 tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
+tokens_manifest_exists="false"
 if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" >/dev/null 2>&1; then
-  echo "[infisical-bootstrap] tokens manifest already exists; skipping bootstrap"
-  exit 0
+  tokens_manifest_exists="true"
+fi
+if [ "$restore_requested" != "true" ] && [ "$tokens_manifest_exists" = "true" ]; then
+  echo "[infisical-bootstrap] tokens manifest exists; rotating tokens and updating manifest"
 fi
 
 bootstrap_payload=$(jq -n \
@@ -484,15 +487,20 @@ age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$tmpdir/readonly.token.age" "$tmpdir/read
 admin_sha=$(sha256sum "$tmpdir/admin.token.age" | awk '{print $1}')
 readonly_sha=$(sha256sum "$tmpdir/readonly.token.age" | awk '{print $1}')
 
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/admin.token.age" "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/admin.token.age"
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/readonly.token.age" "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/readonly.token.age"
+token_timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+token_prefix="infisical/bootstrap/${token_timestamp}"
+admin_key="${token_prefix}/admin.token.age"
+readonly_key="${token_prefix}/readonly.token.age"
+
+aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/admin.token.age" "s3://${DB_BACKUP_BUCKET}/${admin_key}"
+aws --endpoint-url "$S3_ENDPOINT" s3 cp "$tmpdir/readonly.token.age" "s3://${DB_BACKUP_BUCKET}/${readonly_key}"
 
 manifest=$(jq -n \
   --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg site "$INFISICAL_SITE_URL" \
-  --arg admin_key "infisical/bootstrap/admin.token.age" \
+  --arg admin_key "$admin_key" \
   --arg admin_sha "$admin_sha" \
-  --arg readonly_key "infisical/bootstrap/readonly.token.age" \
+  --arg readonly_key "$readonly_key" \
   --arg readonly_sha "$readonly_sha" \
   '{created_at:$created_at, infisical_site_url:$site, admin_token_key:$admin_key, admin_token_sha256:$admin_sha, readonly_token_key:$readonly_key, readonly_token_sha256:$readonly_sha}')
 
