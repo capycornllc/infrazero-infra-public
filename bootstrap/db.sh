@@ -154,6 +154,14 @@ fi
 
 systemctl enable --now postgresql
 
+start_cluster() {
+  if command -v pg_ctlcluster >/dev/null 2>&1; then
+    pg_ctlcluster "$PG_MAJOR" main start || true
+    return 0
+  fi
+  systemctl start "postgresql@${PG_MAJOR}-main" || true
+}
+
 PG_CONF="/etc/postgresql/${PG_MAJOR}/main/postgresql.conf"
 HBA_CONF="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
 
@@ -197,6 +205,25 @@ fi
 } >> "$HBA_CONF"
 
 systemctl restart postgresql
+
+wait_for_postgres() {
+  for _ in {1..30}; do
+    if sudo -u postgres pg_isready -q >/dev/null 2>&1; then
+      return 0
+    fi
+    if systemctl is-active --quiet "postgresql@${PG_MAJOR}-main"; then
+      sleep 2
+    else
+      start_cluster
+      sleep 2
+    fi
+  done
+  systemctl status --no-pager postgresql || true
+  systemctl status --no-pager "postgresql@${PG_MAJOR}-main" || true
+  journalctl -u postgresql -n 50 --no-pager || true
+  journalctl -u "postgresql@${PG_MAJOR}-main" -n 50 --no-pager || true
+  return 1
+}
 
 setup_db_tls() {
   local fqdn="${DB_FQDN:-}"
@@ -265,6 +292,11 @@ EOF
 }
 
 setup_db_tls || true
+
+if ! wait_for_postgres; then
+  echo "[db] postgresql did not become ready" >&2
+  exit 1
+fi
 
 psql_as_postgres() {
   sudo -u postgres psql -v ON_ERROR_STOP=1 "$@"
