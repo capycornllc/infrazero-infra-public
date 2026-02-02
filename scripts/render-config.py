@@ -332,6 +332,7 @@ def main() -> int:
     grafana_fqdn = internal_services.get("grafana", "")
     loki_fqdn = internal_services.get("loki", "")
     argocd_fqdn = internal_services.get("argocd", "")
+    db_fqdn = internal_services.get("db", "")
     if infisical_fqdn:
         egress_secrets["INFISICAL_FQDN"] = infisical_fqdn
     if grafana_fqdn:
@@ -345,6 +346,13 @@ def main() -> int:
     if not infisical_site_url and infisical_fqdn:
         infisical_site_url = f"https://{infisical_fqdn}"
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
+
+    if db_fqdn:
+        db_secrets["DB_FQDN"] = db_fqdn
+    if cloudflare_api_token:
+        db_secrets["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
+    if egress_secrets.get("INFISICAL_EMAIL"):
+        db_secrets["INFISICAL_EMAIL"] = egress_secrets.get("INFISICAL_EMAIL", "")
 
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug

@@ -62,7 +62,7 @@ install_packages() {
   fi
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync
+  apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
@@ -197,6 +197,74 @@ fi
 } >> "$HBA_CONF"
 
 systemctl restart postgresql
+
+setup_db_tls() {
+  local fqdn="${DB_FQDN:-}"
+  if [ -z "$fqdn" ]; then
+    return 0
+  fi
+
+  local cf_token="${CLOUDFLARE_API_TOKEN:-}"
+  if [ -z "$cf_token" ]; then
+    echo "[db] DB_FQDN set but CLOUDFLARE_API_TOKEN missing; skipping TLS setup" >&2
+    return 0
+  fi
+
+  local le_email="${LETSENCRYPT_EMAIL:-${INFISICAL_EMAIL:-}}"
+  if [ -z "$le_email" ]; then
+    echo "[db] LETSENCRYPT_EMAIL or INFISICAL_EMAIL required for TLS" >&2
+    return 1
+  fi
+
+  mkdir -p /etc/letsencrypt /etc/letsencrypt/renewal-hooks/deploy
+  umask 077
+  cat > /etc/letsencrypt/cloudflare.ini <<EOF
+dns_cloudflare_api_token = ${cf_token}
+EOF
+  umask 022
+
+  if certbot certonly --non-interactive --agree-tos --email "$le_email" \
+    --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+    --dns-cloudflare-propagation-seconds 30 \
+    --cert-name infrazero-db --expand -d "$fqdn"; then
+    echo "[db] Let's Encrypt cert issued for $fqdn"
+  else
+    echo "[db] Let's Encrypt issuance failed" >&2
+    return 1
+  fi
+
+  local cert_dir="/etc/letsencrypt/live/infrazero-db"
+  local pg_ssl_dir="/etc/postgresql/${PG_MAJOR}/main/ssl"
+  mkdir -p "$pg_ssl_dir"
+  cp "$cert_dir/fullchain.pem" "$pg_ssl_dir/server.crt"
+  cp "$cert_dir/privkey.pem" "$pg_ssl_dir/server.key"
+  chown postgres:postgres "$pg_ssl_dir/server.crt" "$pg_ssl_dir/server.key"
+  chmod 644 "$pg_ssl_dir/server.crt"
+  chmod 600 "$pg_ssl_dir/server.key"
+
+  set_conf "ssl" "on"
+  set_conf "ssl_cert_file" "'${pg_ssl_dir}/server.crt'"
+  set_conf "ssl_key_file" "'${pg_ssl_dir}/server.key'"
+
+  cat > /etc/letsencrypt/renewal-hooks/deploy/infrazero-postgres-reload.sh <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+CERT_DIR="${cert_dir}"
+PG_SSL_DIR="${pg_ssl_dir}"
+cp "\${CERT_DIR}/fullchain.pem" "\${PG_SSL_DIR}/server.crt"
+cp "\${CERT_DIR}/privkey.pem" "\${PG_SSL_DIR}/server.key"
+chown postgres:postgres "\${PG_SSL_DIR}/server.crt" "\${PG_SSL_DIR}/server.key"
+chmod 644 "\${PG_SSL_DIR}/server.crt"
+chmod 600 "\${PG_SSL_DIR}/server.key"
+systemctl reload postgresql
+EOF
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/infrazero-postgres-reload.sh
+
+  systemctl restart postgresql
+  systemctl enable --now certbot.timer || true
+}
+
+setup_db_tls || true
 
 psql_as_postgres() {
   sudo -u postgres psql -v ON_ERROR_STOP=1 "$@"
