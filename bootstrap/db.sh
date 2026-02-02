@@ -62,7 +62,7 @@ install_packages() {
   fi
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare
+  apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
@@ -507,9 +507,35 @@ detect_gzip() {
   return 1
 }
 
+detect_zstd() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local magic
+  magic=$(od -An -t x1 -N 4 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$magic" = "28b52ffd" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_pg_dump() {
+  local path="$1"
+  if head -c 5 "$path" 2>/dev/null | grep -q "PGDMP"; then
+    return 0
+  fi
+  return 1
+}
+
 is_gzip="false"
 if detect_gzip "$src_path"; then
   is_gzip="true"
+fi
+
+is_zstd="false"
+if detect_zstd "$src_path"; then
+  is_zstd="true"
 fi
 
 if [ "$is_age_encrypted" = "true" ]; then
@@ -536,11 +562,48 @@ if [ "$is_age_encrypted" = "true" ]; then
   fi
   if detect_gzip "$dump_path"; then
     is_gzip="true"
-  else
-    is_gzip="false"
+  fi
+  if detect_zstd "$dump_path"; then
+    is_zstd="true"
   fi
 else
   dump_path="$src_path"
+fi
+
+restore_source="$dump_path"
+if [ "$is_gzip" = "true" ] || [ "$is_zstd" = "true" ]; then
+  restore_source="$dump_path"
+fi
+
+stream_cmd=()
+if [ "$is_gzip" = "true" ]; then
+  stream_cmd=(gunzip -c "$restore_source")
+elif [ "$is_zstd" = "true" ]; then
+  if ! command -v zstd >/dev/null 2>&1; then
+    echo "[db-restore] zstd not available for .zst backup" >&2
+    rm -rf "$tmpdir"
+    exit 1
+  fi
+  stream_cmd=(zstd -d -q --stdout "$restore_source")
+else
+  stream_cmd=(cat "$restore_source")
+fi
+
+is_custom="false"
+if [ "$is_gzip" = "true" ]; then
+  header=$(gunzip -c "$restore_source" 2>/dev/null | head -c 5 || true)
+  if [ "$header" = "PGDMP" ]; then
+    is_custom="true"
+  fi
+elif [ "$is_zstd" = "true" ]; then
+  header=$(zstd -d -q --stdout "$restore_source" 2>/dev/null | head -c 5 || true)
+  if [ "$header" = "PGDMP" ]; then
+    is_custom="true"
+  fi
+else
+  if detect_pg_dump "$restore_source"; then
+    is_custom="true"
+  fi
 fi
 
 echo "[db-restore] wiping database ${APP_DB_NAME}"
@@ -549,10 +612,10 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${APP_DB_
 sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${APP_DB_NAME}\" OWNER \"${APP_DB_USER}\";"
 
 echo "[db-restore] restoring database"
-if [ "$is_gzip" = "true" ]; then
-  gunzip -c "$dump_path" | sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+if [ "$is_custom" = "true" ]; then
+  "${stream_cmd[@]}" | sudo -u postgres pg_restore --no-owner -d "$APP_DB_NAME"
 else
-  cat "$dump_path" | sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+  "${stream_cmd[@]}" | sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
 fi
 
 rm -rf "$tmpdir"
