@@ -316,6 +316,8 @@ server {
     proxy_set_header Connection "upgrade";
   }
 }
+EOF
+}
 
 write_https_server_block_insecure_upstream() {
   local name="$1"
@@ -348,8 +350,6 @@ server {
     proxy_ssl_server_name on;
     proxy_ssl_verify off;
   }
-}
-EOF
 }
 EOF
 }
