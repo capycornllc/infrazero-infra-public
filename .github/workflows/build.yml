@@ -13,6 +13,7 @@ jobs:
       S3_REGION: ${{ secrets.s3_region }}
       CLOUD_REGION: ${{ secrets.cloud_region }}
       PROJECT_SLUG: ${{ secrets.project_slug }}
+      ENVIRONMENT: ${{ secrets.env }}
       S3_ENDPOINT: ${{ secrets.s3_endpoint }}
       INFRA_STATE_BUCKET: ${{ secrets.infra_state_bucket }}
       OPS_SSH_KEYS_JSON: ${{ secrets.OPS_SSH_KEYS_JSON }}

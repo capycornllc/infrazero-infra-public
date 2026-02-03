@@ -33,6 +33,7 @@ def main() -> int:
     project_slug = os.getenv("PROJECT_SLUG", "").strip()
     cloud_region = os.getenv("CLOUD_REGION", "").strip()
     environment = str(config.get("environment", "")).strip()
+    runtime_environment = os.getenv("ENVIRONMENT", "").strip() or os.getenv("ENV", "").strip() or environment
     if project_slug:
         if environment:
             config["name_prefix"] = f"{project_slug}-{environment}"
@@ -364,8 +365,8 @@ def main() -> int:
 
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
-    if environment:
-        egress_secrets["ENVIRONMENT"] = environment
+    if runtime_environment:
+        egress_secrets["ENVIRONMENT"] = runtime_environment
 
     wg_server_address = require_env("WG_SERVER_ADDRESS")
 
@@ -485,8 +486,8 @@ def main() -> int:
         k3s_server_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
     if project_slug:
         k3s_server_secrets["PROJECT_SLUG"] = project_slug
-    if environment:
-        k3s_server_secrets["ENVIRONMENT"] = environment
+    if runtime_environment:
+        k3s_server_secrets["ENVIRONMENT"] = runtime_environment
     if infisical_project_name:
         k3s_server_secrets["INFISICAL_PROJECT_NAME"] = infisical_project_name
 

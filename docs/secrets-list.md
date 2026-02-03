@@ -4,6 +4,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 
 ## 1) Project Basics
 - `project_slug` (used to derive `name_prefix` as `<project_slug>-<environment>`)
+- `env` (optional override for `ENVIRONMENT` used by bootstrap scripts; e.g. `dev`, `test`, `prod`)
 - `cloud_region` (e.g. `nbg1`, `fsn1`, `hel1`, `ash`, `hil`, `sin`; used as fallback if `s3_region` is empty)
 - `s3_endpoint` (include scheme; workflows will prepend `https://` if missing)
 
