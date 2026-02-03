@@ -87,6 +87,18 @@ wait_for_url "https://${INFISICAL_FQDN}" || {
   exit 1
 }
 
+wait_for_manifest() {
+  local key="$1"
+  echo "[infisical-admin-secret] waiting for s3://${DB_BACKUP_BUCKET}/${key}"
+  for _ in {1..60}; do
+    if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${key}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
 if ! command -v aws >/dev/null 2>&1; then
   if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
     unzip -q /tmp/awscliv2.zip -d /tmp
@@ -111,6 +123,12 @@ tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
 
 workdir=$(mktemp -d /run/infisical-admin-secret.XXXX)
 chmod 700 "$workdir"
+
+wait_for_manifest "$tokens_manifest_key" || {
+  echo "[infisical-admin-secret] latest tokens manifest not found after waiting" >&2
+  rm -rf "$workdir"
+  exit 1
+}
 
 echo "$DB_BACKUP_AGE_PRIVATE_KEY" > "$workdir/age.key"
 chmod 600 "$workdir/age.key"

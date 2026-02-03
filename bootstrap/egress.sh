@@ -481,6 +481,11 @@ else
   echo "[egress] infisical_restore_from_s3 not true; skipping restore"
 fi
 
+if [ "${INFISICAL_RESTORE_FROM_S3,,}" != "true" ]; then
+  echo "[egress] clearing infisical bootstrap tokens manifest before bootstrap"
+  aws --endpoint-url "$S3_ENDPOINT" s3 rm "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/latest-tokens.json" >/dev/null 2>&1 || true
+fi
+
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 
 setup_service_tls || true
