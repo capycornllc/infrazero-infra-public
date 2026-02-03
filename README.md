@@ -58,6 +58,7 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_bootstrap_secrets` (optional JSON payload for Infisical bootstrap secrets)
 - `argocd_admin_password`
 - `argocd_fqdn`
+- `kubernetes_fqdn`
 - `wg_server_private_key`
 - `wg_server_public_key`
 - `wg_server_address`

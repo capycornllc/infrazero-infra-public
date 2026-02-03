@@ -44,6 +44,7 @@ jobs:
       GRAFANA_FQDN: ${{ secrets.grafana_fqdn }}
       LOKI_FQDN: ${{ secrets.loki_fqdn }}
       INFISICAL_FQDN: ${{ secrets.infisical_fqdn }}
+      KUBERNETES_FQDN: ${{ secrets.kubernetes_fqdn }}
       DB_FQDN: ${{ secrets.db_fqdn }}
       INTERNAL_SERVICES_DOMAINS_JSON: ${{ secrets.internal_services_domains_json }}
       DEPLOYED_APPS_JSON: ${{ secrets.deployed_apps_json }}

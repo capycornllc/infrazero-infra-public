@@ -275,7 +275,7 @@ def main() -> int:
     internal_services = {}
     internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
     required_service_keys = ("bastion", "grafana", "loki", "infisical", "db")
-    optional_service_keys = ("argocd",)
+    optional_service_keys = ("argocd", "kubernetes")
     if internal_services_json is not None:
         if not isinstance(internal_services_json, dict):
             errors.append("INTERNAL_SERVICES_DOMAINS_JSON must be a JSON object")
@@ -303,6 +303,7 @@ def main() -> int:
             "infisical": "INFISICAL_FQDN",
             "db": "DB_FQDN",
             "argocd": "ARGOCD_FQDN",
+            "kubernetes": "KUBERNETES_FQDN",
         }
         for key, env_name in env_map.items():
             fqdn = optional_env(env_name)
@@ -336,6 +337,7 @@ def main() -> int:
     grafana_fqdn = internal_services.get("grafana", "")
     loki_fqdn = internal_services.get("loki", "")
     argocd_fqdn = internal_services.get("argocd", "")
+    kubernetes_fqdn = internal_services.get("kubernetes", "")
     db_fqdn = internal_services.get("db", "")
     if infisical_fqdn:
         egress_secrets["INFISICAL_FQDN"] = infisical_fqdn
@@ -345,6 +347,8 @@ def main() -> int:
         egress_secrets["LOKI_FQDN"] = loki_fqdn
     if argocd_fqdn:
         egress_secrets["ARGOCD_FQDN"] = argocd_fqdn
+    if kubernetes_fqdn:
+        egress_secrets["KUBERNETES_FQDN"] = kubernetes_fqdn
     if k3s_server_private_ip:
         egress_secrets["K3S_SERVER_PRIVATE_IP"] = k3s_server_private_ip
     if not infisical_site_url and infisical_fqdn:
@@ -454,6 +458,8 @@ def main() -> int:
         k3s_server_secrets["INFISICAL_FQDN"] = infisical_fqdn
     if infisical_site_url:
         k3s_server_secrets["INFISICAL_SITE_URL"] = infisical_site_url
+    if kubernetes_fqdn:
+        k3s_server_secrets["KUBERNETES_FQDN"] = kubernetes_fqdn
     k3s_server_secrets.update(
         {
             "INFISICAL_PASSWORD": egress_secrets.get("INFISICAL_PASSWORD", ""),

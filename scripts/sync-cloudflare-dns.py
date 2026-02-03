@@ -9,7 +9,7 @@ import yaml
 
 
 REQUIRED_SERVICE_KEYS = ("bastion", "grafana", "loki", "infisical", "db")
-OPTIONAL_SERVICE_KEYS = ("argocd",)
+OPTIONAL_SERVICE_KEYS = ("argocd", "kubernetes")
 
 
 def load_yaml(path: Path):
@@ -59,6 +59,7 @@ def resolve_internal_fqdns():
         "infisical": "INFISICAL_FQDN",
         "db": "DB_FQDN",
         "argocd": "ARGOCD_FQDN",
+        "kubernetes": "KUBERNETES_FQDN",
     }
     for key, env_name in env_map.items():
         fqdn = os.getenv(env_name, "").strip()
@@ -206,6 +207,7 @@ def main() -> int:
             "loki": egress_ip,
             "infisical": egress_ip,
             "argocd": egress_ip,
+            "kubernetes": egress_ip,
             "db": db_ip,
         }
         for key, fqdn in internal_fqdns.items():

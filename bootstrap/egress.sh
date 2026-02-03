@@ -238,6 +238,7 @@ INFISICAL_FQDN="${INFISICAL_FQDN:-}"
 GRAFANA_FQDN="${GRAFANA_FQDN:-}"
 LOKI_FQDN="${LOKI_FQDN:-}"
 ARGOCD_FQDN="${ARGOCD_FQDN:-}"
+KUBERNETES_FQDN="${KUBERNETES_FQDN:-}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-${INFISICAL_EMAIL}}"
 INFISICAL_BIND_ADDR=${INFISICAL_BIND_ADDR:-"$PRIVATE_IP"}
 INFISICAL_SITE_URL=${INFISICAL_SITE_URL:-""}
@@ -254,7 +255,7 @@ if [ -n "$INFISICAL_FQDN" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
 fi
 export INFISICAL_SITE_URL
 export INFISICAL_FQDN
-if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ] || [ -n "$ARGOCD_FQDN" ]; then
+if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ] || [ -n "$ARGOCD_FQDN" ] || [ -n "$KUBERNETES_FQDN" ]; then
   require_env "CLOUDFLARE_API_TOKEN"
 fi
 DB_CONNECTION_URI="postgres://${INFISICAL_POSTGRES_USER}:${INFISICAL_POSTGRES_PASSWORD}@infisical-db:5432/${INFISICAL_POSTGRES_DB}"
@@ -282,6 +283,8 @@ if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
 fi
 ARGOCD_UPSTREAM_ADDR="${ARGOCD_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
 ARGOCD_UPSTREAM_PORT="${ARGOCD_UPSTREAM_PORT:-30080}"
+KUBERNETES_UPSTREAM_ADDR="${KUBERNETES_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
+KUBERNETES_UPSTREAM_PORT="${KUBERNETES_UPSTREAM_PORT:-6443}"
 
 write_https_server_block() {
   local name="$1"
@@ -313,6 +316,41 @@ server {
     proxy_set_header Connection "upgrade";
   }
 }
+
+write_https_server_block_insecure_upstream() {
+  local name="$1"
+  local upstream="$2"
+  cat >> "$INFISICAL_NGINX_CONF" <<EOF
+server {
+  listen 80;
+  server_name ${name};
+  return 301 https://\$host\$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  server_name ${name};
+
+  ssl_certificate ${INFISICAL_TLS_CERT};
+  ssl_certificate_key ${INFISICAL_TLS_KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers HIGH:!aNULL:!MD5;
+
+  location / {
+    proxy_pass ${upstream};
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_ssl_server_name on;
+    proxy_ssl_verify off;
+  }
+}
+EOF
+}
 EOF
 }
 
@@ -329,6 +367,9 @@ setup_service_tls() {
   fi
   if [ -n "$ARGOCD_FQDN" ]; then
     domains+=("$ARGOCD_FQDN")
+  fi
+  if [ -n "$KUBERNETES_FQDN" ]; then
+    domains+=("$KUBERNETES_FQDN")
   fi
 
   if [ "${#domains[@]}" -eq 0 ]; then
@@ -384,6 +425,13 @@ EOF
       write_https_server_block "$ARGOCD_FQDN" "http://${ARGOCD_UPSTREAM_ADDR}:${ARGOCD_UPSTREAM_PORT}"
     else
       echo "[egress] ARGOCD_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping argocd proxy" >&2
+    fi
+  fi
+  if [ -n "$KUBERNETES_FQDN" ]; then
+    if [ -n "$KUBERNETES_UPSTREAM_ADDR" ]; then
+      write_https_server_block_insecure_upstream "$KUBERNETES_FQDN" "https://${KUBERNETES_UPSTREAM_ADDR}:${KUBERNETES_UPSTREAM_PORT}"
+    else
+      echo "[egress] KUBERNETES_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping kubernetes proxy" >&2
     fi
   fi
 

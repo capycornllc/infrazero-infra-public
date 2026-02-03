@@ -46,6 +46,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `grafana_fqdn`
 - `loki_fqdn`
 - `infisical_fqdn`
+- `kubernetes_fqdn`
 - `db_fqdn`
 - `internal_services_domains_json`
 - `deployed_apps_json`
