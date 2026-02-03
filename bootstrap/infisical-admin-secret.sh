@@ -207,6 +207,17 @@ if [ -z "$INFISICAL_ENV_SLUG" ]; then
   exit 1
 fi
 
+NODE1_IP="${K3S_SERVER_IP:-}"
+if [ -z "$NODE1_IP" ]; then
+  NODE1_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
+fi
+if [ -z "$NODE1_IP" ]; then
+  echo "[infisical-admin-secret] unable to determine node1 IP for INFISICAL_KUBERNETES_HOST" >&2
+  exit 1
+fi
+export INFISICAL_KUBERNETES_HOST="https://${NODE1_IP}:6443"
+echo "[infisical-admin-secret] using INFISICAL_KUBERNETES_HOST=${INFISICAL_KUBERNETES_HOST}"
+
 GITOPS_DIR="${GITOPS_DIR:-/opt/infrazero/gitops}"
 
 ensure_gitops_repo() {
