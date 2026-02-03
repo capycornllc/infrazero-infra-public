@@ -126,10 +126,28 @@ kubectl -n kube-system create secret generic infisical-admin-token \
 
 kubectl -n kube-system create secret generic infisical-organization \
   --from-literal=infisical_organization="$INFISICAL_ORGANIZATION" \
+  --from-literal=value="$INFISICAL_ORGANIZATION" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n kube-system create secret generic infisical-project-name \
   --from-literal=infisical_project_name="$INFISICAL_PROJECT_NAME" \
+  --from-literal=value="$INFISICAL_PROJECT_NAME" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl get namespace infisical-bootstrap >/dev/null 2>&1 || kubectl create namespace infisical-bootstrap
+kubectl -n infisical-bootstrap create secret generic infisical-admin-token \
+  --from-literal=token="$ADMIN_TOKEN" \
+  --from-literal=host="$INFISICAL_SITE_URL" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n infisical-bootstrap create secret generic infisical-organization \
+  --from-literal=infisical_organization="$INFISICAL_ORGANIZATION" \
+  --from-literal=value="$INFISICAL_ORGANIZATION" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n infisical-bootstrap create secret generic infisical-project-name \
+  --from-literal=infisical_project_name="$INFISICAL_PROJECT_NAME" \
+  --from-literal=value="$INFISICAL_PROJECT_NAME" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 ENVIRONMENT="${ENVIRONMENT:-${ENV:-}}"
