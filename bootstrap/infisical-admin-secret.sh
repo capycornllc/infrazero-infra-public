@@ -44,6 +44,7 @@ if [ -z "$INFISICAL_SITE_URL" ] && [ -n "$INFISICAL_FQDN" ]; then
   INFISICAL_SITE_URL="https://${INFISICAL_FQDN}"
 fi
 
+require_env "INFISICAL_FQDN"
 require_env "INFISICAL_SITE_URL"
 require_env "INFISICAL_ORGANIZATION"
 require_env "INFISICAL_PROJECT_NAME"
@@ -59,6 +60,32 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get update -y
   apt-get install -y curl ca-certificates jq age unzip git
 fi
+
+wait_for_url() {
+  local url="$1"
+  echo "[infisical-admin-secret] waiting for $url"
+  for _ in {1..60}; do
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+    case "$code" in
+      200|301|302|401|403|404)
+        return 0
+        ;;
+      502|503|504|000|"")
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+    sleep 5
+  done
+  return 1
+}
+
+wait_for_url "https://${INFISICAL_FQDN}" || {
+  echo "[infisical-admin-secret] infisical_fqdn not ready (still returning 5xx/000)" >&2
+  exit 1
+}
 
 if ! command -v aws >/dev/null 2>&1; then
   if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
