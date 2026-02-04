@@ -70,7 +70,7 @@ k3s:
 
 argocd:
   repo_revision: main
-  repo_path: clusters/dev
+  repo_path: clusters/${ENVIRONMENT}
   app_name: root
   app_project: default
   destination_namespace: argocd
