@@ -137,7 +137,9 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
 fi
 
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-retry 10 5 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+# Use server-side apply to avoid client-side last-applied annotations exceeding
+# the 256KiB limit on large CRDs (e.g. ApplicationSet).
+retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 for dep in argocd-server argocd-repo-server argocd-application-controller argocd-dex-server; do
   kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s || true
