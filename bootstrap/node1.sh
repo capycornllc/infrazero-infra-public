@@ -99,6 +99,20 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y curl ca-certificates jq unzip apache2-utils
 fi
 
+if ! command -v argocd >/dev/null 2>&1; then
+  ARGOCD_CLI_VERSION="${ARGOCD_CLI_VERSION:-latest}"
+  if [ "$ARGOCD_CLI_VERSION" = "latest" ]; then
+    ARGOCD_CLI_URL="https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64"
+  else
+    ARGOCD_CLI_URL="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/argocd-linux-amd64"
+  fi
+  if retry 5 2 curl -fsSL -o /usr/local/bin/argocd "$ARGOCD_CLI_URL"; then
+    chmod +x /usr/local/bin/argocd
+  else
+    echo "[node1] argocd cli download failed; skipping" >&2
+  fi
+fi
+
 K3S_SERVER_TAINT="${K3S_SERVER_TAINT:-false}"
 INSTALL_K3S_EXEC="server --node-ip ${NODE_IP} --advertise-address ${NODE_IP} --flannel-iface ${PRIVATE_IF} --write-kubeconfig-mode 644"
 if [ "${K3S_SERVER_TAINT,,}" = "true" ]; then
