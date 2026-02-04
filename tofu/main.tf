@@ -125,41 +125,42 @@ resource "hcloud_firewall" "egress" {
   rule {
     direction  = "in"
     protocol   = "tcp"
-    port       = "any"
-    source_ips = [var.private_cidr]
-  }
-
-  rule {
-    direction  = "in"
-    protocol   = "udp"
-    port       = "any"
-    source_ips = [var.private_cidr]
+    port       = "80"
+    source_ips = local.egress_service_cidrs
   }
 
   rule {
     direction  = "in"
     protocol   = "icmp"
-    source_ips = [var.private_cidr]
+    source_ips = local.egress_service_cidrs
   }
 
   rule {
     direction  = "in"
     protocol   = "tcp"
-    port       = "any"
-    source_ips = var.wireguard.allowed_cidrs
+    port       = "443"
+    source_ips = local.egress_service_cidrs
   }
 
   rule {
     direction  = "in"
-    protocol   = "udp"
-    port       = "any"
-    source_ips = var.wireguard.allowed_cidrs
+    protocol   = "tcp"
+    port       = "3000"
+    source_ips = local.egress_service_cidrs
   }
 
   rule {
     direction  = "in"
-    protocol   = "icmp"
-    source_ips = var.wireguard.allowed_cidrs
+    protocol   = "tcp"
+    port       = "3100"
+    source_ips = local.egress_service_cidrs
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "8080"
+    source_ips = local.egress_service_cidrs
   }
 
   rule {
@@ -173,7 +174,7 @@ resource "hcloud_firewall" "egress" {
     direction  = "in"
     protocol   = "tcp"
     port       = "6443"
-    source_ips = [format("%s/32", hcloud_server.egress.ipv4_address)]
+    source_ips = [format("%s/32", hcloud_server.egress.ipv4_address), local.egress_cidr]
   }
 
   apply_to {
