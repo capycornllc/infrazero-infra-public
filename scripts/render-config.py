@@ -408,6 +408,33 @@ def main() -> int:
     argocd_dest_namespace = str(argocd_cfg.get("destination_namespace", "")).strip() or "argocd"
     argocd_dest_server = str(argocd_cfg.get("destination_server", "")).strip() or "https://kubernetes.default.svc"
 
+    def expand_env_template(value: str) -> str:
+        if not value:
+            return value
+        env_value = runtime_environment or environment
+        if not env_value:
+            return value
+        replacements = {
+            "${ENVIRONMENT}": env_value,
+            "${ENV}": env_value,
+            "{ENVIRONMENT}": env_value,
+            "{ENV}": env_value,
+            "{environment}": env_value,
+            "{env}": env_value,
+        }
+        for key, replacement in replacements.items():
+            value = value.replace(key, replacement)
+        return value
+
+    if not argocd_repo_path:
+        default_env = runtime_environment or environment
+        if default_env:
+            argocd_repo_path = f"clusters/{default_env}"
+
+    argocd_repo_path = expand_env_template(argocd_repo_path)
+    if runtime_environment and environment and argocd_repo_path == f"clusters/{environment}":
+        argocd_repo_path = f"clusters/{runtime_environment}"
+
     argocd_repo_url, repo_errors = resolve_repo_url(gh_gitops_repo, gh_owner)
     if repo_errors:
         errors.extend(repo_errors)
