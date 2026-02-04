@@ -21,6 +21,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `gh_owner` (default GitHub owner/org)
 - `gh_infra_repo` (infra repo name or owner/repo)
 - `gh_gitops_repo` (gitops repo name or owner/repo)
+- `ghcr_token` (GitHub PAT for pulling images from GHCR; creates `ghcr-pull` in `default` namespace)
 
 ## 3) Hetzner Cloud Token
 - `hetzner_cloud_token`

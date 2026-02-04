@@ -141,6 +141,16 @@ if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
   kubectl -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":"web","nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":"websecure","nodePort":30443}]}}' || true
 fi
 
+if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GH_OWNER:-}" ]; then
+  kubectl -n default create secret docker-registry ghcr-pull \
+    --docker-server=ghcr.io \
+    --docker-username="$GH_OWNER" \
+    --docker-password="$GHCR_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f -
+else
+  echo "[node1] GHCR_TOKEN or GH_OWNER missing; skipping ghcr-pull secret" >&2
+fi
+
 if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-admin-secret.sh" ]; then
     chmod +x ./infisical-admin-secret.sh
