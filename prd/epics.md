@@ -43,6 +43,11 @@ Definition of done:
 - Argo CD bootstrapped using repo URLs/paths from config.
 - Infisical admin token secret synced from S3 into `kube-system`.
 - Logs forwarded to egress.
+Infisical Kubernetes auth workaround (required):
+1. DNS `k3s_fqdn` points to the egress public IP.
+2. Egress runs HAProxy TCP `6443` forwarding to `node1_private_ip:6443`.
+3. Firewall allows only the egress host IP to connect to `6443` on egress.
+4. k3s server cert includes `k3s_fqdn` as a SAN.
 
 ## EPIC-5: Node2 bootstrap (k3s agent)
 Goal: Join node2 to the cluster with hardened baseline and logging.

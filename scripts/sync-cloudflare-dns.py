@@ -171,6 +171,7 @@ def main() -> int:
     parser.add_argument("--config", default="config/infra.yaml")
     parser.add_argument("--lb-ip", required=True)
     parser.add_argument("--bastion-public-ip", default="")
+    parser.add_argument("--egress-public-ip", default="")
     args = parser.parse_args()
 
     token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
@@ -184,6 +185,7 @@ def main() -> int:
     bastion_private_ip = str(servers.get("bastion", {}).get("private_ip", "")).strip()
     bastion_public_ip = args.bastion_public_ip.strip()
     egress_ip = str(servers.get("egress", {}).get("private_ip", "")).strip()
+    egress_public_ip = args.egress_public_ip.strip()
     db_ip = str(servers.get("db", {}).get("private_ip", "")).strip()
 
     try:
@@ -201,13 +203,15 @@ def main() -> int:
         if "bastion" in internal_fqdns and not bastion_public_ip:
             print("bastion-public-ip is required when bastion FQDN is provided.", file=sys.stderr)
             return 1
+        if "kubernetes" in internal_fqdns and not egress_public_ip:
+            print("Warning: kubernetes FQDN set but egress-public-ip not provided; using egress private IP.")
         service_ip_map = {
             "bastion": bastion_public_ip or bastion_private_ip,
             "grafana": egress_ip,
             "loki": egress_ip,
             "infisical": egress_ip,
             "argocd": egress_ip,
-            "kubernetes": egress_ip,
+            "kubernetes": egress_public_ip or egress_ip,
             "db": db_ip,
         }
         for key, fqdn in internal_fqdns.items():

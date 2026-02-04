@@ -51,11 +51,11 @@ export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
 
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare
-fi
+  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+  fi
 
 systemctl enable --now docker
 
@@ -104,6 +104,11 @@ if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
   exit 1
 fi
 
+PUBLIC_IP=$(ip -4 -o addr show dev "$PUBLIC_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
+if [ -z "$PUBLIC_IP" ]; then
+  echo "[egress] unable to determine public ip address" >&2
+fi
+
 PRIVATE_IP=$(ip -4 -o addr show dev "$PRIVATE_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
 if [ -z "$PRIVATE_IP" ]; then
   echo "[egress] unable to determine private ip address" >&2
@@ -123,27 +128,6 @@ if [ -n "$PRIVATE_CIDR" ]; then
   iptables -C "$CHAIN" -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT \
     || iptables -I "$CHAIN" 1 -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 fi
-
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
-
-cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
-[Unit]
-Description=Restore iptables rules for Infrazero
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now infrazero-iptables.service
 
 ensure_dns
 
@@ -255,6 +239,45 @@ if [ -n "$INFISICAL_FQDN" ] && [[ "$INFISICAL_SITE_URL" != https://* ]]; then
 fi
 export INFISICAL_SITE_URL
 export INFISICAL_FQDN
+
+if [ -n "$KUBERNETES_FQDN" ]; then
+  if [ -n "$PUBLIC_IP" ]; then
+    iptables -C INPUT -p tcp --dport 6443 -s "${PUBLIC_IP}/32" -j ACCEPT \
+      || iptables -I INPUT 1 -p tcp --dport 6443 -s "${PUBLIC_IP}/32" -j ACCEPT
+  else
+    echo "[egress] unable to enforce 6443 firewall without public IP" >&2
+  fi
+  if [ -n "$PRIVATE_IP" ]; then
+    iptables -C INPUT -p tcp --dport 6443 -s "${PRIVATE_IP}/32" -j ACCEPT \
+      || iptables -I INPUT 1 -p tcp --dport 6443 -s "${PRIVATE_IP}/32" -j ACCEPT
+  fi
+  iptables -C INPUT -p tcp --dport 6443 -s "127.0.0.1/32" -j ACCEPT \
+    || iptables -I INPUT 1 -p tcp --dport 6443 -s "127.0.0.1/32" -j ACCEPT
+  iptables -C INPUT -p tcp --dport 6443 -j DROP \
+    || iptables -A INPUT -p tcp --dport 6443 -j DROP
+fi
+
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+
+cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
+[Unit]
+Description=Restore iptables rules for Infrazero
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-iptables.service
+
 if [ -n "$INFISICAL_FQDN" ] || [ -n "$GRAFANA_FQDN" ] || [ -n "$LOKI_FQDN" ] || [ -n "$ARGOCD_FQDN" ] || [ -n "$KUBERNETES_FQDN" ]; then
   require_env "CLOUDFLARE_API_TOKEN"
 fi
@@ -352,6 +375,42 @@ server {
   }
 }
 EOF
+}
+
+setup_k3s_haproxy() {
+  if [ -z "$KUBERNETES_FQDN" ]; then
+    return 0
+  fi
+  if [ -z "$K3S_SERVER_PRIVATE_IP" ]; then
+    echo "[egress] KUBERNETES_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping haproxy" >&2
+    return 1
+  fi
+
+  cat > /etc/haproxy/haproxy.cfg <<EOF
+global
+  log /dev/log local0
+  maxconn 2048
+  user haproxy
+  group haproxy
+  daemon
+
+defaults
+  log global
+  mode tcp
+  timeout connect 10s
+  timeout client 1m
+  timeout server 1m
+
+frontend k3s_api
+  bind 0.0.0.0:6443
+  default_backend k3s_api
+
+backend k3s_api
+  server k3s ${K3S_SERVER_PRIVATE_IP}:6443 check
+EOF
+
+  systemctl enable --now haproxy
+  systemctl restart haproxy
 }
 
 setup_service_tls() {
@@ -536,6 +595,7 @@ fi
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 
+setup_k3s_haproxy || true
 setup_service_tls || true
 
 if [ -n "$INFISICAL_FQDN" ]; then

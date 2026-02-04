@@ -3,6 +3,7 @@ locals {
 
   lb_private_cidr = can(regex("/", var.load_balancer.private_ip)) ? var.load_balancer.private_ip : "${var.load_balancer.private_ip}/32"
   bastion_cidr    = "${var.servers.bastion.private_ip}/32"
+  egress_cidr     = "${var.servers.egress.private_ip}/32"
   db_cidr         = "${var.servers.db.private_ip}/32"
   bastion_ssh_cidrs = length(var.debug_root_password) > 0 ? concat(var.wireguard.allowed_cidrs, ["0.0.0.0/0"]) : var.wireguard.allowed_cidrs
 

@@ -191,7 +191,7 @@ resource "hcloud_firewall" "k3s_server" {
     direction  = "in"
     protocol   = "tcp"
     port       = "6443"
-    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr], local.k3s_agent_cidrs)
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.egress_cidr], local.k3s_agent_cidrs)
   }
 
   dynamic "rule" {
