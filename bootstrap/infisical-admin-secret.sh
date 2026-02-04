@@ -307,6 +307,13 @@ spc_namespace=$(awk '
   in_meta && $1 ~ /^[a-zA-Z0-9_.-]+:$/ && $0 ~ /^[^[:space:]]/ {exit}
 ' "$spc_file")
 
+spc_namespace_override="${INFISICAL_SPC_NAMESPACE:-}"
+if [ -n "$spc_namespace_override" ]; then
+  spc_namespace="$spc_namespace_override"
+elif [ -z "$spc_namespace" ] || [ "$spc_namespace" = "example" ]; then
+  spc_namespace="default"
+fi
+
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
   ca_cert=$(printf '%s' "$INFISICAL_CA_CERT_B64" | base64 -d)

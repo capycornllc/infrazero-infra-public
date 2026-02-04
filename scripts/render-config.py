@@ -382,6 +382,7 @@ def main() -> int:
     gh_token = optional_env("GH_TOKEN")
     gh_owner = optional_env("GH_OWNER")
     ghcr_token = optional_env("GHCR_TOKEN")
+    infisical_spc_namespace = optional_env("INFISICAL_SPC_NAMESPACE")
     gh_infra_repo = optional_env("GH_INFRA_REPO")
     gh_gitops_repo = optional_env("GH_GITOPS_REPO")
 
@@ -472,6 +473,8 @@ def main() -> int:
         k3s_server_secrets["GH_OWNER"] = gh_owner
     if ghcr_token:
         k3s_server_secrets["GHCR_TOKEN"] = ghcr_token
+    if infisical_spc_namespace:
+        k3s_server_secrets["INFISICAL_SPC_NAMESPACE"] = infisical_spc_namespace
     if argocd_fqdn:
         k3s_server_secrets["ARGOCD_FQDN"] = argocd_fqdn
     if argocd_enabled:
