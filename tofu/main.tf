@@ -168,6 +168,17 @@ resource "hcloud_firewall" "egress" {
     port       = "22"
     source_ips = [local.bastion_cidr]
   }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "6443"
+    source_ips = [format("%s/32", hcloud_server.egress.ipv4_address)]
+  }
+
+  apply_to {
+    server = hcloud_server.egress.id
+  }
 }
 
 resource "hcloud_firewall" "k3s_server" {
@@ -360,7 +371,6 @@ resource "hcloud_server" "egress" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.egress.id]
   placement_group_id = local.pg_egress_id
   user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
     bootstrap_role  = "egress"

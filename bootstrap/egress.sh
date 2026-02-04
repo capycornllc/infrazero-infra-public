@@ -240,21 +240,28 @@ fi
 export INFISICAL_SITE_URL
 export INFISICAL_FQDN
 
-if [ -n "$KUBERNETES_FQDN" ]; then
+cleanup_k3s_iptables() {
+  local rules=()
   if [ -n "$PUBLIC_IP" ]; then
-    iptables -C INPUT -p tcp --dport 6443 -s "${PUBLIC_IP}/32" -j ACCEPT \
-      || iptables -I INPUT 1 -p tcp --dport 6443 -s "${PUBLIC_IP}/32" -j ACCEPT
-  else
-    echo "[egress] unable to enforce 6443 firewall without public IP" >&2
+    rules+=("-p tcp --dport 6443 -s ${PUBLIC_IP}/32 -j ACCEPT")
   fi
   if [ -n "$PRIVATE_IP" ]; then
-    iptables -C INPUT -p tcp --dport 6443 -s "${PRIVATE_IP}/32" -j ACCEPT \
-      || iptables -I INPUT 1 -p tcp --dport 6443 -s "${PRIVATE_IP}/32" -j ACCEPT
+    rules+=("-p tcp --dport 6443 -s ${PRIVATE_IP}/32 -j ACCEPT")
   fi
-  iptables -C INPUT -p tcp --dport 6443 -s "127.0.0.1/32" -j ACCEPT \
-    || iptables -I INPUT 1 -p tcp --dport 6443 -s "127.0.0.1/32" -j ACCEPT
-  iptables -C INPUT -p tcp --dport 6443 -j DROP \
-    || iptables -A INPUT -p tcp --dport 6443 -j DROP
+  rules+=("-p tcp --dport 6443 -s 127.0.0.1/32 -j ACCEPT")
+  rules+=("-p tcp --dport 6443 -j DROP")
+
+  for rule in "${rules[@]}"; do
+    # shellcheck disable=SC2086
+    while iptables -C INPUT $rule >/dev/null 2>&1; do
+      # shellcheck disable=SC2086
+      iptables -D INPUT $rule || true
+    done
+  done
+}
+
+if [ -n "$KUBERNETES_FQDN" ]; then
+  cleanup_k3s_iptables
 fi
 
 mkdir -p /etc/iptables
