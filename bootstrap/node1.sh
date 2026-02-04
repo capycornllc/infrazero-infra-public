@@ -160,6 +160,7 @@ kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":
 kubectl -n argocd rollout restart deployment/argocd-server || true
 
 if [ -n "${GH_TOKEN:-}" ] && [ -n "${ARGOCD_APP_REPO_URL:-}" ]; then
+  repo_username="${GH_OWNER:-x-access-token}"
   cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
@@ -170,7 +171,7 @@ metadata:
     argocd.argoproj.io/secret-type: repository
 stringData:
   url: ${ARGOCD_APP_REPO_URL}
-  username: x-access-token
+  username: ${repo_username}
   password: ${GH_TOKEN}
   name: gitops
 EOF

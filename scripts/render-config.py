@@ -467,6 +467,8 @@ def main() -> int:
         k3s_server_secrets["ARGOCD_ADMIN_PASSWORD"] = argocd_admin_password
     if gh_token:
         k3s_server_secrets["GH_TOKEN"] = gh_token
+    if gh_owner:
+        k3s_server_secrets["GH_OWNER"] = gh_owner
     if argocd_fqdn:
         k3s_server_secrets["ARGOCD_FQDN"] = argocd_fqdn
     if argocd_enabled:
