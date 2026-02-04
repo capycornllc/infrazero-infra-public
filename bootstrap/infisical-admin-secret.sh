@@ -252,7 +252,7 @@ git_push_changes() {
     echo "[infisical-admin-secret] git fetch failed; please push manually" >&2
     return 1
   fi
-  if ! git -C "$GITOPS_DIR" rebase "origin/${branch}"; then
+  if ! git -C "$GITOPS_DIR" rebase -X theirs "origin/${branch}"; then
     git -C "$GITOPS_DIR" rebase --abort || true
     echo "[infisical-admin-secret] git rebase failed; please resolve and push manually" >&2
     return 1
@@ -309,13 +309,8 @@ if [ -z "$INFISICAL_HOST" ]; then
 fi
 
 cluster_root="${GITOPS_DIR}/clusters/${ENV}"
-overlay_parent="${GITOPS_DIR}/overlays"
-if [ -d "$cluster_root" ]; then
-  overlay_parent="${cluster_root}/overlays"
-fi
-overlay_dir="${overlay_parent}/infisical"
-overlay_kustomization="${overlay_dir}/kustomization.yaml"
-patch_file="${overlay_dir}/secretproviderclass-patch.yaml"
+cluster_patch_file="${cluster_root}/infisical-secretproviderclass-patch.yaml"
+sync_overlay_dir="${cluster_root}/overlays/infisical"
 
 find_spc_file() {
   local search_root="$1"
@@ -369,16 +364,6 @@ else
   spc_namespace_target="$spc_namespace_base"
 fi
 
-resource_rel=$(python3 - <<'PY' "$overlay_dir" "$spc_file"
-import os
-import sys
-
-overlay_dir = sys.argv[1]
-spc_file = sys.argv[2]
-print(os.path.relpath(spc_file, overlay_dir))
-PY
-)
-
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
   ca_cert=$(printf '%s' "$INFISICAL_CA_CERT_B64" | base64 -d)
@@ -386,17 +371,16 @@ elif [ -n "${INFISICAL_CA_CERT_PATH:-}" ] && [ -f "$INFISICAL_CA_CERT_PATH" ]; t
   ca_cert=$(cat "$INFISICAL_CA_CERT_PATH")
 fi
 
-mkdir -p "$overlay_dir"
-cat > "$patch_file" <<EOF
+cat > "$cluster_patch_file" <<EOF
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
   name: ${spc_name}
 EOF
-if [ -n "$spc_namespace_base" ]; then
-  printf '  namespace: %s\n' "$spc_namespace_base" >> "$patch_file"
+if [ -n "$spc_namespace_target" ]; then
+  printf '  namespace: %s\n' "$spc_namespace_target" >> "$cluster_patch_file"
 fi
-cat >> "$patch_file" <<EOF
+cat >> "$cluster_patch_file" <<EOF
 spec:
   parameters:
     infisicalUrl: "${INFISICAL_HOST}"
@@ -412,7 +396,7 @@ if [ -n "$ca_cert" ]; then
     while IFS= read -r line; do
       echo "      ${line}"
     done <<< "$ca_cert"
-  } >> "$patch_file"
+  } >> "$cluster_patch_file"
 fi
 
 ensure_kustomization_entry() {
@@ -433,47 +417,89 @@ ensure_kustomization_entry() {
   printf '\n%s\n%s\n' "$header" "$entry" >> "$file"
 }
 
-set_kustomization_field() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  if grep -q "^${key}:" "$file"; then
-    sed -i "s|^${key}:.*|${key}: ${value}|" "$file"
-  else
-    printf '\n%s: %s\n' "$key" "$value" >> "$file"
-  fi
-}
-
-if [ ! -f "$overlay_kustomization" ]; then
-  cat > "$overlay_kustomization" <<'EOF'
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - __RESOURCE_PATH__
-patchesStrategicMerge:
-  - secretproviderclass-patch.yaml
-EOF
-  sed -i "s|__RESOURCE_PATH__|${resource_rel}|g" "$overlay_kustomization"
-  set_kustomization_field "$overlay_kustomization" "namespace" "$spc_namespace_target"
-else
-  ensure_kustomization_entry "$overlay_kustomization" "resources:" "  - ${resource_rel}"
-  set_kustomization_field "$overlay_kustomization" "namespace" "$spc_namespace_target"
-  if ! grep -qF "secretproviderclass-patch.yaml" "$overlay_kustomization"; then
-    if grep -q "^patchesStrategicMerge:" "$overlay_kustomization"; then
-      ensure_kustomization_entry "$overlay_kustomization" "patchesStrategicMerge:" "  - secretproviderclass-patch.yaml"
-    elif grep -q "^patches:" "$overlay_kustomization"; then
-      ensure_kustomization_entry "$overlay_kustomization" "patches:" "  - path: secretproviderclass-patch.yaml"
-    else
-      printf '\npatchesStrategicMerge:\n  - secretproviderclass-patch.yaml\n' >> "$overlay_kustomization"
-    fi
-  fi
-fi
-
 cluster_kustomization="${cluster_root}/kustomization.yaml"
 if [ -f "$cluster_kustomization" ]; then
-  if ! grep -qF "overlays/infisical" "$cluster_kustomization"; then
-    ensure_kustomization_entry "$cluster_kustomization" "resources:" "  - overlays/infisical"
-  fi
+  python3 - <<'PY' "$cluster_kustomization"
+import sys
+
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8").read()
+if "\\n" in text or "\\r" in text:
+    text = text.replace("\\r", "")
+    text = text.replace("\\n", "\n")
+    text = text.replace("\r\n", "\n")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text.strip() + "\n")
+PY
+  python3 - <<'PY' "$cluster_kustomization"
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    lines = fh.read().splitlines()
+
+out = []
+for line in lines:
+    if re.match(r'^\s*-\s*overlays/infisical', line):
+        continue
+    out.append(line)
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(out) + "\n")
+PY
+  python3 - <<'PY' "$cluster_kustomization" "$(basename "$cluster_patch_file")" "$spc_name"
+import re
+import sys
+
+path = sys.argv[1]
+patch_file = sys.argv[2]
+spc_name = sys.argv[3]
+
+with open(path, "r", encoding="utf-8") as fh:
+    lines = fh.read().splitlines()
+
+if any(patch_file in line for line in lines):
+    sys.exit(0)
+
+patches_idx = None
+for idx, line in enumerate(lines):
+    if re.match(r'^patches:\s*$', line):
+        patches_idx = idx
+        break
+
+def build_block(indent: str):
+    item_indent = indent
+    return [
+        f"{item_indent}- target:",
+        f"{item_indent}    group: secrets-store.csi.x-k8s.io",
+        f"{item_indent}    version: v1",
+        f"{item_indent}    kind: SecretProviderClass",
+        f"{item_indent}    name: {spc_name}",
+        f"{item_indent}  path: {patch_file}",
+    ]
+
+if patches_idx is None:
+    lines.append("")
+    lines.append("patches:")
+    lines.extend(build_block(""))
+else:
+    end = len(lines)
+    for idx in range(patches_idx + 1, len(lines)):
+        if re.match(r'^[^\\s#]', lines[idx]):
+            end = idx
+            break
+    indent = ""
+    for idx in range(patches_idx + 1, end):
+        match = re.match(r'^(\\s*)-\\s', lines[idx])
+        if match:
+            indent = match.group(1)
+            break
+    lines[end:end] = build_block(indent)
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("\\n".join(lines) + "\\n")
+PY
 fi
 
 sync_resources=()
@@ -508,8 +534,9 @@ if [ -n "${INFISICAL_SECRET_SYNCS_JSON:-}" ]; then
       exit 1
     fi
 
+    mkdir -p "$sync_overlay_dir"
     sync_file="infisicalsecret-${sync_resource_name}.yaml"
-    sync_path="${overlay_dir}/${sync_file}"
+    sync_path="${sync_overlay_dir}/${sync_file}"
     cat > "$sync_path" <<EOF
 apiVersion: secrets.infisical.com/v1alpha1
 kind: InfisicalSecret
@@ -527,21 +554,28 @@ spec:
     name: ${sync_sa_name}
     namespace: ${sync_sa_namespace}
 EOF
-    sync_resources+=("$sync_file")
+    sync_resources+=("overlays/infisical/${sync_file}")
   done
 fi
 
-if [ "${#sync_resources[@]}" -gt 0 ]; then
+if [ "${#sync_resources[@]}" -gt 0 ] && [ -f "$cluster_kustomization" ]; then
+  resource_indent=$(awk '
+    $1 == "resources:" {inres=1; next}
+    inres && $0 ~ /^[[:space:]]*-/ {match($0,/^[[:space:]]*/); print substr($0,RSTART,RLENGTH); found=1; exit}
+    inres && $0 ~ /^[^[:space:]]/ {exit}
+    END {if(!found) print ""}
+  ' "$cluster_kustomization")
   for resource in "${sync_resources[@]}"; do
-    if ! grep -qF "$resource" "$overlay_kustomization"; then
-      ensure_kustomization_entry "$overlay_kustomization" "resources:" "  - ${resource}"
-    fi
+    ensure_kustomization_entry "$cluster_kustomization" "resources:" "${resource_indent}- ${resource}"
   done
 fi
 
 git -C "$GITOPS_DIR" config user.email "infrazero-bootstrap@local"
 git -C "$GITOPS_DIR" config user.name "infrazero-bootstrap"
-git -C "$GITOPS_DIR" add "$overlay_dir"
+git -C "$GITOPS_DIR" add "$cluster_patch_file"
+if [ -d "$sync_overlay_dir" ]; then
+  git -C "$GITOPS_DIR" add "$sync_overlay_dir"
+fi
 if [ -f "$cluster_kustomization" ]; then
   git -C "$GITOPS_DIR" add "$cluster_kustomization"
 fi
