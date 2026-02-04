@@ -236,6 +236,34 @@ ensure_gitops_repo() {
 
 ensure_gitops_repo
 
+git_sync_repo() {
+  if [ -z "${GH_TOKEN:-}" ]; then
+    return 0
+  fi
+  if ! git -C "$GITOPS_DIR" diff --quiet || ! git -C "$GITOPS_DIR" diff --cached --quiet; then
+    echo "[infisical-admin-secret] gitops repo has local changes; skipping pre-sync" >&2
+    return 0
+  fi
+  local auth_header
+  auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+  local branch
+  branch=$(git -C "$GITOPS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+    branch="main"
+  fi
+  if ! git -C "$GITOPS_DIR" -c http.extraheader="AUTHORIZATION: basic ${auth_header}" fetch origin "$branch"; then
+    echo "[infisical-admin-secret] git fetch failed; continuing without pre-sync" >&2
+    return 0
+  fi
+  if ! git -C "$GITOPS_DIR" rebase -X theirs "origin/${branch}"; then
+    git -C "$GITOPS_DIR" rebase --abort || true
+    echo "[infisical-admin-secret] git rebase failed; continuing without pre-sync" >&2
+    return 0
+  fi
+}
+
+git_sync_repo
+
 git_push_changes() {
   if [ -z "${GH_TOKEN:-}" ]; then
     echo "[infisical-admin-secret] GH_TOKEN missing; skipping git push" >&2
@@ -364,6 +392,14 @@ else
   spc_namespace_target="$spc_namespace_base"
 fi
 
+spc_app_file=""
+if [ -d "$cluster_root" ]; then
+  spc_app_file=$(find "$cluster_root" -type f -path "*/applications/*" \( -name "*infisical*secretproviderclass*.y*ml" -o -name "*secretproviderclass*.y*ml" \) 2>/dev/null | head -n1 || true)
+  if [ -n "$spc_app_file" ] && ! grep -qE '^kind:\s*Application' "$spc_app_file"; then
+    spc_app_file=""
+  fi
+fi
+
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
   ca_cert=$(printf '%s' "$INFISICAL_CA_CERT_B64" | base64 -d)
@@ -371,6 +407,74 @@ elif [ -n "${INFISICAL_CA_CERT_PATH:-}" ] && [ -f "$INFISICAL_CA_CERT_PATH" ]; t
   ca_cert=$(cat "$INFISICAL_CA_CERT_PATH")
 fi
 
+if [ -n "$spc_app_file" ]; then
+  spc_render_dir="${cluster_root}/infisical-secretproviderclass"
+  spc_render_file="${spc_render_dir}/secretproviderclass.yaml"
+  mkdir -p "$spc_render_dir"
+  python3 - <<'PY' "$spc_file" "$spc_render_file" "$spc_namespace_target" "$INFISICAL_HOST" "$IDENTITY_ID" "$PROJECT_ID" "$INFISICAL_ENV_SLUG"
+import re
+import sys
+
+src = sys.argv[1]
+dst = sys.argv[2]
+namespace = sys.argv[3]
+infisical_url = sys.argv[4]
+identity_id = sys.argv[5]
+project_id = sys.argv[6]
+env_slug = sys.argv[7]
+
+lines = open(src, "r", encoding="utf-8").read().splitlines()
+replacements = {
+    "namespace": namespace,
+    "infisicalUrl": infisical_url,
+    "identityId": identity_id,
+    "projectId": project_id,
+    "envSlug": env_slug,
+    "useDefaultAudience": "false",
+}
+
+def replace_key(key, value):
+    pattern = re.compile(rf'^(\s*{re.escape(key)}:\s*).*$')
+    replaced = False
+    for i, line in enumerate(lines):
+        match = pattern.match(line)
+        if match:
+            prefix = match.group(1)
+            if key == "namespace":
+                lines[i] = f"{prefix}{value}"
+            else:
+                lines[i] = f'{prefix}"{value}"'
+            replaced = True
+    return replaced
+
+for key, value in replacements.items():
+    replace_key(key, value)
+
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines).strip() + "\n")
+PY
+  python3 - <<'PY' "$spc_app_file" "$ENV"
+import re
+import sys
+
+path = sys.argv[1]
+env = sys.argv[2]
+new_path = f"clusters/{env}/infisical-secretproviderclass"
+
+lines = open(path, "r", encoding="utf-8").read().splitlines()
+changed = False
+for i, line in enumerate(lines):
+    match = re.match(r'^(\s*path:\s*).+$', line)
+    if match:
+        lines[i] = f"{match.group(1)}{new_path}"
+        changed = True
+        break
+
+if changed:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+PY
+else
 cat > "$cluster_patch_file" <<EOF
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
@@ -397,6 +501,7 @@ if [ -n "$ca_cert" ]; then
       echo "      ${line}"
     done <<< "$ca_cert"
   } >> "$cluster_patch_file"
+fi
 fi
 
 ensure_kustomization_entry() {
@@ -448,7 +553,8 @@ for line in lines:
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("\n".join(out) + "\n")
 PY
-  python3 - <<'PY' "$cluster_kustomization" "$(basename "$cluster_patch_file")" "$spc_name"
+  if [ -z "$spc_app_file" ]; then
+    python3 - <<'PY' "$cluster_kustomization" "$(basename "$cluster_patch_file")" "$spc_name"
 import re
 import sys
 
@@ -500,6 +606,37 @@ else:
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("\\n".join(lines) + "\\n")
 PY
+  else
+    python3 - <<'PY' "$cluster_kustomization" "$(basename "$cluster_patch_file")"
+import sys
+
+path = sys.argv[1]
+patch_file = sys.argv[2]
+
+lines = open(path, "r", encoding="utf-8").read().splitlines()
+out = [line for line in lines if patch_file not in line]
+
+# Remove empty patches: if no list items remain under it.
+cleaned = []
+skip = False
+for idx, line in enumerate(out):
+    if line.strip() == "patches:":
+        # look ahead for any list items
+        has_items = False
+        for j in range(idx + 1, len(out)):
+            if out[j].strip() == "":
+                continue
+            if out[j].lstrip().startswith("-"):
+                has_items = True
+            break
+        if not has_items:
+            continue
+    cleaned.append(line)
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(cleaned).strip() + "\n")
+PY
+  fi
 fi
 
 sync_resources=()
@@ -572,7 +709,14 @@ fi
 
 git -C "$GITOPS_DIR" config user.email "infrazero-bootstrap@local"
 git -C "$GITOPS_DIR" config user.name "infrazero-bootstrap"
-git -C "$GITOPS_DIR" add "$cluster_patch_file"
+if [ -n "$spc_app_file" ]; then
+  if [ -n "${spc_render_dir:-}" ] && [ -d "$spc_render_dir" ]; then
+    git -C "$GITOPS_DIR" add "$spc_render_dir"
+  fi
+  git -C "$GITOPS_DIR" add "$spc_app_file"
+else
+  git -C "$GITOPS_DIR" add "$cluster_patch_file"
+fi
 if [ -d "$sync_overlay_dir" ]; then
   git -C "$GITOPS_DIR" add "$sync_overlay_dir"
 fi
