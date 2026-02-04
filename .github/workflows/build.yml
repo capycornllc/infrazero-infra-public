@@ -53,6 +53,7 @@ jobs:
       GH_OWNER: ${{ secrets.gh_owner }}
       GH_INFRA_REPO: ${{ secrets.gh_infra_repo }}
       GH_GITOPS_REPO: ${{ secrets.gh_gitops_repo }}
+      GHCR_TOKEN: ${{ secrets.ghcr_token }}
       BASTION_SERVER_TYPE: ${{ secrets.bastion_server_type }}
       EGRESS_SERVER_TYPE: ${{ secrets.egress_server_type }}
       DB_SERVER_TYPE: ${{ secrets.db_server_type }}

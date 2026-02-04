@@ -236,6 +236,34 @@ ensure_gitops_repo() {
 
 ensure_gitops_repo
 
+git_push_changes() {
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo "[infisical-admin-secret] GH_TOKEN missing; skipping git push" >&2
+    return 1
+  fi
+  local auth_header
+  auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+  local branch
+  branch=$(git -C "$GITOPS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+    branch="main"
+  fi
+  if ! git -C "$GITOPS_DIR" -c http.extraheader="AUTHORIZATION: basic ${auth_header}" fetch origin "$branch"; then
+    echo "[infisical-admin-secret] git fetch failed; please push manually" >&2
+    return 1
+  fi
+  if ! git -C "$GITOPS_DIR" rebase "origin/${branch}"; then
+    git -C "$GITOPS_DIR" rebase --abort || true
+    echo "[infisical-admin-secret] git rebase failed; please resolve and push manually" >&2
+    return 1
+  fi
+  if ! git -C "$GITOPS_DIR" -c http.extraheader="AUTHORIZATION: basic ${auth_header}" push origin "HEAD:${branch}"; then
+    echo "[infisical-admin-secret] git push failed; please push manually" >&2
+    return 1
+  fi
+  return 0
+}
+
 bootstrap_kustomize_dir="${GITOPS_DIR}/clusters/${ENV}/bootstrap/infisical-k8s-auth"
 if [ ! -d "$bootstrap_kustomize_dir" ]; then
   echo "[infisical-admin-secret] missing gitops bootstrap dir: ${bootstrap_kustomize_dir}" >&2
@@ -280,13 +308,37 @@ if [ -z "$INFISICAL_HOST" ]; then
   exit 1
 fi
 
-overlay_dir="${GITOPS_DIR}/overlays/infisical"
+cluster_root="${GITOPS_DIR}/clusters/${ENV}"
+overlay_parent="${GITOPS_DIR}/overlays"
+if [ -d "$cluster_root" ]; then
+  overlay_parent="${cluster_root}/overlays"
+fi
+overlay_dir="${overlay_parent}/infisical"
 overlay_kustomization="${overlay_dir}/kustomization.yaml"
 patch_file="${overlay_dir}/secretproviderclass-patch.yaml"
-spc_file="${GITOPS_DIR}/platform/infisical/secretproviderclass.yaml"
 
-if [ ! -f "$spc_file" ]; then
-  echo "[infisical-admin-secret] missing ${spc_file}; cannot patch SecretProviderClass" >&2
+find_spc_file() {
+  local search_root="$1"
+  local candidate
+  if [ ! -d "$search_root" ]; then
+    return 1
+  fi
+  while IFS= read -r candidate; do
+    if grep -qE '^kind:\s*SecretProviderClass' "$candidate" && grep -qi 'infisical' "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+  done < <(find "$search_root" -type f \( -name "*.yaml" -o -name "*.yml" \) 2>/dev/null)
+  return 1
+}
+
+spc_file="$(find_spc_file "$cluster_root" || true)"
+if [ -z "$spc_file" ]; then
+  spc_file="$(find_spc_file "$GITOPS_DIR" || true)"
+fi
+
+if [ -z "$spc_file" ] || [ ! -f "$spc_file" ]; then
+  echo "[infisical-admin-secret] unable to locate SecretProviderClass manifest to patch" >&2
   exit 1
 fi
 
@@ -307,12 +359,25 @@ spc_namespace=$(awk '
   in_meta && $1 ~ /^[a-zA-Z0-9_.-]+:$/ && $0 ~ /^[^[:space:]]/ {exit}
 ' "$spc_file")
 
+spc_namespace_base="$spc_namespace"
 spc_namespace_override="${INFISICAL_SPC_NAMESPACE:-}"
 if [ -n "$spc_namespace_override" ]; then
-  spc_namespace="$spc_namespace_override"
-elif [ -z "$spc_namespace" ] || [ "$spc_namespace" = "example" ]; then
-  spc_namespace="default"
+  spc_namespace_target="$spc_namespace_override"
+elif [ -z "$spc_namespace_base" ] || [ "$spc_namespace_base" = "example" ]; then
+  spc_namespace_target="default"
+else
+  spc_namespace_target="$spc_namespace_base"
 fi
+
+resource_rel=$(python3 - <<'PY' "$overlay_dir" "$spc_file"
+import os
+import sys
+
+overlay_dir = sys.argv[1]
+spc_file = sys.argv[2]
+print(os.path.relpath(spc_file, overlay_dir))
+PY
+)
 
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
@@ -328,8 +393,8 @@ kind: SecretProviderClass
 metadata:
   name: ${spc_name}
 EOF
-if [ -n "$spc_namespace" ]; then
-  printf '  namespace: %s\n' "$spc_namespace" >> "$patch_file"
+if [ -n "$spc_namespace_base" ]; then
+  printf '  namespace: %s\n' "$spc_namespace_base" >> "$patch_file"
 fi
 cat >> "$patch_file" <<EOF
 spec:
@@ -368,17 +433,31 @@ ensure_kustomization_entry() {
   printf '\n%s\n%s\n' "$header" "$entry" >> "$file"
 }
 
+set_kustomization_field() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}:" "$file"; then
+    sed -i "s|^${key}:.*|${key}: ${value}|" "$file"
+  else
+    printf '\n%s: %s\n' "$key" "$value" >> "$file"
+  fi
+}
+
 if [ ! -f "$overlay_kustomization" ]; then
   cat > "$overlay_kustomization" <<'EOF'
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../platform/infisical
+  - __RESOURCE_PATH__
 patchesStrategicMerge:
   - secretproviderclass-patch.yaml
 EOF
+  sed -i "s|__RESOURCE_PATH__|${resource_rel}|g" "$overlay_kustomization"
+  set_kustomization_field "$overlay_kustomization" "namespace" "$spc_namespace_target"
 else
-  ensure_kustomization_entry "$overlay_kustomization" "resources:" "  - ../../platform/infisical"
+  ensure_kustomization_entry "$overlay_kustomization" "resources:" "  - ${resource_rel}"
+  set_kustomization_field "$overlay_kustomization" "namespace" "$spc_namespace_target"
   if ! grep -qF "secretproviderclass-patch.yaml" "$overlay_kustomization"; then
     if grep -q "^patchesStrategicMerge:" "$overlay_kustomization"; then
       ensure_kustomization_entry "$overlay_kustomization" "patchesStrategicMerge:" "  - secretproviderclass-patch.yaml"
@@ -387,6 +466,13 @@ else
     else
       printf '\npatchesStrategicMerge:\n  - secretproviderclass-patch.yaml\n' >> "$overlay_kustomization"
     fi
+  fi
+fi
+
+cluster_kustomization="${cluster_root}/kustomization.yaml"
+if [ -f "$cluster_kustomization" ]; then
+  if ! grep -qF "overlays/infisical" "$cluster_kustomization"; then
+    ensure_kustomization_entry "$cluster_kustomization" "resources:" "  - overlays/infisical"
   fi
 fi
 
@@ -456,10 +542,15 @@ fi
 git -C "$GITOPS_DIR" config user.email "infrazero-bootstrap@local"
 git -C "$GITOPS_DIR" config user.name "infrazero-bootstrap"
 git -C "$GITOPS_DIR" add "$overlay_dir"
+if [ -f "$cluster_kustomization" ]; then
+  git -C "$GITOPS_DIR" add "$cluster_kustomization"
+fi
 if ! git -C "$GITOPS_DIR" diff --cached --quiet; then
   git -C "$GITOPS_DIR" commit -m "Configure Infisical k8s auth overlay"
+  git_push_changes || true
 else
   echo "[infisical-admin-secret] gitops overlay already up to date"
+  git_push_changes || true
 fi
 
 rm -f "$workdir/age.key" "$workdir/admin.token" "$workdir/admin.token.age" "$workdir/latest-tokens.json"
