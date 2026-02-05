@@ -783,12 +783,19 @@ PY
     fi
   fi
 
+  echo "[db-restore] setting listen_addresses to ${listen_addr}"
   set_conf "listen_addresses" "'${listen_addr}'"
   set_conf "password_encryption" "'scram-sha-256'"
   apply_infrazero_hba
 
+  if command -v pg_ctlcluster >/dev/null 2>&1; then
+    pg_ctlcluster "$PG_MAJOR" main reload >/dev/null 2>&1 || true
+  fi
+
   if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet postgresql 2>/dev/null; then
+    if systemctl is-active --quiet "postgresql@${PG_MAJOR}-main" 2>/dev/null; then
+      systemctl reload "postgresql@${PG_MAJOR}-main" || systemctl restart "postgresql@${PG_MAJOR}-main" || true
+    elif systemctl is-active --quiet postgresql 2>/dev/null; then
       systemctl reload postgresql || systemctl restart postgresql || true
     fi
   fi
