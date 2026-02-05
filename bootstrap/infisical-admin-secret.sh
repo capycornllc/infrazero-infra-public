@@ -59,7 +59,7 @@ require_env "DB_BACKUP_AGE_PRIVATE_KEY"
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip git
+  apt-get install -y curl ca-certificates jq age unzip git python3-yaml
 fi
 
 wait_for_url() {
@@ -400,6 +400,74 @@ if [ -d "$cluster_root" ]; then
   fi
 fi
 
+app_config_file=""
+if [ -f "${GITOPS_DIR}/config/app-config.yaml" ]; then
+  app_config_file="${GITOPS_DIR}/config/app-config.yaml"
+else
+  app_config_file=$(find "$GITOPS_DIR" -type f -path "*/config/app-config.yaml" 2>/dev/null | head -n1 || true)
+fi
+
+workloads_json=""
+if [ -n "$app_config_file" ] && [ -f "$app_config_file" ]; then
+  if python3 - <<'PY' "$app_config_file" >/tmp/infisical-workloads.json
+import json
+import sys
+
+try:
+    import yaml
+except Exception as exc:
+    raise SystemExit(1)
+
+path = sys.argv[1]
+cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
+workloads = cfg.get("workloads") or []
+
+def get_namespace(obj):
+    for key in ("namespace",):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    meta = obj.get("metadata") or {}
+    if isinstance(meta, dict):
+        value = meta.get("namespace")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+default_ns = (
+    get_namespace(cfg)
+    or get_namespace(cfg.get("app") or {})
+    or "default"
+)
+
+items = []
+for item in workloads:
+    if not isinstance(item, dict):
+        continue
+    name = str(item.get("name", "")).strip()
+    if not name:
+        continue
+    secrets_folder = str(item.get("secretsFolder", "") or "").strip()
+    workload_type = str(item.get("type", "") or "").strip()
+    namespace = get_namespace(item) or default_ns
+    items.append(
+        {
+            "name": name,
+            "type": workload_type,
+            "secretsFolder": secrets_folder,
+            "namespace": namespace,
+        }
+    )
+
+print(json.dumps(items))
+PY
+  then
+    workloads_json="$(cat /tmp/infisical-workloads.json)"
+  else
+    echo "[infisical-admin-secret] python3-yaml is required to parse ${app_config_file}" >&2
+  fi
+fi
+
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
   ca_cert=$(printf '%s' "$INFISICAL_CA_CERT_B64" | base64 -d)
@@ -407,52 +475,227 @@ elif [ -n "${INFISICAL_CA_CERT_PATH:-}" ] && [ -f "$INFISICAL_CA_CERT_PATH" ]; t
   ca_cert=$(cat "$INFISICAL_CA_CERT_PATH")
 fi
 
-if [ -n "$spc_app_file" ]; then
-  spc_render_dir="${cluster_root}/infisical-secretproviderclass"
-  spc_render_file="${spc_render_dir}/secretproviderclass.yaml"
-  mkdir -p "$spc_render_dir"
-  python3 - <<'PY' "$spc_file" "$spc_render_file" "$spc_namespace_target" "$INFISICAL_HOST" "$IDENTITY_ID" "$PROJECT_ID" "$INFISICAL_ENV_SLUG"
-import re
-import sys
-
-src = sys.argv[1]
-dst = sys.argv[2]
-namespace = sys.argv[3]
-infisical_url = sys.argv[4]
-identity_id = sys.argv[5]
-project_id = sys.argv[6]
-env_slug = sys.argv[7]
-
-lines = open(src, "r", encoding="utf-8").read().splitlines()
-replacements = {
-    "namespace": namespace,
-    "infisicalUrl": infisical_url,
-    "identityId": identity_id,
-    "projectId": project_id,
-    "envSlug": env_slug,
-    "useDefaultAudience": "false",
+normalize_name() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g'
 }
 
-def replace_key(key, value):
-    pattern = re.compile(rf'^(\s*{re.escape(key)}:\s*).*$')
-    replaced = False
-    for i, line in enumerate(lines):
-        match = pattern.match(line)
-        if match:
-            prefix = match.group(1)
-            if key == "namespace":
-                lines[i] = f"{prefix}{value}"
-            else:
-                lines[i] = f'{prefix}"{value}"'
-            replaced = True
-    return replaced
+update_workload_spc() {
+  local root="$1"
+  local workload_name="$2"
+  local workload_type="$3"
+  local spc_name="$4"
+  python3 - <<'PY' "$root" "$workload_name" "$workload_type" "$spc_name"
+import sys
+from pathlib import Path
 
-for key, value in replacements.items():
-    replace_key(key, value)
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
 
-with open(dst, "w", encoding="utf-8") as fh:
-    fh.write("\n".join(lines).strip() + "\n")
+root = Path(sys.argv[1])
+target_name = sys.argv[2]
+target_kind = sys.argv[3]
+spc_name = sys.argv[4]
+
+kinds = [target_kind] if target_kind else [
+    "Deployment",
+    "StatefulSet",
+    "DaemonSet",
+    "ReplicaSet",
+    "Job",
+    "CronJob",
+]
+
+def template_spec(doc):
+    kind = doc.get("kind")
+    if kind in ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"):
+        return doc.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
+    if kind == "CronJob":
+        return (
+            doc.setdefault("spec", {})
+            .setdefault("jobTemplate", {})
+            .setdefault("spec", {})
+            .setdefault("template", {})
+            .setdefault("spec", {})
+        )
+    return None
+
+def update_doc(doc):
+    if not isinstance(doc, dict):
+        return False
+    if doc.get("kind") not in kinds:
+        return False
+    meta = doc.get("metadata") or {}
+    if meta.get("name") != target_name:
+        return False
+    spec = template_spec(doc)
+    if spec is None:
+        return False
+    volumes = spec.get("volumes") or []
+    updated = False
+    for vol in volumes:
+        if not isinstance(vol, dict):
+            continue
+        csi = vol.get("csi")
+        if not isinstance(csi, dict):
+            continue
+        if csi.get("driver") != "secrets-store.csi.x-k8s.io":
+            continue
+        attrs = csi.setdefault("volumeAttributes", {})
+        if attrs.get("secretProviderClass") != spc_name:
+            attrs["secretProviderClass"] = spc_name
+            updated = True
+    return updated
+
+changed_paths = []
+
+for path in root.rglob("*.yml"):
+    docs = list(yaml.safe_load_all(path.read_text()))
+    changed = False
+    for doc in docs:
+        if update_doc(doc):
+            changed = True
+    if changed:
+        path.write_text(yaml.safe_dump_all(docs, sort_keys=False))
+        changed_paths.append(str(path))
+
+for path in root.rglob("*.yaml"):
+    docs = list(yaml.safe_load_all(path.read_text()))
+    changed = False
+    for doc in docs:
+        if update_doc(doc):
+            changed = True
+    if changed:
+        path.write_text(yaml.safe_dump_all(docs, sort_keys=False))
+        changed_paths.append(str(path))
+
+for path in changed_paths:
+    print(path)
 PY
+}
+
+if [ -n "$spc_app_file" ]; then
+  spc_render_dir="${cluster_root}/infisical-secretproviderclass"
+  mkdir -p "$spc_render_dir"
+  spc_files=()
+  workload_changed_files=()
+  if [ -f "$cluster_patch_file" ]; then
+    rm -f "$cluster_patch_file"
+  fi
+
+  if [ -n "$workloads_json" ] && [ "$workloads_json" != "[]" ]; then
+    infisical_api="${INFISICAL_HOST%/}/api/v4/secrets"
+    while IFS= read -r workload; do
+      workload_name=$(echo "$workload" | jq -r '.name')
+      workload_type=$(echo "$workload" | jq -r '.type // empty')
+      secrets_folder=$(echo "$workload" | jq -r '.secretsFolder // empty')
+      workload_namespace=$(echo "$workload" | jq -r '.namespace // "default"')
+      if [ -z "$secrets_folder" ] || [ "$secrets_folder" = "null" ]; then
+        continue
+      fi
+      norm_name=$(normalize_name "$workload_name")
+      if [ -z "$norm_name" ]; then
+        continue
+      fi
+      spc_name="infisical-${norm_name}"
+      spc_file="spc-${norm_name}.yaml"
+      secret_path="/${secrets_folder#/}"
+
+      curl_args=(-fsSL -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Accept: application/json")
+      if [ -n "$ca_cert" ]; then
+        ca_file="${workdir}/infisical-ca.pem"
+        printf '%s' "$ca_cert" > "$ca_file"
+        curl_args+=(--cacert "$ca_file")
+      fi
+
+      secrets_json=$(curl "${curl_args[@]}" --get \
+        --data-urlencode "projectId=${PROJECT_ID}" \
+        --data-urlencode "environment=${INFISICAL_ENV_SLUG}" \
+        --data-urlencode "secretPath=${secret_path}" \
+        --data-urlencode "viewSecretValue=false" \
+        "$infisical_api" || true)
+      secret_keys=$(echo "$secrets_json" | jq -r '.secrets[]?.secretKey' | sed '/^$/d' || true)
+      if [ -z "$secret_keys" ]; then
+        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); skipping SPC" >&2
+        continue
+      fi
+
+      secrets_block=""
+      while IFS= read -r key; do
+        key_escaped=${key//\"/\\\"}
+        path_escaped=${secret_path//\"/\\\"}
+        secrets_block+="- secretPath: \"${path_escaped}\""$'\n'
+        secrets_block+="  fileName: \"${key_escaped}\""$'\n'
+        secrets_block+="  secretKey: \"${key_escaped}\""$'\n'
+      done <<< "$secret_keys"
+
+      {
+        echo "apiVersion: secrets-store.csi.x-k8s.io/v1"
+        echo "kind: SecretProviderClass"
+        echo "metadata:"
+        echo "  name: ${spc_name}"
+        echo "  namespace: ${workload_namespace}"
+        echo "spec:"
+        echo "  provider: infisical"
+        echo "  parameters:"
+        echo "    authMethod: \"kubernetes\""
+        echo "    infisicalUrl: \"${INFISICAL_HOST}\""
+        echo "    identityId: \"${IDENTITY_ID}\""
+        echo "    projectId: \"${PROJECT_ID}\""
+        echo "    envSlug: \"${INFISICAL_ENV_SLUG}\""
+        echo "    useDefaultAudience: \"false\""
+        if [ -n "$ca_cert" ]; then
+          echo "    caCertificate: |"
+          while IFS= read -r line; do
+            echo "      ${line}"
+          done <<< "$ca_cert"
+        fi
+        echo "    secrets: |"
+        printf '%s' "$secrets_block" | sed 's/^/      /'
+      } > "${spc_render_dir}/${spc_file}"
+
+      spc_files+=("$spc_file")
+      changed_files=$(update_workload_spc "$GITOPS_DIR" "$workload_name" "$workload_type" "$spc_name" || true)
+      if [ -n "$changed_files" ]; then
+        while IFS= read -r changed_file; do
+          [ -n "$changed_file" ] || continue
+          workload_changed_files+=("$changed_file")
+        done <<< "$changed_files"
+      fi
+    done < <(echo "$workloads_json" | jq -c '.[]')
+  else
+    echo "[infisical-admin-secret] no workloads with secretsFolder found in app config; skipping SPC generation" >&2
+  fi
+
+  if [ "${#spc_files[@]}" -gt 0 ]; then
+    {
+      echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+      echo "kind: Kustomization"
+      echo "resources:"
+      for file in "${spc_files[@]}"; do
+        echo "  - ${file}"
+      done
+    } > "${spc_render_dir}/kustomization.yaml"
+  fi
+
+  if [ -d "$spc_render_dir" ]; then
+    for file in "$spc_render_dir"/spc-*.yaml; do
+      [ -e "$file" ] || continue
+      base_name=$(basename "$file")
+      keep="false"
+      for resource in "${spc_files[@]}"; do
+        if [ "$resource" = "$base_name" ]; then
+          keep="true"
+          break
+        fi
+      done
+      if [ "$keep" != "true" ]; then
+        rm -f "$file"
+      fi
+    done
+  fi
+
   python3 - <<'PY' "$spc_app_file" "$ENV"
 import re
 import sys
@@ -713,7 +956,13 @@ if [ -n "$spc_app_file" ]; then
   if [ -n "${spc_render_dir:-}" ] && [ -d "$spc_render_dir" ]; then
     git -C "$GITOPS_DIR" add "$spc_render_dir"
   fi
+  git -C "$GITOPS_DIR" add -A "$cluster_patch_file" 2>/dev/null || true
   git -C "$GITOPS_DIR" add "$spc_app_file"
+  if [ "${#workload_changed_files[@]}" -gt 0 ]; then
+    for changed_file in "${workload_changed_files[@]}"; do
+      git -C "$GITOPS_DIR" add "$changed_file"
+    done
+  fi
 else
   git -C "$GITOPS_DIR" add "$cluster_patch_file"
 fi
