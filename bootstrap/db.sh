@@ -112,6 +112,9 @@ if [ -z "$DEVICE" ]; then
   exit 1
 fi
 
+systemctl stop postgresql || true
+systemctl stop "postgresql@${PG_MAJOR}-main" || true
+
 mkdir -p "$MOUNT_DIR"
 
 if ! blkid "$DEVICE" >/dev/null 2>&1; then
@@ -136,20 +139,93 @@ fi
 DATA_MOUNT="${MOUNT_DIR}/postgresql/${PG_MAJOR}/main"
 DEFAULT_DATA_DIR="/var/lib/postgresql/${PG_MAJOR}/main"
 
-systemctl stop postgresql || true
-
 mkdir -p "$DATA_MOUNT" "$DEFAULT_DATA_DIR"
-if [ -z "$(ls -A "$DATA_MOUNT" 2>/dev/null || true)" ] && [ -d "$DEFAULT_DATA_DIR" ]; then
-  rsync -a "$DEFAULT_DATA_DIR/" "$DATA_MOUNT/" || true
+
+chown -R postgres:postgres "${MOUNT_DIR}/postgresql" || true
+
+is_data_dir_empty() {
+  if [ ! -d "$DATA_MOUNT" ]; then
+    return 0
+  fi
+  local entry
+  entry=$(find "$DATA_MOUNT" -mindepth 1 -maxdepth 1 ! -name "lost+found" -print -quit 2>/dev/null || true)
+  if [ -z "$entry" ]; then
+    return 0
+  fi
+  return 1
+}
+
+existing_pg_version=""
+if [ -f "$DATA_MOUNT/PG_VERSION" ]; then
+  existing_pg_version=$(tr -d '\r\n' < "$DATA_MOUNT/PG_VERSION" || true)
 fi
 
-chown -R postgres:postgres "${MOUNT_DIR}/postgresql"
+if [ -n "$existing_pg_version" ] && [ "$existing_pg_version" != "$PG_MAJOR" ]; then
+  echo "[db] volume PG_VERSION $existing_pg_version does not match expected $PG_MAJOR" >&2
+  exit 1
+fi
 
-if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
-  if ! grep -q " ${DEFAULT_DATA_DIR} " /etc/fstab; then
-    echo "${DATA_MOUNT} ${DEFAULT_DATA_DIR} none bind 0 0" >> /etc/fstab
+data_empty="false"
+if is_data_dir_empty; then
+  data_empty="true"
+fi
+
+drop_stale_cluster_config() {
+  local conf_dir="/etc/postgresql/${PG_MAJOR}/main"
+  if [ -d "$conf_dir" ]; then
+    echo "[db] removing stale PostgreSQL cluster config at $conf_dir"
+    if command -v pg_dropcluster >/dev/null 2>&1; then
+      if ! pg_dropcluster --stop "$PG_MAJOR" main >/dev/null 2>&1; then
+        echo "[db] pg_dropcluster failed; removing config directory manually" >&2
+      fi
+    fi
+    rm -rf "$conf_dir"
   fi
-  mount "$DEFAULT_DATA_DIR" || mount -a
+
+  if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
+    rm -rf "$DEFAULT_DATA_DIR"
+  fi
+}
+
+ensure_bind_mount() {
+  if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
+    if ! grep -q " ${DEFAULT_DATA_DIR} " /etc/fstab; then
+      echo "${DATA_MOUNT} ${DEFAULT_DATA_DIR} none bind 0 0" >> /etc/fstab
+      systemctl daemon-reload || true
+    fi
+    mount "$DEFAULT_DATA_DIR" || mount -a
+  fi
+}
+
+if [ -z "$existing_pg_version" ] && [ "$data_empty" = "true" ]; then
+  drop_stale_cluster_config
+fi
+
+ensure_bind_mount
+
+if [ -n "$existing_pg_version" ]; then
+  echo "[db] existing PostgreSQL data directory detected on volume; reusing"
+else
+  if [ "$data_empty" != "true" ]; then
+    echo "[db] data directory not empty but PG_VERSION missing; refusing to initialize" >&2
+    exit 1
+  fi
+
+  if command -v pg_dropcluster >/dev/null 2>&1; then
+    pg_dropcluster --stop "$PG_MAJOR" main >/dev/null 2>&1 || true
+  fi
+
+  if command -v pg_createcluster >/dev/null 2>&1; then
+    pg_createcluster "$PG_MAJOR" main -d "$DEFAULT_DATA_DIR"
+  else
+    initdb="/usr/lib/postgresql/${PG_MAJOR}/bin/initdb"
+    if [ -x "$initdb" ]; then
+      sudo -u postgres "$initdb" -D "$DEFAULT_DATA_DIR"
+    else
+      echo "[db] initdb not available to create new cluster" >&2
+      exit 1
+    fi
+  fi
 fi
 
 systemctl enable --now postgresql
