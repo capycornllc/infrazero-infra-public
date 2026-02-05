@@ -60,6 +60,7 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y curl ca-certificates jq age unzip git python3-yaml
+  apt-get install -y python3-ruamel.yaml || true
 fi
 
 wait_for_url() {
@@ -590,40 +591,70 @@ update_app_config() {
   local spc_name="$3"
   python3 - <<'PY' "$config_path" "$workload_name" "$spc_name"
 import sys
-
-try:
-    import yaml
-except Exception:
-    sys.exit(0)
+import os
 
 path = sys.argv[1]
 target_name = sys.argv[2]
 spc_name = sys.argv[3]
 
-cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
-spec = cfg.get("spec") if isinstance(cfg, dict) else {}
-if not isinstance(spec, dict):
-    spec = {}
+def update_cfg(cfg):
+    spec = cfg.get("spec") if isinstance(cfg, dict) else {}
+    if not isinstance(spec, dict):
+        spec = {}
 
-workloads = spec.get("workloads") or cfg.get("workloads") or []
-updated = False
+    workloads = spec.get("workloads") or cfg.get("workloads") or []
+    updated = False
 
-for item in workloads:
-    if not isinstance(item, dict):
-        continue
-    if str(item.get("name", "")).strip() != target_name:
-        continue
-    csi = item.get("csi") if isinstance(item.get("csi"), dict) else {}
-    if csi.get("enabled") is not True:
-        csi["enabled"] = True
-    if csi.get("secretProviderClass") != spc_name:
-        csi["secretProviderClass"] = spc_name
-    item["csi"] = csi
-    updated = True
+    for item in workloads:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name", "")).strip() != target_name:
+            continue
+        csi = item.get("csi") if isinstance(item.get("csi"), dict) else {}
+        if csi.get("enabled") is not True:
+            csi["enabled"] = True
+        if csi.get("secretProviderClass") != spc_name:
+            csi["secretProviderClass"] = spc_name
+        item["csi"] = csi
+        updated = True
 
-if updated:
-    if isinstance(cfg, dict) and "spec" in cfg and isinstance(spec, dict):
+    if updated and isinstance(cfg, dict) and "spec" in cfg and isinstance(spec, dict):
         cfg["spec"] = spec
+
+    return updated, cfg
+
+try:
+    from ruamel.yaml import YAML
+except Exception:
+    YAML = None
+
+if YAML is not None:
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    yaml.allow_duplicate_keys = True
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = yaml.load(fh) or {}
+    updated, cfg = update_cfg(cfg)
+    if updated:
+        with open(path, "w", encoding="utf-8") as fh:
+            yaml.dump(cfg, fh)
+        print(path)
+    sys.exit(0)
+
+try:
+    import yaml  # PyYAML fallback
+except Exception:
+    sys.exit(0)
+
+allow_rewrite = os.environ.get("INFISICAL_ALLOW_APP_CONFIG_REWRITE", "").lower() in ("1", "true", "yes")
+if not allow_rewrite:
+    print("[infisical-admin-secret] ruamel.yaml not available; skipping app-config mutation to avoid rewrite", file=sys.stderr)
+    sys.exit(0)
+
+cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
+updated, cfg = update_cfg(cfg)
+if updated:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(yaml.safe_dump(cfg, sort_keys=False))
     print(path)
