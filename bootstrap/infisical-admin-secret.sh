@@ -401,6 +401,7 @@ if [ -d "$cluster_root" ]; then
 fi
 
 app_config_file=""
+use_app_config="false"
 if [ -f "${GITOPS_DIR}/config/app-config.yaml" ]; then
   app_config_file="${GITOPS_DIR}/config/app-config.yaml"
 else
@@ -420,7 +421,13 @@ except Exception as exc:
 
 path = sys.argv[1]
 cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
-workloads = cfg.get("workloads") or []
+spec = cfg.get("spec") if isinstance(cfg, dict) else {}
+if not isinstance(spec, dict):
+    spec = {}
+workloads = spec.get("workloads") or cfg.get("workloads") or []
+global_cfg = spec.get("global") if isinstance(spec, dict) else {}
+if not isinstance(global_cfg, dict):
+    global_cfg = {}
 
 def get_namespace(obj):
     for key in ("namespace",):
@@ -435,8 +442,9 @@ def get_namespace(obj):
     return ""
 
 default_ns = (
-    get_namespace(cfg)
-    or get_namespace(cfg.get("app") or {})
+    get_namespace(global_cfg)
+    or get_namespace(spec)
+    or get_namespace(cfg)
     or "default"
 )
 
@@ -463,6 +471,7 @@ print(json.dumps(items))
 PY
   then
     workloads_json="$(cat /tmp/infisical-workloads.json)"
+    use_app_config="true"
   else
     echo "[infisical-admin-secret] python3-yaml is required to parse ${app_config_file}" >&2
   fi
@@ -575,6 +584,52 @@ for path in changed_paths:
 PY
 }
 
+update_app_config() {
+  local config_path="$1"
+  local workload_name="$2"
+  local spc_name="$3"
+  python3 - <<'PY' "$config_path" "$workload_name" "$spc_name"
+import sys
+
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+
+path = sys.argv[1]
+target_name = sys.argv[2]
+spc_name = sys.argv[3]
+
+cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
+spec = cfg.get("spec") if isinstance(cfg, dict) else {}
+if not isinstance(spec, dict):
+    spec = {}
+
+workloads = spec.get("workloads") or cfg.get("workloads") or []
+updated = False
+
+for item in workloads:
+    if not isinstance(item, dict):
+        continue
+    if str(item.get("name", "")).strip() != target_name:
+        continue
+    csi = item.get("csi") if isinstance(item.get("csi"), dict) else {}
+    if csi.get("enabled") is not True:
+        csi["enabled"] = True
+    if csi.get("secretProviderClass") != spc_name:
+        csi["secretProviderClass"] = spc_name
+    item["csi"] = csi
+    updated = True
+
+if updated:
+    if isinstance(cfg, dict) and "spec" in cfg and isinstance(spec, dict):
+        cfg["spec"] = spec
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(yaml.safe_dump(cfg, sort_keys=False))
+    print(path)
+PY
+}
+
 if [ -n "$spc_app_file" ]; then
   spc_render_dir="${cluster_root}/infisical-secretproviderclass"
   mkdir -p "$spc_render_dir"
@@ -656,7 +711,11 @@ if [ -n "$spc_app_file" ]; then
       } > "${spc_render_dir}/${spc_file}"
 
       spc_files+=("$spc_file")
-      changed_files=$(update_workload_spc "$GITOPS_DIR" "$workload_name" "$workload_type" "$spc_name" || true)
+      if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
+        changed_files=$(update_app_config "$app_config_file" "$workload_name" "$spc_name" || true)
+      else
+        changed_files=$(update_workload_spc "$GITOPS_DIR" "$workload_name" "$workload_type" "$spc_name" || true)
+      fi
       if [ -n "$changed_files" ]; then
         while IFS= read -r changed_file; do
           [ -n "$changed_file" ] || continue
