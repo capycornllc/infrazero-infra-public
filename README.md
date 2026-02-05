@@ -184,3 +184,11 @@ sudo DB_RESTORE_ROLE_MAP='awa:awa-messenger' /opt/infrazero/db/restore.sh --forc
 - **Skip ACLs** (works when you only care about data + schema):
   - If no `DB_RESTORE_ROLE_MAP` is set, the script skips ACLs by default and reassigns ownership to `APP_DB_USER`.
   - You can explicitly control this with `DB_RESTORE_SKIP_ACL=true|false`.
+
+### Post-restore grants
+After restore, the script grants the app user privileges across all non-system schemas:
+- `GRANT USAGE, CREATE` on schemas
+- `GRANT ALL` on all tables and sequences
+- `ALTER DEFAULT PRIVILEGES` for tables and sequences
+
+To disable this behavior, set `DB_RESTORE_GRANT_APP_USER=false`.

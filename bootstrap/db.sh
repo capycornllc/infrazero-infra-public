@@ -1086,6 +1086,37 @@ elif [ "$skip_acl" = "true" ]; then
   sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "REASSIGN OWNED BY postgres TO \"${app_ident}\";"
 fi
 
+grant_app_user="${DB_RESTORE_GRANT_APP_USER:-true}"
+if [ "$grant_app_user" = "true" ]; then
+  echo "[db-restore] granting schema/table privileges to ${APP_DB_USER}"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -v grantee="$APP_DB_USER" <<'SQL'
+SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT ALL ON TABLES TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT ALL ON SEQUENCES TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+SQL
+fi
+
 rm -rf "$tmpdir"
 unset DB_BACKUP_AGE_PRIVATE_KEY
 echo "[db-restore] restore complete"
