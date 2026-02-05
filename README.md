@@ -145,6 +145,7 @@ On the **db** node you can restore a specific backup from S3. The script will:
 - Prompt for an Age private key if needed
 - (By default) format the DB volume and reinitialize the PostgreSQL cluster after confirmation
 - Wipe and recreate the database before restoring
+- Reapply Infrazero PostgreSQL settings (listen address + HBA block for k3s/WG)
 
 ```bash
 sudo /opt/infrazero/db/restore.sh db/20260201T120000Z.sql.gz.age

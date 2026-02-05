@@ -504,6 +504,14 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+NETWORK_ENV="/etc/infrazero/network.env"
+if [ -f "$NETWORK_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NETWORK_ENV"
+  set +a
+fi
+
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -573,6 +581,8 @@ VOLUME_NAME="${DB_VOLUME_NAME:-}"
 VOLUME_FORMAT="${DB_VOLUME_FORMAT:-ext4}"
 DATA_MOUNT="${MOUNT_DIR}/postgresql/${PG_MAJOR}/main"
 DEFAULT_DATA_DIR="/var/lib/postgresql/${PG_MAJOR}/main"
+PG_CONF="/etc/postgresql/${PG_MAJOR}/main/postgresql.conf"
+HBA_CONF="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
 
 sql_literal() {
   printf '%s' "$1" | sed "s/'/''/g"
@@ -635,6 +645,68 @@ ensure_bind_mount() {
       systemctl daemon-reload || true
     fi
     mount "$DEFAULT_DATA_DIR" || mount -a
+  fi
+}
+
+set_conf() {
+  local key="$1"
+  local value="$2"
+  if [ ! -f "$PG_CONF" ]; then
+    return 0
+  fi
+  if grep -qE "^[#\\s]*${key}\\s*=" "$PG_CONF"; then
+    sed -i "s#^[#\\s]*${key}\\s*=.*#${key} = ${value}#g" "$PG_CONF"
+  else
+    echo "${key} = ${value}" >> "$PG_CONF"
+  fi
+}
+
+apply_infrazero_hba() {
+  if [ ! -f "$HBA_CONF" ]; then
+    return 0
+  fi
+
+  if [ -z "${K3S_NODE_CIDRS:-}" ] && [ -z "${WG_CIDR:-}" ]; then
+    echo "[db-restore] warning: K3S_NODE_CIDRS and WG_CIDR are empty; HBA block will be empty" >&2
+  fi
+
+  local hba_begin="# BEGIN INFRAZERO"
+  local hba_end="# END INFRAZERO"
+
+  awk -v begin="$hba_begin" -v end="$hba_end" '
+    $0==begin {skip=1; next}
+    $0==end {skip=0; next}
+    skip==1 {next}
+    {print}
+  ' "$HBA_CONF" > "${HBA_CONF}.tmp" && mv "${HBA_CONF}.tmp" "$HBA_CONF"
+
+  {
+    echo "$hba_begin"
+    if [ -n "${K3S_NODE_CIDRS:-}" ]; then
+      IFS=',' read -r -a cidrs <<< "$K3S_NODE_CIDRS"
+      for cidr in "${cidrs[@]}"; do
+        cidr=$(echo "$cidr" | xargs)
+        if [ -n "$cidr" ]; then
+          echo "host ${APP_DB_NAME} ${APP_DB_USER} ${cidr} scram-sha-256"
+        fi
+      done
+    fi
+    if [ -n "${WG_CIDR:-}" ]; then
+      echo "host ${APP_DB_NAME} ${APP_DB_USER} ${WG_CIDR} scram-sha-256"
+    fi
+    echo "$hba_end"
+  } >> "$HBA_CONF"
+}
+
+apply_postgres_config() {
+  set_conf "listen_addresses" "'*'"
+  set_conf "password_encryption" "'scram-sha-256'"
+  apply_infrazero_hba
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet postgresql 2>/dev/null; then
+      systemctl reload postgresql || systemctl restart postgresql || true
+    fi
   fi
 }
 
@@ -840,11 +912,13 @@ else
   fi
 fi
 
-if [ "$format_volume" = "true" ]; then
-  format_and_reinit
-fi
+  if [ "$format_volume" = "true" ]; then
+    format_and_reinit
+  fi
 
-ensure_app_role
+  apply_postgres_config
+
+  ensure_app_role
 
 echo "[db-restore] wiping database ${APP_DB_NAME}"
 sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${APP_DB_NAME}';"
