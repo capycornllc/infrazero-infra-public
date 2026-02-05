@@ -188,6 +188,7 @@ drop_stale_cluster_config() {
 }
 
 ensure_bind_mount() {
+  mkdir -p "$DEFAULT_DATA_DIR"
   if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
     if ! grep -q " ${DEFAULT_DATA_DIR} " /etc/fstab; then
       echo "${DATA_MOUNT} ${DEFAULT_DATA_DIR} none bind 0 0" >> /etc/fstab
@@ -514,6 +515,7 @@ require_env() {
 require_env "APP_DB_NAME"
 require_env "APP_DB_USER"
 require_env "APP_DB_PASSWORD"
+require_env "DB_VERSION"
 require_env "S3_ACCESS_KEY_ID"
 require_env "S3_SECRET_ACCESS_KEY"
 require_env "S3_ENDPOINT"
@@ -525,10 +527,30 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-backup_key="${1:-}"
+format_volume="true"
+force_format="${DB_RESTORE_FORCE_FORMAT:-}"
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-format)
+      format_volume="false"
+      ;;
+    --format)
+      format_volume="true"
+      ;;
+    --force-format)
+      force_format="true"
+      ;;
+    *)
+      args+=("$arg")
+      ;;
+  esac
+done
+
+backup_key="${args[0]:-}"
 if [ -z "$backup_key" ]; then
-  echo "Usage: $0 <s3-key-or-s3-url>" >&2
-  echo "Example: $0 db/20260201T120000Z.sql.gz.age" >&2
+  echo "Usage: $0 [--no-format|--format] [--force-format] <s3-key-or-s3-url>" >&2
+  echo "Example: $0 --no-format db/20260201T120000Z.sql.gz.age" >&2
   exit 1
 fi
 
@@ -539,6 +561,142 @@ fi
 export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
+
+PG_MAJOR="${DB_VERSION%%.*}"
+if [ -z "$PG_MAJOR" ]; then
+  echo "[db-restore] unable to parse DB_VERSION: $DB_VERSION" >&2
+  exit 1
+fi
+
+MOUNT_DIR="/mnt/db"
+VOLUME_NAME="${DB_VOLUME_NAME:-}"
+VOLUME_FORMAT="${DB_VOLUME_FORMAT:-ext4}"
+DATA_MOUNT="${MOUNT_DIR}/postgresql/${PG_MAJOR}/main"
+DEFAULT_DATA_DIR="/var/lib/postgresql/${PG_MAJOR}/main"
+
+sql_literal() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+sql_ident() {
+  printf '%s' "$1" | sed 's/"/""/g'
+}
+
+ensure_app_role() {
+  local role_lit
+  local role_ident
+  local pw_lit
+  role_lit=$(sql_literal "$APP_DB_USER")
+  role_ident=$(sql_ident "$APP_DB_USER")
+  pw_lit=$(sql_literal "$APP_DB_PASSWORD")
+
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${role_lit}') THEN CREATE ROLE \"${role_ident}\" WITH LOGIN PASSWORD '${pw_lit}'; ELSE ALTER ROLE \"${role_ident}\" WITH LOGIN PASSWORD '${pw_lit}'; END IF; END \$\$;"
+}
+
+find_volume_device() {
+  local device=""
+  if [ -n "$VOLUME_NAME" ] && [ -e "/dev/disk/by-id/scsi-0HC_Volume_${VOLUME_NAME}" ]; then
+    device="/dev/disk/by-id/scsi-0HC_Volume_${VOLUME_NAME}"
+  else
+    device=$(ls -1 /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -n 1 || true)
+    if [ -z "$device" ]; then
+      device=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
+    fi
+  fi
+  if [ -z "$device" ]; then
+    echo "[db-restore] no attached volume device found" >&2
+    exit 1
+  fi
+  echo "$device"
+}
+
+drop_stale_cluster_config() {
+  local conf_dir="/etc/postgresql/${PG_MAJOR}/main"
+  if [ -d "$conf_dir" ]; then
+    echo "[db-restore] removing stale PostgreSQL cluster config at $conf_dir"
+    if command -v pg_dropcluster >/dev/null 2>&1; then
+      if ! pg_dropcluster --stop "$PG_MAJOR" main >/dev/null 2>&1; then
+        echo "[db-restore] pg_dropcluster failed; removing config directory manually" >&2
+      fi
+    fi
+    rm -rf "$conf_dir"
+  fi
+
+  if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
+    rm -rf "$DEFAULT_DATA_DIR"
+  fi
+}
+
+ensure_bind_mount() {
+  mkdir -p "$DEFAULT_DATA_DIR"
+  if ! mountpoint -q "$DEFAULT_DATA_DIR"; then
+    if ! grep -q " ${DEFAULT_DATA_DIR} " /etc/fstab; then
+      echo "${DATA_MOUNT} ${DEFAULT_DATA_DIR} none bind 0 0" >> /etc/fstab
+      systemctl daemon-reload || true
+    fi
+    mount "$DEFAULT_DATA_DIR" || mount -a
+  fi
+}
+
+format_and_reinit() {
+  local device
+  device=$(find_volume_device)
+
+  echo "[db-restore] WARNING: this will format ${device} and erase all data on the DB volume."
+  if [ "$force_format" != "true" ]; then
+    if [ ! -t 0 ]; then
+      echo "[db-restore] stdin is not a TTY; set DB_RESTORE_FORCE_FORMAT=true or pass --force-format" >&2
+      exit 1
+    fi
+    read -r -p "[db-restore] Type FORMAT to continue: " confirm
+    if [ "$confirm" != "FORMAT" ]; then
+      echo "[db-restore] aborting"
+      exit 1
+    fi
+  fi
+
+  systemctl stop postgresql || true
+  systemctl stop "postgresql@${PG_MAJOR}-main" || true
+  umount "$DEFAULT_DATA_DIR" 2>/dev/null || true
+  umount "$MOUNT_DIR" 2>/dev/null || true
+
+  mkfs -t "$VOLUME_FORMAT" -F "$device"
+
+  local uuid
+  uuid=$(blkid -s UUID -o value "$device" || true)
+  if [ -z "$uuid" ]; then
+    echo "[db-restore] unable to determine UUID for ${device}" >&2
+    exit 1
+  fi
+
+  mkdir -p "$MOUNT_DIR"
+  if [ -f /etc/fstab ]; then
+    awk -v mnt="$MOUNT_DIR" -v bind="$DEFAULT_DATA_DIR" '!(($2==mnt)||($2==bind))' /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
+  fi
+  echo "UUID=$uuid $MOUNT_DIR $VOLUME_FORMAT defaults,nofail 0 2" >> /etc/fstab
+  systemctl daemon-reload || true
+  mount "$MOUNT_DIR" || mount -a
+
+  mkdir -p "$DATA_MOUNT" "$DEFAULT_DATA_DIR"
+  chown -R postgres:postgres "${MOUNT_DIR}/postgresql" || true
+
+  drop_stale_cluster_config
+  ensure_bind_mount
+
+  if command -v pg_createcluster >/dev/null 2>&1; then
+    pg_createcluster "$PG_MAJOR" main -d "$DEFAULT_DATA_DIR"
+  else
+    initdb="/usr/lib/postgresql/${PG_MAJOR}/bin/initdb"
+    if [ -x "$initdb" ]; then
+      sudo -u postgres "$initdb" -D "$DEFAULT_DATA_DIR"
+    else
+      echo "[db-restore] initdb not available to create new cluster" >&2
+      exit 1
+    fi
+  fi
+
+  systemctl start postgresql || true
+}
 
 tmpdir=$(mktemp -d /run/infrazero-db-restore.XXXX)
 chmod 700 "$tmpdir"
@@ -682,16 +840,85 @@ else
   fi
 fi
 
+if [ "$format_volume" = "true" ]; then
+  format_and_reinit
+fi
+
+ensure_app_role
+
 echo "[db-restore] wiping database ${APP_DB_NAME}"
-sudo -u postgres psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${APP_DB_NAME}';"
-sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${APP_DB_NAME}\";"
-sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${APP_DB_NAME}\" OWNER \"${APP_DB_USER}\";"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${APP_DB_NAME}';"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${APP_DB_NAME}\";"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${APP_DB_NAME}\" OWNER \"${APP_DB_USER}\";"
+
+role_map="${DB_RESTORE_ROLE_MAP:-}"
+skip_acl="${DB_RESTORE_SKIP_ACL:-}"
+drop_mapped="${DB_RESTORE_DROP_MAPPED_ROLES:-true}"
+if [ -z "$skip_acl" ]; then
+  if [ -n "$role_map" ]; then
+    skip_acl="false"
+  else
+    skip_acl="true"
+  fi
+fi
+
+declare -a mapped_old=()
+declare -a mapped_new=()
+if [ -n "$role_map" ]; then
+  IFS=',' read -r -a pairs <<< "$role_map"
+  for pair in "${pairs[@]}"; do
+    pair=$(echo "$pair" | xargs)
+    if [ -z "$pair" ]; then
+      continue
+    fi
+    old="${pair%%:*}"
+    new="${pair#*:}"
+    if [ -z "$old" ] || [ -z "$new" ]; then
+      echo "[db-restore] invalid DB_RESTORE_ROLE_MAP entry: ${pair}" >&2
+      exit 1
+    fi
+    mapped_old+=("$old")
+    mapped_new+=("$new")
+
+    old_lit=$(sql_literal "$old")
+    old_ident=$(sql_ident "$old")
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${old_lit}') THEN CREATE ROLE \"${old_ident}\" NOLOGIN; END IF; END \$\$;"
+  done
+fi
 
 echo "[db-restore] restoring database"
 if [ "$is_custom" = "true" ]; then
-  "${stream_cmd[@]}" | sudo -u postgres pg_restore --no-owner -d "$APP_DB_NAME"
+  restore_args=(--no-owner -d "$APP_DB_NAME")
+  if [ "$skip_acl" = "true" ]; then
+    restore_args+=(--no-privileges)
+  fi
+  "${stream_cmd[@]}" | sudo -u postgres -H pg_restore "${restore_args[@]}"
 else
-  "${stream_cmd[@]}" | sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+  if [ "$skip_acl" = "true" ]; then
+    "${stream_cmd[@]}" | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d' | \
+      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+  else
+    "${stream_cmd[@]}" | sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+  fi
+fi
+
+if [ "${#mapped_old[@]}" -gt 0 ]; then
+  idx=0
+  for old in "${mapped_old[@]}"; do
+    new="${mapped_new[$idx]}"
+    old_ident=$(sql_ident "$old")
+    new_ident=$(sql_ident "$new")
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "REASSIGN OWNED BY \"${old_ident}\" TO \"${new_ident}\";"
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "DROP OWNED BY \"${old_ident}\";"
+    if [ "$drop_mapped" = "true" ]; then
+      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP ROLE IF EXISTS \"${old_ident}\";"
+    fi
+    idx=$((idx + 1))
+  done
+elif [ "$skip_acl" = "true" ]; then
+  app_ident=$(sql_ident "$APP_DB_USER")
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"${APP_DB_NAME}\" OWNER TO \"${app_ident}\";"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "REASSIGN OWNED BY postgres TO \"${app_ident}\";"
 fi
 
 rm -rf "$tmpdir"

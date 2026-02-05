@@ -143,6 +143,7 @@ On the **db** node you can restore a specific backup from S3. The script will:
 - Download the object from S3
 - Detect whether it is age-encrypted or plaintext
 - Prompt for an Age private key if needed
+- (By default) format the DB volume and reinitialize the PostgreSQL cluster after confirmation
 - Wipe and recreate the database before restoring
 
 ```bash
@@ -150,3 +151,33 @@ sudo /opt/infrazero/db/restore.sh db/20260201T120000Z.sql.gz.age
 # or full path:
 sudo /opt/infrazero/db/restore.sh s3://<bucket>/db/20260201T120000Z.sql.gz.age
 ```
+
+### DB restore options
+Formatting and reinitialization:
+- By default the script formats the attached DB volume and re-creates the cluster.
+- It will prompt for confirmation; type `FORMAT` to proceed.
+- For automation, pass `--force-format` or set `DB_RESTORE_FORCE_FORMAT=true`.
+- To keep the current volume data, use `--no-format`.
+
+Examples:
+```bash
+sudo /opt/infrazero/db/restore.sh --force-format db/20260201T120000Z.sql.gz.age
+sudo /opt/infrazero/db/restore.sh --no-format db/20260201T120000Z.sql.gz.age
+```
+
+### Role mapping / ACL handling
+If your dump references old roles (for example `awa`) that do not exist on the rebuilt server, you have two options:
+
+- **Map old roles to new ones** (recommended for ownership preservation):
+  - Set `DB_RESTORE_ROLE_MAP='old:new,old2:new2'`.
+  - The script will create missing old roles as `NOLOGIN`, restore, reassign ownership to the new role(s), and drop the old roles by default.
+  - To keep old roles, set `DB_RESTORE_DROP_MAPPED_ROLES=false`.
+
+Example:
+```bash
+sudo DB_RESTORE_ROLE_MAP='awa:awa-messenger' /opt/infrazero/db/restore.sh --force-format admin_messenger.dump.zst
+```
+
+- **Skip ACLs** (works when you only care about data + schema):
+  - If no `DB_RESTORE_ROLE_MAP` is set, the script skips ACLs by default and reassigns ownership to `APP_DB_USER`.
+  - You can explicitly control this with `DB_RESTORE_SKIP_ACL=true|false`.
