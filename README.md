@@ -159,6 +159,8 @@ Formatting and reinitialization:
 - It will prompt for confirmation; type `FORMAT` to proceed.
 - For automation, pass `--force-format` or set `DB_RESTORE_FORCE_FORMAT=true`.
 - To keep the current volume data, use `--no-format`.
+- During restore, PostgreSQL listen addresses are set to the node private IP (derived from `PRIVATE_CIDR`) plus `localhost`.
+- Override with `DB_LISTEN_ADDRESS` (comma-separated values accepted by PostgreSQL).
 
 Examples:
 ```bash

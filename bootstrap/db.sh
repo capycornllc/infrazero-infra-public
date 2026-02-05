@@ -252,7 +252,52 @@ set_conf() {
   fi
 }
 
-set_conf "listen_addresses" "'*'"
+resolve_listen_addresses() {
+  if [ -n "${DB_LISTEN_ADDRESS:-}" ]; then
+    echo "${DB_LISTEN_ADDRESS}"
+    return 0
+  fi
+
+  local priv_ip=""
+  if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
+    priv_ip=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(addr)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+    ) || true
+  fi
+
+  if [ -n "$priv_ip" ]; then
+    echo "${priv_ip},localhost"
+    return 0
+  fi
+
+  echo "*"
+}
+
+listen_addr=$(resolve_listen_addresses)
+set_conf "listen_addresses" "'${listen_addr}'"
 set_conf "password_encryption" "'scram-sha-256'"
 
 HBA_BEGIN="# BEGIN INFRAZERO"
@@ -699,7 +744,46 @@ apply_infrazero_hba() {
 }
 
 apply_postgres_config() {
-  set_conf "listen_addresses" "'*'"
+  local listen_addr="*"
+  if [ -n "${DB_LISTEN_ADDRESS:-}" ]; then
+    listen_addr="${DB_LISTEN_ADDRESS}"
+  else
+    local priv_ip=""
+    if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
+      priv_ip=$(python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(addr)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+      ) || true
+    fi
+
+    if [ -n "$priv_ip" ]; then
+      listen_addr="${priv_ip},localhost"
+    fi
+  fi
+
+  set_conf "listen_addresses" "'${listen_addr}'"
   set_conf "password_encryption" "'scram-sha-256'"
   apply_infrazero_hba
 
