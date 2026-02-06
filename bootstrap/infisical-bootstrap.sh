@@ -392,6 +392,13 @@ if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
     if [ "$folder_name" = "/" ] || [ -z "$folder_name" ]; then
       folder_path="/"
     fi
+    folder_norm=$(printf '%s' "$folder_path" | sed -E 's#^/+##; s#/*$##')
+    folder_norm_lc=$(printf '%s' "$folder_norm" | tr '[:upper:]' '[:lower:]')
+    decode_values="true"
+    # The UI base64-encodes secret values for non-infra folders. Keep infra plain.
+    if [ "$folder_norm_lc" = "infra" ] || [[ "$folder_norm_lc" == infra/* ]]; then
+      decode_values="false"
+    fi
     echo "$folder_entry" | jq -c '.value[]' | while read -r secret_entry; do
       secret_name=$(echo "$secret_entry" | jq -r 'keys[0]')
       env_map=$(echo "$secret_entry" | jq -c '.[keys[0]]')
@@ -399,6 +406,14 @@ if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
         secret_value=$(echo "$env_map" | jq -r --arg env "$env_slug" '.[$env]')
         if [ "$secret_value" = "null" ]; then
           continue
+        fi
+        if [ "$decode_values" = "true" ]; then
+          # Decode as bytes, keep special characters/newlines intact for jq/curl.
+          if ! decoded_value=$(printf '%s' "$secret_value" | base64 -d 2>/dev/null); then
+            echo "[infisical-bootstrap] failed to base64 decode secret ${secret_name} (${env_slug}:${folder_path})" >&2
+            exit 1
+          fi
+          secret_value="$decoded_value"
         fi
         ensure_folder_path "$env_slug" "$folder_path"
         upsert_secret "$env_slug" "$folder_path" "$secret_name" "$secret_value"
