@@ -54,7 +54,7 @@ require_env "S3_SECRET_ACCESS_KEY"
 require_env "S3_ENDPOINT"
 require_env "S3_REGION"
 require_env "DB_BACKUP_BUCKET"
-require_env "DB_BACKUP_AGE_PRIVATE_KEY"
+require_env "INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY"
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
@@ -132,7 +132,7 @@ wait_for_manifest "$tokens_manifest_key" || {
   exit 1
 }
 
-echo "$DB_BACKUP_AGE_PRIVATE_KEY" > "$workdir/age.key"
+echo "$INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY" > "$workdir/age.key"
 chmod 600 "$workdir/age.key"
 
 if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" "$workdir/latest-tokens.json" >/dev/null 2>&1; then
@@ -1072,6 +1072,6 @@ fi
 
 rm -f "$workdir/age.key" "$workdir/admin.token" "$workdir/admin.token.age" "$workdir/latest-tokens.json"
 rm -rf "$workdir"
-unset DB_BACKUP_AGE_PRIVATE_KEY
+unset INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY
 
 echo "[infisical-admin-secret] $(date -Is) complete"

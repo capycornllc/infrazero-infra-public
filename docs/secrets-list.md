@@ -38,6 +38,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `infisical_db_backup_age_public_key`
+- `infisical_db_backup_age_private_key`
 - `infisical_project_name`
 - `infisical_restore_from_s3` (`true` to restore from S3 before bootstrap)
 - `infisical_bootstrap_secrets` (JSON payload for Infisical bootstrap secrets)
@@ -64,18 +66,19 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `app_public_bucket`
 - `s3_region` (optional; falls back to `cloud_region`, then `us-east-1`)
 
-## 6) Application Database
+## 6) Databases
 - `db_type` (currently `postgresql`)
 - `db_version` (currently `14.20`)
+- `databases_json` (JSON array: `{ name, user, password, backup_age_public_key, backup_age_private_key }`)
+
+Legacy (deprecated; ignored by this repo):
 - `app_db_name`
 - `app_db_user`
 - `app_db_password`
-
-## 7) DB Backup Age Keys
 - `db_backup_age_public_key`
 - `db_backup_age_private_key`
 
-## 8) Admin Access (Multi-user)
+## 7) Admin Access (Multi-user)
 - `OPS_SSH_KEYS_JSON` (map username -> list of SSH public keys)
 - `WG_ADMIN_PEERS_JSON` (map username -> `{ publicKey, ip }`)
 - `WG_PRESHARED_KEYS_JSON` (map username -> preshared key)
@@ -86,13 +89,13 @@ Global WireGuard settings:
 - `wg_server_private_key`
 - `wg_server_public_key`
 
-## 9) WireGuard Config Download
+## 8) WireGuard Config Download
 - `wg_server_endpoint`
 
-## 10) Debug / Break-glass access (optional)
+## 9) Debug / Break-glass access (optional)
 - `DEBUG_ROOT_PASSWORD` (enables root password auth; bastion SSH opened to `0.0.0.0/0` while set; stored in cloud-init user data)
 
-## 11) Cloud-init overlays (optional)
+## 10) Cloud-init overlays (optional)
 Each value must be a YAML mapping (cloud-init snippet). Lists are appended for `packages`, `write_files`, and `runcmd`.
 - `bastion_cloud_init`
 - `egress_cloud_init`

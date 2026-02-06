@@ -62,7 +62,7 @@ require_env "S3_SECRET_ACCESS_KEY"
 require_env "S3_ENDPOINT"
 require_env "S3_REGION"
 require_env "DB_BACKUP_BUCKET"
-require_env "DB_BACKUP_AGE_PUBLIC_KEY"
+require_env "INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY"
 require_env "INFISICAL_EMAIL"
 require_env "INFISICAL_PASSWORD"
 require_env "INFISICAL_ORGANIZATION"
@@ -413,7 +413,7 @@ tmpdir=$(mktemp -d /run/infisical-bootstrap.XXXX)
 chmod 700 "$tmpdir"
 printf '%s' "$ADMIN_TOKEN" > "$tmpdir/admin.token"
 
-age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$tmpdir/admin.token.age" "$tmpdir/admin.token"
+age -r "$INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY" -o "$tmpdir/admin.token.age" "$tmpdir/admin.token"
 
 admin_sha=$(sha256sum "$tmpdir/admin.token.age" | awk '{print $1}')
 

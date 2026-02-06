@@ -26,9 +26,7 @@ require_env() {
 
 require_env "DB_TYPE"
 require_env "DB_VERSION"
-require_env "APP_DB_NAME"
-require_env "APP_DB_USER"
-require_env "APP_DB_PASSWORD"
+require_env "DATABASES_JSON"
 require_env "S3_ACCESS_KEY_ID"
 require_env "S3_SECRET_ACCESS_KEY"
 require_env "S3_ENDPOINT"
@@ -204,6 +202,7 @@ fi
 
 ensure_bind_mount
 
+fresh_cluster="false"
 if [ -n "$existing_pg_version" ]; then
   echo "[db] existing PostgreSQL data directory detected on volume; reusing"
 else
@@ -227,6 +226,7 @@ else
       exit 1
     fi
   fi
+  fresh_cluster="true"
 fi
 
 systemctl enable --now postgresql
@@ -300,6 +300,31 @@ listen_addr=$(resolve_listen_addresses)
 set_conf "listen_addresses" "'${listen_addr}'"
 set_conf "password_encryption" "'scram-sha-256'"
 
+DATABASES_JSON_EFFECTIVE="${DATABASES_JSON}"
+
+if ! echo "$DATABASES_JSON_EFFECTIVE" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+  echo "[db] DATABASES_JSON must be a non-empty JSON array" >&2
+  exit 1
+fi
+
+if ! echo "$DATABASES_JSON_EFFECTIVE" | jq -e '[.[].name] | length == (unique | length)' >/dev/null 2>&1; then
+  echo "[db] DATABASES_JSON has duplicate database names; names must be unique" >&2
+  exit 1
+fi
+
+if ! echo "$DATABASES_JSON_EFFECTIVE" | jq -e '
+  all(.[]; type=="object"
+    and (.name|type=="string" and length>0 and (test("[[:space:]]")|not) and (contains("/")|not))
+    and (.user|type=="string" and length>0 and (test("[[:space:]]")|not) and (contains("/")|not))
+    and (.password|type=="string" and length>0)
+    and (.backup_age_public_key|type=="string" and length>0)
+  )' >/dev/null 2>&1; then
+  echo "[db] DATABASES_JSON entries must include non-empty name/user/password/backup_age_public_key (no whitespace in name/user)" >&2
+  exit 1
+fi
+
+DATABASES_JSON_EFFECTIVE=$(echo "$DATABASES_JSON_EFFECTIVE" | jq -c '.')
+
 HBA_BEGIN="# BEGIN INFRAZERO"
 HBA_END="# END INFRAZERO"
 
@@ -314,18 +339,24 @@ fi
 
 {
   echo "$HBA_BEGIN"
+  cidrs=()
   if [ -n "${K3S_NODE_CIDRS:-}" ]; then
     IFS=',' read -r -a cidrs <<< "$K3S_NODE_CIDRS"
+  fi
+  while IFS= read -r db_b64; do
+    db=$(echo "$db_b64" | base64 -d)
+    db_name=$(echo "$db" | jq -r '.name')
+    db_user=$(echo "$db" | jq -r '.user')
     for cidr in "${cidrs[@]}"; do
       cidr=$(echo "$cidr" | xargs)
       if [ -n "$cidr" ]; then
-        echo "host ${APP_DB_NAME} ${APP_DB_USER} ${cidr} scram-sha-256"
+        echo "host ${db_name} ${db_user} ${cidr} scram-sha-256"
       fi
     done
-  fi
-  if [ -n "${WG_CIDR:-}" ]; then
-    echo "host ${APP_DB_NAME} ${APP_DB_USER} ${WG_CIDR} scram-sha-256"
-  fi
+    if [ -n "${WG_CIDR:-}" ]; then
+      echo "host ${db_name} ${db_user} ${WG_CIDR} scram-sha-256"
+    fi
+  done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
   echo "$HBA_END"
 } >> "$HBA_CONF"
 
@@ -431,65 +462,148 @@ sql_escape() {
   printf '%s' "$1" | sed "s/'/''/g"
 }
 
-user_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${APP_DB_USER}'" || true)
-escaped_app_db_password=$(sql_escape "$APP_DB_PASSWORD")
-if [ "$user_exists" != "1" ]; then
-  psql_as_postgres -c "CREATE ROLE \"${APP_DB_USER}\" WITH LOGIN PASSWORD '${escaped_app_db_password}';"
-else
-  psql_as_postgres -c "ALTER ROLE \"${APP_DB_USER}\" WITH PASSWORD '${escaped_app_db_password}';"
-fi
+sql_ident() {
+  printf '%s' "$1" | sed 's/"/""/g'
+}
 
-db_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${APP_DB_NAME}'" || true)
-if [ "$db_exists" != "1" ]; then
-  psql_as_postgres -c "CREATE DATABASE \"${APP_DB_NAME}\" OWNER \"${APP_DB_USER}\";"
-fi
+ensure_databases() {
+  echo "[db] ensuring roles and databases"
+  while IFS= read -r db_b64; do
+    db=$(echo "$db_b64" | base64 -d)
+    db_name=$(echo "$db" | jq -r '.name')
+    db_user=$(echo "$db" | jq -r '.user')
+    db_password=$(echo "$db" | jq -r '.password')
 
-psql_as_postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"${APP_DB_NAME}\" TO \"${APP_DB_USER}\";"
+    user_lit=$(sql_escape "$db_user")
+    user_ident=$(sql_ident "$db_user")
+    pw_lit=$(sql_escape "$db_password")
 
-restore_db() {
-  if [ -z "${DB_BACKUP_AGE_PRIVATE_KEY:-}" ]; then
-    echo "[db] DB_BACKUP_AGE_PRIVATE_KEY not set; skipping restore"
+    user_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${user_lit}'" || true)
+    if [ "$user_exists" != "1" ]; then
+      psql_as_postgres -c "CREATE ROLE \"${user_ident}\" WITH LOGIN PASSWORD '${pw_lit}';"
+    else
+      psql_as_postgres -c "ALTER ROLE \"${user_ident}\" WITH PASSWORD '${pw_lit}';"
+    fi
+
+    db_lit=$(sql_escape "$db_name")
+    db_ident=$(sql_ident "$db_name")
+
+    db_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db_lit}'" || true)
+    if [ "$db_exists" != "1" ]; then
+      psql_as_postgres -c "CREATE DATABASE \"${db_ident}\" OWNER \"${user_ident}\";"
+    else
+      psql_as_postgres -c "ALTER DATABASE \"${db_ident}\" OWNER TO \"${user_ident}\";"
+    fi
+
+    psql_as_postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"${db_ident}\" TO \"${user_ident}\";"
+  done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
+}
+
+ensure_databases
+
+scrub_databases_json_private_b64_from_run_sh() {
+  # The per-DB Age private keys are only needed during bootstrap restore.
+  # Scrub them from the persisted bootstrap script to avoid leaving them on disk.
+  if [ -f /opt/infrazero/bootstrap/run.sh ]; then
+    sed -i 's/^export DATABASES_JSON_PRIVATE_B64=.*$/export DATABASES_JSON_PRIVATE_B64=""/' /opt/infrazero/bootstrap/run.sh || true
+  fi
+}
+
+restore_databases_from_s3() {
+  if [ "$fresh_cluster" != "true" ]; then
+    echo "[db] existing PostgreSQL data directory detected; skipping S3 restore"
+    unset DATABASES_JSON_PRIVATE_B64
+    scrub_databases_json_private_b64_from_run_sh
+    return 0
+  fi
+
+  if [ -z "${DATABASES_JSON_PRIVATE_B64:-}" ]; then
+    echo "[db] DATABASES_JSON_PRIVATE_B64 not set; skipping restore"
+    scrub_databases_json_private_b64_from_run_sh
     return 0
   fi
 
   local tmpdir
   tmpdir=$(mktemp -d /run/infrazero-db-restore.XXXX)
   chmod 700 "$tmpdir"
-  echo "$DB_BACKUP_AGE_PRIVATE_KEY" > "$tmpdir/age.key"
-  chmod 600 "$tmpdir/age.key"
 
-  local manifest_key="db/latest-dump.json"
-  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${manifest_key}" "$tmpdir/latest-dump.json" >/dev/null 2>&1; then
-    echo "[db] no latest-dump manifest found; skipping restore"
+  echo "$DATABASES_JSON_PRIVATE_B64" | base64 -d > "$tmpdir/databases.json" || {
+    echo "[db] unable to decode DATABASES_JSON_PRIVATE_B64" >&2
     rm -rf "$tmpdir"
-    unset DB_BACKUP_AGE_PRIVATE_KEY
-    return 0
-  fi
+    unset DATABASES_JSON_PRIVATE_B64
+    scrub_databases_json_private_b64_from_run_sh
+    return 1
+  }
+  chmod 600 "$tmpdir/databases.json" || true
 
-  local key
-  local sha
-  key=$(jq -r '.key' "$tmpdir/latest-dump.json")
-  sha=$(jq -r '.sha256' "$tmpdir/latest-dump.json")
-
-  if [ -z "$key" ] || [ "$key" = "null" ]; then
-    echo "[db] latest-dump manifest missing key" >&2
+  if ! jq -e 'type=="array"' "$tmpdir/databases.json" >/dev/null 2>&1; then
+    echo "[db] decoded DATABASES_JSON_PRIVATE_B64 is not a JSON array" >&2
     rm -rf "$tmpdir"
-    unset DB_BACKUP_AGE_PRIVATE_KEY
+    unset DATABASES_JSON_PRIVATE_B64
+    scrub_databases_json_private_b64_from_run_sh
     return 1
   fi
 
-  aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${key}" "$tmpdir/dump.age"
-  echo "$sha  $tmpdir/dump.age" | sha256sum -c -
+  echo "[db] restoring latest DB backups from S3 (fresh cluster)"
+  while IFS= read -r db_b64; do
+    db=$(echo "$db_b64" | base64 -d)
+    db_name=$(echo "$db" | jq -r '.name')
+    db_user=$(echo "$db" | jq -r '.user')
 
-  age -d -i "$tmpdir/age.key" -o "$tmpdir/dump.sql.gz" "$tmpdir/dump.age"
-  gunzip -c "$tmpdir/dump.sql.gz" | sudo -u postgres psql -d "$APP_DB_NAME"
+    pk=$(jq -r --arg name "$db_name" '.[] | select(.name==$name) | .backup_age_private_key // empty' "$tmpdir/databases.json" | tail -n 1)
+    if [ -z "$pk" ]; then
+      echo "[db] no backup_age_private_key found for ${db_name}; skipping restore" >&2
+      continue
+    fi
+
+    local manifest_key="db/${db_name}/latest-dump.json"
+    if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${manifest_key}" "$tmpdir/latest-dump.json" >/dev/null 2>&1; then
+      echo "[db] no latest-dump manifest found for ${db_name}; skipping restore"
+      continue
+    fi
+
+    key=$(jq -r '.key' "$tmpdir/latest-dump.json")
+    sha=$(jq -r '.sha256' "$tmpdir/latest-dump.json")
+
+    if [ -z "$key" ] || [ "$key" = "null" ]; then
+      echo "[db] latest-dump manifest missing key for ${db_name}" >&2
+      rm -f "$tmpdir/latest-dump.json"
+      continue
+    fi
+    if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+      echo "[db] latest-dump manifest missing sha256 for ${db_name}" >&2
+      rm -f "$tmpdir/latest-dump.json"
+      continue
+    fi
+
+    aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${key}" "$tmpdir/dump.age"
+    echo "$sha  $tmpdir/dump.age" | sha256sum -c -
+
+    echo "$pk" > "$tmpdir/age.key"
+    chmod 600 "$tmpdir/age.key"
+    age -d -i "$tmpdir/age.key" -o "$tmpdir/dump.sql.gz" "$tmpdir/dump.age"
+
+    user_ident=$(sql_ident "$db_user")
+    db_ident=$(sql_ident "$db_name")
+    db_lit=$(sql_escape "$db_name")
+
+    echo "[db] restoring ${db_name}"
+    psql_as_postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';" || true
+    psql_as_postgres -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
+    psql_as_postgres -c "CREATE DATABASE \"${db_ident}\" OWNER \"${user_ident}\";"
+
+    gunzip -c "$tmpdir/dump.sql.gz" | sudo -u postgres psql -d "$db_name"
+
+    rm -f "$tmpdir/age.key" "$tmpdir/dump.age" "$tmpdir/dump.sql.gz" "$tmpdir/latest-dump.json"
+  done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
 
   rm -rf "$tmpdir"
-  unset DB_BACKUP_AGE_PRIVATE_KEY
+  unset DATABASES_JSON_PRIVATE_B64
+  scrub_databases_json_private_b64_from_run_sh
   echo "[db] restore complete"
 }
 
-restore_db
+restore_databases_from_s3
 
 mkdir -p /opt/infrazero/db /opt/infrazero/db/backups
 
@@ -517,22 +631,50 @@ TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 WORKDIR="/opt/infrazero/db/backups"
 mkdir -p "$WORKDIR"
 
-DUMP_PATH="$WORKDIR/db-${TIMESTAMP}.sql.gz"
-ENC_PATH="$DUMP_PATH.age"
+if [ -z "${DATABASES_JSON:-}" ]; then
+  echo "[db-backup] DATABASES_JSON not set" >&2
+  exit 1
+fi
 
-sudo -u postgres pg_dump -d "$APP_DB_NAME" | gzip > "$DUMP_PATH"
+if ! echo "$DATABASES_JSON" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+  echo "[db-backup] DATABASES_JSON must be a non-empty JSON array" >&2
+  exit 1
+fi
 
-age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$ENC_PATH" "$DUMP_PATH"
-SHA=$(sha256sum "$ENC_PATH" | awk '{print $1}')
-KEY="db/${TIMESTAMP}.sql.gz.age"
+while IFS= read -r db_b64; do
+  db=$(echo "$db_b64" | base64 -d)
+  db_name=$(echo "$db" | jq -r '.name')
+  db_pub=$(echo "$db" | jq -r '.backup_age_public_key')
 
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$ENC_PATH" "s3://${DB_BACKUP_BUCKET}/${KEY}"
+  if [ -z "$db_name" ] || [ "$db_name" = "null" ]; then
+    echo "[db-backup] invalid database name in DATABASES_JSON" >&2
+    exit 1
+  fi
+  if [ -z "$db_pub" ] || [ "$db_pub" = "null" ]; then
+    echo "[db-backup] missing backup_age_public_key for ${db_name}" >&2
+    exit 1
+  fi
 
-jq -n --arg key "$KEY" --arg sha "$SHA" --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{key:$key, sha256:$sha, created_at:$created_at}' > "$WORKDIR/latest-dump.json"
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$WORKDIR/latest-dump.json" "s3://${DB_BACKUP_BUCKET}/db/latest-dump.json"
+  dump_dir="$WORKDIR/${db_name}"
+  mkdir -p "$dump_dir"
 
-rm -f "$DUMP_PATH" "$ENC_PATH"
+  dump_path="$dump_dir/${TIMESTAMP}.sql.gz"
+  enc_path="$dump_path.age"
+
+  sudo -u postgres pg_dump -d "$db_name" | gzip > "$dump_path"
+
+  age -r "$db_pub" -o "$enc_path" "$dump_path"
+  sha=$(sha256sum "$enc_path" | awk '{print $1}')
+  key="db/${db_name}/${TIMESTAMP}.sql.gz.age"
+
+  aws --endpoint-url "$S3_ENDPOINT" s3 cp "$enc_path" "s3://${DB_BACKUP_BUCKET}/${key}"
+
+  jq -n --arg key "$key" --arg sha "$sha" --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{key:$key, sha256:$sha, created_at:$created_at}' > "$dump_dir/latest-dump.json"
+  aws --endpoint-url "$S3_ENDPOINT" s3 cp "$dump_dir/latest-dump.json" "s3://${DB_BACKUP_BUCKET}/db/${db_name}/latest-dump.json"
+
+  rm -f "$dump_path" "$enc_path"
+done < <(echo "$DATABASES_JSON" | jq -cr '.[] | @base64')
 EOF
 
 chmod +x /opt/infrazero/db/backup.sh
@@ -565,9 +707,7 @@ require_env() {
   fi
 }
 
-require_env "APP_DB_NAME"
-require_env "APP_DB_USER"
-require_env "APP_DB_PASSWORD"
+require_env "DATABASES_JSON"
 require_env "DB_VERSION"
 require_env "S3_ACCESS_KEY_ID"
 require_env "S3_SECRET_ACCESS_KEY"
@@ -580,30 +720,39 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-format_volume="true"
-force_format="${DB_RESTORE_FORCE_FORMAT:-}"
-args=()
-for arg in "$@"; do
-  case "$arg" in
-    --no-format)
-      format_volume="false"
-      ;;
-    --format)
-      format_volume="true"
-      ;;
-    --force-format)
-      force_format="true"
-      ;;
-    *)
-      args+=("$arg")
-      ;;
-  esac
-done
+if ! command -v jq >/dev/null 2>&1; then
+  echo "[db-restore] jq not available" >&2
+  exit 1
+fi
 
-backup_key="${args[0]:-}"
-if [ -z "$backup_key" ]; then
-  echo "Usage: $0 [--no-format|--format] [--force-format] <s3-key-or-s3-url>" >&2
-  echo "Example: $0 --no-format db/20260201T120000Z.sql.gz.age" >&2
+if ! echo "$DATABASES_JSON" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+  echo "[db-restore] DATABASES_JSON must be a non-empty JSON array" >&2
+  exit 1
+fi
+
+db_name="${1:-}"
+backup_key="${2:-}"
+if [ -z "$db_name" ] || [ -z "$backup_key" ]; then
+  echo "Usage: $0 <db_name> <s3-key-or-s3-url>" >&2
+  echo "Example: $0 messenger db/messenger/20260201T120000Z.sql.gz.age" >&2
+  exit 1
+fi
+
+db_entry=$(echo "$DATABASES_JSON" | jq -c --arg name "$db_name" '.[] | select(.name==$name)' | tail -n 1 || true)
+if [ -z "$db_entry" ]; then
+  echo "[db-restore] database ${db_name} not found in DATABASES_JSON" >&2
+  exit 1
+fi
+
+TARGET_DB_NAME="$db_name"
+TARGET_DB_USER=$(echo "$db_entry" | jq -r '.user')
+TARGET_DB_PASSWORD=$(echo "$db_entry" | jq -r '.password')
+if [ -z "$TARGET_DB_USER" ] || [ "$TARGET_DB_USER" = "null" ]; then
+  echo "[db-restore] DATABASES_JSON entry for ${TARGET_DB_NAME} missing user" >&2
+  exit 1
+fi
+if [ -z "$TARGET_DB_PASSWORD" ] || [ "$TARGET_DB_PASSWORD" = "null" ]; then
+  echo "[db-restore] DATABASES_JSON entry for ${TARGET_DB_NAME} missing password" >&2
   exit 1
 fi
 
@@ -637,13 +786,13 @@ sql_ident() {
   printf '%s' "$1" | sed 's/"/""/g'
 }
 
-ensure_app_role() {
+ensure_db_role() {
   local role_lit
   local role_ident
   local pw_lit
-  role_lit=$(sql_literal "$APP_DB_USER")
-  role_ident=$(sql_ident "$APP_DB_USER")
-  pw_lit=$(sql_literal "$APP_DB_PASSWORD")
+  role_lit=$(sql_literal "$TARGET_DB_USER")
+  role_ident=$(sql_ident "$TARGET_DB_USER")
+  pw_lit=$(sql_literal "$TARGET_DB_PASSWORD")
 
   sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${role_lit}') THEN CREATE ROLE \"${role_ident}\" WITH LOGIN PASSWORD '${pw_lit}'; ELSE ALTER ROLE \"${role_ident}\" WITH LOGIN PASSWORD '${pw_lit}'; END IF; END \$\$;"
 }
@@ -732,12 +881,12 @@ apply_infrazero_hba() {
       for cidr in "${cidrs[@]}"; do
         cidr=$(echo "$cidr" | xargs)
         if [ -n "$cidr" ]; then
-          echo "host ${APP_DB_NAME} ${APP_DB_USER} ${cidr} scram-sha-256"
+          echo "host ${TARGET_DB_NAME} ${TARGET_DB_USER} ${cidr} scram-sha-256"
         fi
       done
     fi
     if [ -n "${WG_CIDR:-}" ]; then
-      echo "host ${APP_DB_NAME} ${APP_DB_USER} ${WG_CIDR} scram-sha-256"
+      echo "host ${TARGET_DB_NAME} ${TARGET_DB_USER} ${WG_CIDR} scram-sha-256"
     fi
     echo "$hba_end"
   } >> "$HBA_CONF"
@@ -799,66 +948,6 @@ PY
       systemctl reload postgresql || systemctl restart postgresql || true
     fi
   fi
-}
-
-format_and_reinit() {
-  local device
-  device=$(find_volume_device)
-
-  echo "[db-restore] WARNING: this will format ${device} and erase all data on the DB volume."
-  if [ "$force_format" != "true" ]; then
-    if [ ! -t 0 ]; then
-      echo "[db-restore] stdin is not a TTY; set DB_RESTORE_FORCE_FORMAT=true or pass --force-format" >&2
-      exit 1
-    fi
-    read -r -p "[db-restore] Type FORMAT to continue: " confirm
-    if [ "$confirm" != "FORMAT" ]; then
-      echo "[db-restore] aborting"
-      exit 1
-    fi
-  fi
-
-  systemctl stop postgresql || true
-  systemctl stop "postgresql@${PG_MAJOR}-main" || true
-  umount "$DEFAULT_DATA_DIR" 2>/dev/null || true
-  umount "$MOUNT_DIR" 2>/dev/null || true
-
-  mkfs -t "$VOLUME_FORMAT" -F "$device"
-
-  local uuid
-  uuid=$(blkid -s UUID -o value "$device" || true)
-  if [ -z "$uuid" ]; then
-    echo "[db-restore] unable to determine UUID for ${device}" >&2
-    exit 1
-  fi
-
-  mkdir -p "$MOUNT_DIR"
-  if [ -f /etc/fstab ]; then
-    awk -v mnt="$MOUNT_DIR" -v bind="$DEFAULT_DATA_DIR" '!(($2==mnt)||($2==bind))' /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
-  fi
-  echo "UUID=$uuid $MOUNT_DIR $VOLUME_FORMAT defaults,nofail 0 2" >> /etc/fstab
-  systemctl daemon-reload || true
-  mount "$MOUNT_DIR" || mount -a
-
-  mkdir -p "$DATA_MOUNT" "$DEFAULT_DATA_DIR"
-  chown -R postgres:postgres "${MOUNT_DIR}/postgresql" || true
-
-  drop_stale_cluster_config
-  ensure_bind_mount
-
-  if command -v pg_createcluster >/dev/null 2>&1; then
-    pg_createcluster "$PG_MAJOR" main -d "$DEFAULT_DATA_DIR"
-  else
-    initdb="/usr/lib/postgresql/${PG_MAJOR}/bin/initdb"
-    if [ -x "$initdb" ]; then
-      sudo -u postgres "$initdb" -D "$DEFAULT_DATA_DIR"
-    else
-      echo "[db-restore] initdb not available to create new cluster" >&2
-      exit 1
-    fi
-  fi
-
-  systemctl start postgresql || true
 }
 
 tmpdir=$(mktemp -d /run/infrazero-db-restore.XXXX)
@@ -941,11 +1030,6 @@ if [ "$is_age_encrypted" = "true" ]; then
     rm -rf "$tmpdir"
     exit 1
   fi
-  if [ -n "${DB_BACKUP_AGE_PRIVATE_KEY:-}" ]; then
-    if ! try_decrypt "$DB_BACKUP_AGE_PRIVATE_KEY"; then
-      echo "[db-restore] decryption failed with DB_BACKUP_AGE_PRIVATE_KEY"
-    fi
-  fi
 
   if [ ! -s "$dump_path" ]; then
     echo "[db-restore] enter Age private key to decrypt backup:"
@@ -1003,18 +1087,18 @@ else
   fi
 fi
 
-  if [ "$format_volume" = "true" ]; then
-    format_and_reinit
-  fi
-
   apply_postgres_config
 
-  ensure_app_role
+  ensure_db_role
 
-echo "[db-restore] wiping database ${APP_DB_NAME}"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${APP_DB_NAME}';"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${APP_DB_NAME}\";"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${APP_DB_NAME}\" OWNER \"${APP_DB_USER}\";"
+db_lit=$(sql_literal "$TARGET_DB_NAME")
+db_ident=$(sql_ident "$TARGET_DB_NAME")
+role_ident=$(sql_ident "$TARGET_DB_USER")
+
+echo "[db-restore] wiping database ${TARGET_DB_NAME}"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
+sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${db_ident}\" OWNER \"${role_ident}\";"
 
 role_map="${DB_RESTORE_ROLE_MAP:-}"
 skip_acl="${DB_RESTORE_SKIP_ACL:-}"
@@ -1053,7 +1137,7 @@ fi
 
 echo "[db-restore] restoring database"
 if [ "$is_custom" = "true" ]; then
-  restore_args=(--no-owner -d "$APP_DB_NAME")
+  restore_args=(--no-owner -d "$TARGET_DB_NAME")
   if [ "$skip_acl" = "true" ]; then
     restore_args+=(--no-privileges)
   fi
@@ -1061,9 +1145,9 @@ if [ "$is_custom" = "true" ]; then
 else
   if [ "$skip_acl" = "true" ]; then
     "${stream_cmd[@]}" | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d' | \
-      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
   else
-    "${stream_cmd[@]}" | sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME"
+    "${stream_cmd[@]}" | sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
   fi
 fi
 
@@ -1073,23 +1157,24 @@ if [ "${#mapped_old[@]}" -gt 0 ]; then
     new="${mapped_new[$idx]}"
     old_ident=$(sql_ident "$old")
     new_ident=$(sql_ident "$new")
-    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "REASSIGN OWNED BY \"${old_ident}\" TO \"${new_ident}\";"
-    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "DROP OWNED BY \"${old_ident}\";"
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME" -c "REASSIGN OWNED BY \"${old_ident}\" TO \"${new_ident}\";"
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME" -c "DROP OWNED BY \"${old_ident}\";"
     if [ "$drop_mapped" = "true" ]; then
       sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP ROLE IF EXISTS \"${old_ident}\";"
     fi
     idx=$((idx + 1))
   done
 elif [ "$skip_acl" = "true" ]; then
-  app_ident=$(sql_ident "$APP_DB_USER")
-  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"${APP_DB_NAME}\" OWNER TO \"${app_ident}\";"
-  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -c "REASSIGN OWNED BY postgres TO \"${app_ident}\";"
+  app_ident=$(sql_ident "$TARGET_DB_USER")
+  db_ident=$(sql_ident "$TARGET_DB_NAME")
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"${db_ident}\" OWNER TO \"${app_ident}\";"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME" -c "REASSIGN OWNED BY postgres TO \"${app_ident}\";"
 fi
 
 grant_app_user="${DB_RESTORE_GRANT_APP_USER:-true}"
 if [ "$grant_app_user" = "true" ]; then
-  echo "[db-restore] granting schema/table privileges to ${APP_DB_USER}"
-  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$APP_DB_NAME" -v grantee="$APP_DB_USER" <<'SQL'
+  echo "[db-restore] granting schema/table privileges to ${TARGET_DB_USER}"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME" -v grantee="$TARGET_DB_USER" <<'SQL'
 SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I;', nspname, :'grantee')
 FROM pg_namespace
 WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
@@ -1118,7 +1203,6 @@ SQL
 fi
 
 rm -rf "$tmpdir"
-unset DB_BACKUP_AGE_PRIVATE_KEY
 echo "[db-restore] restore complete"
 EOF
 

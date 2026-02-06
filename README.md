@@ -34,13 +34,9 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `gh_gitops_repo`
 - `OPS_SSH_KEYS_JSON` (JSON map of admin -> list of SSH public keys)
 - `db_backup_bucket`
-- `db_backup_age_public_key`
-- `db_backup_age_private_key`
+- `databases_json` (JSON array of databases; see below)
 - `db_type` (currently `postgresql`)
 - `db_version` (currently `14.20`)
-- `app_db_name`
-- `app_db_user`
-- `app_db_password`
 - `k3s_node_count` (optional; defaults to the number of `k3s_nodes`)
 - `k3s_join_token`
 - `infisical_password`
@@ -54,6 +50,8 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `infisical_postgres_password`
 - `infisical_encryption_key`
 - `infisical_auth_secret`
+- `infisical_db_backup_age_public_key`
+- `infisical_db_backup_age_private_key`
 - `infisical_restore_from_s3` (optional; `true` to restore from S3 before bootstrap)
 - `infisical_bootstrap_secrets` (optional JSON payload for Infisical bootstrap secrets)
 - `argocd_admin_password`
@@ -65,6 +63,28 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `wg_listen_port`
 - `WG_ADMIN_PEERS_JSON`
 - `WG_PRESHARED_KEYS_JSON`
+
+### databases_json
+`databases_json` is a JSON array of database definitions:
+- `name`, `user`, `password`
+- `backup_age_public_key`, `backup_age_private_key`
+
+Example:
+```json
+[
+  {
+    "name": "messenger",
+    "user": "messenger",
+    "password": "REDACTED",
+    "backup_age_public_key": "age1...",
+    "backup_age_private_key": "AGE-SECRET-KEY-1..."
+  }
+]
+```
+
+DB backups are stored under:
+- `s3://$db_backup_bucket/db/<db_name>/<timestamp>.sql.gz.age`
+- `s3://$db_backup_bucket/db/<db_name>/latest-dump.json`
 
 ### Debug / break-glass access (optional)
 - `DEBUG_ROOT_PASSWORD`: if set, bootstraps set the root password on all servers, enable SSH password auth + PermitRootLogin, and bastion listens on all interfaces. Bastion SSH is opened to `0.0.0.0/0` while this is set. The value is embedded in cloud-init user data; remove the secret after troubleshooting.
@@ -147,34 +167,22 @@ sudo systemd-run --unit=infisical-backup-once --wait /opt/infrazero/infisical/ba
 ```
 
 ## DB restore (manual)
-On the **db** node you can restore a specific backup from S3. The script will:
+On the **db** node you can restore a specific database backup from S3. The script will:
 - Download the object from S3
 - Detect whether it is age-encrypted or plaintext
 - Prompt for an Age private key if needed
-- (By default) format the DB volume and reinitialize the PostgreSQL cluster after confirmation
-- Wipe and recreate the database before restoring
 - Reapply Infrazero PostgreSQL settings (listen address + HBA block for k3s/WG)
+- Wipe and recreate the target database before restoring
 
 ```bash
-sudo /opt/infrazero/db/restore.sh db/20260201T120000Z.sql.gz.age
+sudo /opt/infrazero/db/restore.sh messenger db/messenger/20260201T120000Z.sql.gz.age
 # or full path:
-sudo /opt/infrazero/db/restore.sh s3://<bucket>/db/20260201T120000Z.sql.gz.age
+sudo /opt/infrazero/db/restore.sh messenger s3://<bucket>/db/messenger/20260201T120000Z.sql.gz.age
 ```
 
-### DB restore options
-Formatting and reinitialization:
-- By default the script formats the attached DB volume and re-creates the cluster.
-- It will prompt for confirmation; type `FORMAT` to proceed.
-- For automation, pass `--force-format` or set `DB_RESTORE_FORCE_FORMAT=true`.
-- To keep the current volume data, use `--no-format`.
+Notes:
 - During restore, PostgreSQL listen addresses are set to the node private IP (derived from `PRIVATE_CIDR`) plus `localhost`.
 - Override with `DB_LISTEN_ADDRESS` (comma-separated values accepted by PostgreSQL).
-
-Examples:
-```bash
-sudo /opt/infrazero/db/restore.sh --force-format db/20260201T120000Z.sql.gz.age
-sudo /opt/infrazero/db/restore.sh --no-format db/20260201T120000Z.sql.gz.age
-```
 
 ### Role mapping / ACL handling
 If your dump references old roles (for example `awa`) that do not exist on the rebuilt server, you have two options:
@@ -186,11 +194,11 @@ If your dump references old roles (for example `awa`) that do not exist on the r
 
 Example:
 ```bash
-sudo DB_RESTORE_ROLE_MAP='awa:awa-messenger' /opt/infrazero/db/restore.sh --force-format admin_messenger.dump.zst
+sudo DB_RESTORE_ROLE_MAP='awa:awa-messenger' /opt/infrazero/db/restore.sh messenger db/messenger/20260201T120000Z.sql.gz.age
 ```
 
 - **Skip ACLs** (works when you only care about data + schema):
-  - If no `DB_RESTORE_ROLE_MAP` is set, the script skips ACLs by default and reassigns ownership to `APP_DB_USER`.
+  - If no `DB_RESTORE_ROLE_MAP` is set, the script skips ACLs by default and reassigns ownership to the target DB user.
   - You can explicitly control this with `DB_RESTORE_SKIP_ACL=true|false`.
 
 ### Post-restore grants

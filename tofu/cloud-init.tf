@@ -25,7 +25,8 @@ locals {
       admin_users_json_b64      = var.admin_users_json_b64
       debug_root_password       = local.debug_root_password_escaped
       egress_env                = []
-      db_backup_age_private_key = var.db_backup_age_private_key
+      infisical_db_backup_age_private_key = ""
+      databases_json_private_b64          = ""
       bastion_env = concat(local.bastion_env_lines, [
         format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
         format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
@@ -49,7 +50,8 @@ locals {
       admin_users_json_b64      = var.admin_users_json_b64
       debug_root_password       = local.debug_root_password_escaped
       egress_env                = local.egress_env_lines
-      db_backup_age_private_key = var.db_backup_age_private_key
+      infisical_db_backup_age_private_key = var.infisical_db_backup_age_private_key
+      databases_json_private_b64          = ""
       bastion_env               = []
       node_env                  = []
       node_role_env             = []
@@ -70,7 +72,8 @@ locals {
       admin_users_json_b64      = var.admin_users_json_b64
       debug_root_password       = local.debug_root_password_escaped
       egress_env                = []
-      db_backup_age_private_key = ""
+      infisical_db_backup_age_private_key = ""
+      databases_json_private_b64          = var.databases_json_private_b64
       bastion_env               = []
       node_env                  = []
       node_role_env             = local.db_env_lines
@@ -114,7 +117,8 @@ locals {
         admin_users_json_b64      = var.admin_users_json_b64
         debug_root_password       = local.debug_root_password_escaped
         egress_env                = []
-        db_backup_age_private_key = ""
+        infisical_db_backup_age_private_key = ""
+        databases_json_private_b64          = ""
         bastion_env               = []
         node_env                  = local.k3s_env_lines
         node_role_env             = key == local.k3s_server_key ? local.k3s_server_env_lines : local.k3s_agent_env_lines
@@ -141,4 +145,3 @@ locals {
     key => "#cloud-config\n${yamlencode(cfg)}"
   }
 }
-

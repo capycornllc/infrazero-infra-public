@@ -219,9 +219,74 @@ def main() -> int:
 
     db_type = require_env("DB_TYPE")
     db_version = require_env("DB_VERSION")
-    app_db_name = require_env("APP_DB_NAME")
-    app_db_user = require_env("APP_DB_USER")
-    app_db_password = require_env("APP_DB_PASSWORD")
+    databases_raw = require_env("DATABASES_JSON")
+    databases_full: list[dict] = []
+    databases_public: list[dict] = []
+    databases_json_private_b64 = ""
+
+    if databases_raw:
+        try:
+            parsed_databases = json.loads(databases_raw)
+        except json.JSONDecodeError as exc:
+            errors.append(f"DATABASES_JSON is not valid JSON: {exc}")
+        else:
+            if not isinstance(parsed_databases, list) or not parsed_databases:
+                errors.append("DATABASES_JSON must be a non-empty JSON array")
+            else:
+                for idx, item in enumerate(parsed_databases):
+                    if not isinstance(item, dict):
+                        errors.append(f"DATABASES_JSON[{idx}] must be an object")
+                        continue
+                    name = str(item.get("name", "")).strip()
+                    user = str(item.get("user", "")).strip()
+                    password = str(item.get("password", "")).strip()
+                    pub = str(item.get("backup_age_public_key", "")).strip()
+                    priv = str(item.get("backup_age_private_key", "")).strip()
+
+                    if not name:
+                        errors.append(f"DATABASES_JSON[{idx}].name is required")
+                        continue
+                    if not user:
+                        errors.append(f"DATABASES_JSON[{idx}].user is required")
+                        continue
+                    if not password:
+                        errors.append(f"DATABASES_JSON[{idx}].password is required")
+                        continue
+                    if not pub:
+                        errors.append(f"DATABASES_JSON[{idx}].backup_age_public_key is required")
+                        continue
+                    if not priv:
+                        errors.append(f"DATABASES_JSON[{idx}].backup_age_private_key is required")
+                        continue
+
+                    databases_full.append(
+                        {
+                            "name": name,
+                            "user": user,
+                            "password": password,
+                            "backup_age_public_key": pub,
+                            "backup_age_private_key": priv,
+                        }
+                    )
+
+                names = [d["name"] for d in databases_full]
+                if len(names) != len(set(names)):
+                    errors.append("DATABASES_JSON database names must be unique")
+
+                if databases_full:
+                    databases_public = [
+                        {
+                            "name": d["name"],
+                            "user": d["user"],
+                            "password": d["password"],
+                            "backup_age_public_key": d["backup_age_public_key"],
+                        }
+                        for d in databases_full
+                    ]
+                    databases_json_private_b64 = base64.b64encode(
+                        json.dumps(databases_full, separators=(",", ":")).encode("utf-8")
+                    ).decode("utf-8")
+
     if db_type and db_type.lower() not in ("postgresql", "postgres"):
         errors.append("DB_TYPE must be 'postgresql'")
     if db_version and db_version != "14.20":
@@ -247,10 +312,8 @@ def main() -> int:
             else:
                 infisical_bootstrap_secrets = json.dumps(parsed_bootstrap_secrets)
 
-    if restore_requested:
-        db_backup_age_private_key = require_env("DB_BACKUP_AGE_PRIVATE_KEY")
-    else:
-        db_backup_age_private_key = os.getenv("DB_BACKUP_AGE_PRIVATE_KEY", "").strip()
+    infisical_db_backup_age_public_key = require_env("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY")
+    infisical_db_backup_age_private_key = require_env("INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY")
 
     egress_secrets = {
         "S3_ACCESS_KEY_ID": s3_access_key,
@@ -258,7 +321,7 @@ def main() -> int:
         "S3_ENDPOINT": s3_endpoint,
         "S3_REGION": s3_region,
         "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
-        "DB_BACKUP_AGE_PUBLIC_KEY": require_env("DB_BACKUP_AGE_PUBLIC_KEY"),
+        "INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY": infisical_db_backup_age_public_key,
         "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
         "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
         "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
@@ -276,15 +339,12 @@ def main() -> int:
     db_secrets = {
         "DB_TYPE": db_type,
         "DB_VERSION": db_version,
-        "APP_DB_NAME": app_db_name,
-        "APP_DB_USER": app_db_user,
-        "APP_DB_PASSWORD": app_db_password,
+        "DATABASES_JSON": json.dumps(databases_public, separators=(",", ":")),
         "S3_ACCESS_KEY_ID": s3_access_key,
         "S3_SECRET_ACCESS_KEY": s3_secret_key,
         "S3_ENDPOINT": s3_endpoint,
         "S3_REGION": s3_region,
         "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
-        "DB_BACKUP_AGE_PUBLIC_KEY": require_env("DB_BACKUP_AGE_PUBLIC_KEY"),
         "K3S_NODE_CIDRS": ",".join(k3s_node_cidrs),
     }
 
@@ -534,8 +594,8 @@ def main() -> int:
             "S3_ENDPOINT": s3_endpoint,
             "S3_REGION": s3_region,
             "DB_BACKUP_BUCKET": egress_secrets.get("DB_BACKUP_BUCKET", ""),
-            "DB_BACKUP_AGE_PUBLIC_KEY": egress_secrets.get("DB_BACKUP_AGE_PUBLIC_KEY", ""),
-            "DB_BACKUP_AGE_PRIVATE_KEY": require_env("DB_BACKUP_AGE_PRIVATE_KEY"),
+            "INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY": egress_secrets.get("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY", ""),
+            "INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY": infisical_db_backup_age_private_key,
             "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
         }
     )
@@ -572,7 +632,8 @@ def main() -> int:
     config["k3s_secrets"] = k3s_secrets
     config["k3s_server_secrets"] = k3s_server_secrets
     config["k3s_agent_secrets"] = k3s_agent_secrets
-    config["db_backup_age_private_key"] = db_backup_age_private_key
+    config["infisical_db_backup_age_private_key"] = infisical_db_backup_age_private_key
+    config["databases_json_private_b64"] = databases_json_private_b64
     config["wg_server_address"] = wg_server_address
 
     if args.bootstrap_artifacts:

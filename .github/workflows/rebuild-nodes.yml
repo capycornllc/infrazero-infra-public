@@ -21,13 +21,11 @@ jobs:
       S3_ACCESS_KEY_ID: ${{ secrets.s3_access_key_id }}
       S3_SECRET_ACCESS_KEY: ${{ secrets.s3_secret_access_key }}
       DB_BACKUP_BUCKET: ${{ secrets.db_backup_bucket }}
-      DB_BACKUP_AGE_PUBLIC_KEY: ${{ secrets.db_backup_age_public_key }}
-      DB_BACKUP_AGE_PRIVATE_KEY: ${{ secrets.db_backup_age_private_key }}
+      DATABASES_JSON: ${{ secrets.databases_json }}
+      INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY: ${{ secrets.infisical_db_backup_age_public_key }}
+      INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY: ${{ secrets.infisical_db_backup_age_private_key }}
       DB_TYPE: ${{ secrets.db_type }}
       DB_VERSION: ${{ secrets.db_version }}
-      APP_DB_NAME: ${{ secrets.app_db_name }}
-      APP_DB_USER: ${{ secrets.app_db_user }}
-      APP_DB_PASSWORD: ${{ secrets.app_db_password }}
       INFISICAL_PASSWORD: ${{ secrets.infisical_password }}
       INFISICAL_EMAIL: ${{ secrets.infisical_email }}
       INFISICAL_ORGANIZATION: ${{ secrets.infisical_organization }}

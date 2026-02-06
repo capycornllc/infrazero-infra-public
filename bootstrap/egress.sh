@@ -35,7 +35,7 @@ require_env "S3_SECRET_ACCESS_KEY"
 require_env "S3_ENDPOINT"
 require_env "S3_REGION"
 require_env "DB_BACKUP_BUCKET"
-require_env "DB_BACKUP_AGE_PUBLIC_KEY"
+require_env "INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY"
 require_env "INFISICAL_PASSWORD"
 require_env "INFISICAL_EMAIL"
 require_env "INFISICAL_ORGANIZATION"
@@ -542,24 +542,34 @@ done
 
 INFISICAL_RESTORE_FROM_S3="${INFISICAL_RESTORE_FROM_S3:-false}"
 
+scrub_infisical_private_key_from_run_sh() {
+  # The Infisical DB Age private key is only needed during bootstrap restore.
+  # Scrub it from the persisted bootstrap script to avoid leaving it on disk.
+  if [ -f /opt/infrazero/bootstrap/run.sh ]; then
+    sed -i 's/^export INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY=.*$/export INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY=""/' /opt/infrazero/bootstrap/run.sh || true
+  fi
+}
+
 restore_infisical() {
   local tmpdir
   tmpdir=$(mktemp -d /run/infrazero-restore.XXXX)
   chmod 700 "$tmpdir"
-  if [ -z "${DB_BACKUP_AGE_PRIVATE_KEY:-}" ]; then
+  if [ -z "${INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY:-}" ]; then
     echo "[egress] no age private key set; skipping restore"
     rm -rf "$tmpdir"
+    scrub_infisical_private_key_from_run_sh
     return 0
   fi
 
-  echo "$DB_BACKUP_AGE_PRIVATE_KEY" > "$tmpdir/age.key"
+  echo "$INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY" > "$tmpdir/age.key"
   chmod 600 "$tmpdir/age.key"
 
   if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/infisical/latest-dump.json" "$tmpdir/latest-dump.json" >/dev/null 2>&1; then
     echo "[egress] no latest-dump manifest found; skipping restore"
     rm -f "$tmpdir/age.key"
     rm -rf "$tmpdir"
-    unset DB_BACKUP_AGE_PRIVATE_KEY
+    unset INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY
+    scrub_infisical_private_key_from_run_sh
     return 0
   fi
 
@@ -572,7 +582,8 @@ restore_infisical() {
     echo "[egress] latest-dump manifest missing key" >&2
     rm -f "$tmpdir/age.key"
     rm -rf "$tmpdir"
-    unset DB_BACKUP_AGE_PRIVATE_KEY
+    unset INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY
+    scrub_infisical_private_key_from_run_sh
     return 1
   fi
 
@@ -584,7 +595,8 @@ restore_infisical() {
 
   rm -f "$tmpdir/age.key"
   rm -rf "$tmpdir"
-  unset DB_BACKUP_AGE_PRIVATE_KEY
+  unset INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY
+  scrub_infisical_private_key_from_run_sh
   echo "[egress] restore complete"
 }
 
@@ -594,6 +606,9 @@ if [ "${INFISICAL_RESTORE_FROM_S3,,}" = "true" ]; then
 else
   echo "[egress] infisical_restore_from_s3 not true; skipping restore"
 fi
+
+scrub_infisical_private_key_from_run_sh
+unset INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY
 
 if [ "${INFISICAL_RESTORE_FROM_S3,,}" != "true" ]; then
   echo "[egress] clearing infisical bootstrap tokens manifest before bootstrap"
@@ -651,7 +666,7 @@ fi
 
 "${COMPOSE[@]}" -f /opt/infrazero/infisical/docker-compose.yml exec -T infisical-db pg_dump -U "$INFISICAL_POSTGRES_USER" -d "$INFISICAL_POSTGRES_DB" | gzip > "$DUMP_PATH"
 
-age -r "$DB_BACKUP_AGE_PUBLIC_KEY" -o "$ENC_PATH" "$DUMP_PATH"
+age -r "$INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY" -o "$ENC_PATH" "$DUMP_PATH"
 SHA=$(sha256sum "$ENC_PATH" | awk '{print $1}')
 KEY="infisical/${TIMESTAMP}.sql.gz.age"
 

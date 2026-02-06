@@ -257,7 +257,12 @@ variable "deployed_apps" {
   default = []
 }
 
-variable "db_backup_age_private_key" {
+variable "infisical_db_backup_age_private_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "databases_json_private_b64" {
   type      = string
   sensitive = true
 }

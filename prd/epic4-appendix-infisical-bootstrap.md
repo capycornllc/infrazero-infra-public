@@ -19,7 +19,7 @@ Required on egress:
 - `INFISICAL_RESTORE_FROM_S3` (`true`/`false`)
 - `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_REGION`
 - `DB_BACKUP_BUCKET`
-- `DB_BACKUP_AGE_PUBLIC_KEY` (Age pubkey used for Infisical backups)
+- `INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY` (Age pubkey used for Infisical DB backups + admin token encryption)
 
 Optional:
 - `INFISICAL_BOOTSTRAP_SECRETS` (JSON payload from GitHub secret `infisical_bootstrap_secrets`)
@@ -120,7 +120,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 - After the project is created, add the admin user to the project (membership) so the admin can manage it directly.
 
 ### 7) Encrypt and Store Admin Token in S3
-Encrypt the admin token with Age using `DB_BACKUP_AGE_PUBLIC_KEY`:
+Encrypt the admin token with Age using `INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY`:
 - `admin.token.age`
 
 Upload to:
