@@ -19,7 +19,7 @@ resource "hcloud_network_subnet" "main" {
 }
 
 resource "hcloud_network_route" "default_egress" {
-  network_id = hcloud_network.main.id
+  network_id  = hcloud_network.main.id
   destination = "0.0.0.0/0"
   gateway     = var.servers.egress.private_ip
 }
@@ -324,27 +324,7 @@ resource "hcloud_server" "bastion" {
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.bastion.id]
   placement_group_id = local.pg_bastion_id
-  user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = "bastion"
-    bootstrap_url   = var.bootstrap_artifacts["bastion"].url
-    bootstrap_sha256 = var.bootstrap_artifacts["bastion"].sha256
-    db_volume_name  = var.db_volume.name
-    db_volume_format = var.db_volume.format
-    private_cidr    = var.private_cidr
-    bastion_private_ip = var.servers.bastion.private_ip
-    wg_server_address = var.wg_server_address
-    wg_cidr         = var.wireguard.allowed_cidrs[0]
-    admin_users_json_b64 = var.admin_users_json_b64
-    debug_root_password = local.debug_root_password_escaped
-    egress_env      = []
-    db_backup_age_private_key = var.db_backup_age_private_key
-    bastion_env     = concat(local.bastion_env_lines, [
-      format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
-      format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
-    ])
-    node_env        = []
-    node_role_env   = []
-  })
+  user_data          = local.cloud_init_rendered_bastion
 
   labels = {
     project     = var.project
@@ -373,24 +353,7 @@ resource "hcloud_server" "egress" {
 
   ssh_keys           = local.ssh_key_ids
   placement_group_id = local.pg_egress_id
-  user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = "egress"
-    bootstrap_url   = var.bootstrap_artifacts["egress"].url
-    bootstrap_sha256 = var.bootstrap_artifacts["egress"].sha256
-    db_volume_name  = var.db_volume.name
-    db_volume_format = var.db_volume.format
-    private_cidr    = var.private_cidr
-    bastion_private_ip = var.servers.bastion.private_ip
-    wg_server_address = var.wg_server_address
-    wg_cidr         = var.wireguard.allowed_cidrs[0]
-    admin_users_json_b64 = var.admin_users_json_b64
-    debug_root_password = local.debug_root_password_escaped
-    egress_env      = local.egress_env_lines
-    db_backup_age_private_key = var.db_backup_age_private_key
-    bastion_env     = []
-    node_env        = []
-    node_role_env   = []
-  })
+  user_data          = local.cloud_init_rendered_egress
 
   labels = {
     project     = var.project
@@ -422,24 +385,7 @@ resource "hcloud_server" "k3s" {
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [each.key == local.k3s_server_key ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
   placement_group_id = local.pg_k3s_id
-  user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = each.key == local.k3s_server_key ? "node1" : "node2"
-    bootstrap_url   = var.bootstrap_artifacts[each.key == local.k3s_server_key ? "node1" : "node2"].url
-    bootstrap_sha256 = var.bootstrap_artifacts[each.key == local.k3s_server_key ? "node1" : "node2"].sha256
-    db_volume_name  = var.db_volume.name
-    db_volume_format = var.db_volume.format
-    private_cidr    = var.private_cidr
-    bastion_private_ip = var.servers.bastion.private_ip
-    wg_server_address = var.wg_server_address
-    wg_cidr         = var.wireguard.allowed_cidrs[0]
-    admin_users_json_b64 = var.admin_users_json_b64
-    debug_root_password = local.debug_root_password_escaped
-    egress_env      = []
-    db_backup_age_private_key = ""
-    bastion_env     = []
-    node_env        = local.k3s_env_lines
-    node_role_env   = each.key == local.k3s_server_key ? local.k3s_server_env_lines : local.k3s_agent_env_lines
-  })
+  user_data          = local.cloud_init_rendered_k3s[each.key]
 
   labels = {
     project     = var.project
@@ -469,24 +415,7 @@ resource "hcloud_server" "db" {
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.db.id]
   placement_group_id = local.pg_db_id
-  user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_role  = "db"
-    bootstrap_url   = var.bootstrap_artifacts["db"].url
-    bootstrap_sha256 = var.bootstrap_artifacts["db"].sha256
-    db_volume_name  = var.db_volume.name
-    db_volume_format = var.db_volume.format
-    private_cidr    = var.private_cidr
-    bastion_private_ip = var.servers.bastion.private_ip
-    wg_server_address = var.wg_server_address
-    wg_cidr         = var.wireguard.allowed_cidrs[0]
-    admin_users_json_b64 = var.admin_users_json_b64
-    debug_root_password = local.debug_root_password_escaped
-    egress_env      = []
-    db_backup_age_private_key = ""
-    bastion_env     = []
-    node_env        = []
-    node_role_env   = local.db_env_lines
-  })
+  user_data          = local.cloud_init_rendered_db
 
   labels = {
     project     = var.project

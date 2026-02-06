@@ -91,3 +91,11 @@ Global WireGuard settings:
 
 ## 10) Debug / Break-glass access (optional)
 - `DEBUG_ROOT_PASSWORD` (enables root password auth; bastion SSH opened to `0.0.0.0/0` while set; stored in cloud-init user data)
+
+## 11) Cloud-init overlays (optional)
+Each value must be a YAML mapping (cloud-init snippet). Lists are appended for `packages`, `write_files`, and `runcmd`.
+- `bastion_cloud_init`
+- `egress_cloud_init`
+- `db_cloud_init`
+- `node_primary_cloud_init`
+- `nodes_secondary_cloud_init`

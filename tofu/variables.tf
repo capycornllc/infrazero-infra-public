@@ -96,8 +96,8 @@ variable "placement_groups" {
 
 variable "wireguard" {
   type = object({
-    enabled      = bool
-    listen_port  = number
+    enabled       = bool
+    listen_port   = number
     allowed_cidrs = list(string)
   })
 }
@@ -156,6 +156,61 @@ variable "debug_root_password" {
   type      = string
   default   = ""
   sensitive = true
+}
+
+variable "bastion_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.bastion_cloud_init) == "" || can(merge(yamldecode(var.bastion_cloud_init), {}))
+    error_message = "bastion_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
+}
+
+variable "egress_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.egress_cloud_init) == "" || can(merge(yamldecode(var.egress_cloud_init), {}))
+    error_message = "egress_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
+}
+
+variable "db_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.db_cloud_init) == "" || can(merge(yamldecode(var.db_cloud_init), {}))
+    error_message = "db_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
+}
+
+variable "node_primary_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.node_primary_cloud_init) == "" || can(merge(yamldecode(var.node_primary_cloud_init), {}))
+    error_message = "node_primary_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
+}
+
+variable "nodes_secondary_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.nodes_secondary_cloud_init) == "" || can(merge(yamldecode(var.nodes_secondary_cloud_init), {}))
+    error_message = "nodes_secondary_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
 }
 
 variable "wg_server_address" {

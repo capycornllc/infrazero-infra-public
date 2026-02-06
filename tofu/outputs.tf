@@ -12,10 +12,10 @@ output "load_balancer_public_ipv4" {
 
 output "private_ips" {
   value = {
-    bastion = var.servers.bastion.private_ip
-    egress  = var.servers.egress.private_ip
+    bastion   = var.servers.bastion.private_ip
+    egress    = var.servers.egress.private_ip
     k3s_nodes = [for node in var.k3s_nodes : node.private_ip]
-    db      = var.servers.db.private_ip
+    db        = var.servers.db.private_ip
   }
 }
 

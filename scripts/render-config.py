@@ -95,8 +95,30 @@ def main() -> int:
     def optional_env(name: str) -> str:
         return os.getenv(name, "").strip()
 
+    def optional_multiline_env(name: str) -> str:
+        value = os.getenv(name)
+        if value is None:
+            return ""
+        return value
+
     debug_root_password = optional_env("DEBUG_ROOT_PASSWORD")
     config["debug_root_password"] = debug_root_password
+
+    # Optional user-provided cloud-init overlays (stored as GitHub secrets).
+    # These are merged into the generated cloud-init for each role in OpenTofu.
+    config["bastion_cloud_init"] = optional_multiline_env("BASTION_CLOUD_INIT") or optional_multiline_env(
+        "bastion_cloud_init"
+    )
+    config["egress_cloud_init"] = optional_multiline_env("EGRESS_CLOUD_INIT") or optional_multiline_env(
+        "egress_cloud_init"
+    )
+    config["db_cloud_init"] = optional_multiline_env("DB_CLOUD_INIT") or optional_multiline_env("db_cloud_init")
+    config["node_primary_cloud_init"] = optional_multiline_env("NODE_PRIMARY_CLOUD_INIT") or optional_multiline_env(
+        "node_primary_cloud_init"
+    )
+    config["nodes_secondary_cloud_init"] = optional_multiline_env(
+        "NODES_SECONDARY_CLOUD_INIT"
+    ) or optional_multiline_env("nodes_secondary_cloud_init")
 
     def parse_int_env(name: str, minimum: int | None = None) -> int | None:
         raw = os.getenv(name, "").strip()
