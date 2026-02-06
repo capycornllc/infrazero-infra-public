@@ -55,6 +55,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `db_fqdn`
 - `internal_services_domains_json`
 - `deployed_apps_json`
+- `additional_hostnames` (optional JSON array of `{ id, hostname, ip }` to create extra Cloudflare A records)
 - `cloudflare_api_token`
 
 ## 5) Object Storage / S3

@@ -52,6 +52,7 @@ jobs:
       DB_FQDN: ${{ secrets.db_fqdn }}
       INTERNAL_SERVICES_DOMAINS_JSON: ${{ secrets.internal_services_domains_json }}
       DEPLOYED_APPS_JSON: ${{ secrets.deployed_apps_json }}
+      ADDITIONAL_HOSTNAMES: ${{ secrets.additional_hostnames }}
       GH_TOKEN: ${{ secrets.gh_token }}
       GH_OWNER: ${{ secrets.gh_owner }}
       GH_INFRA_REPO: ${{ secrets.gh_infra_repo }}

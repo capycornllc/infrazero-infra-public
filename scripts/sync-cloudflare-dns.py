@@ -1,4 +1,5 @@
 import argparse
+import ipaddress
 import json
 import os
 import sys
@@ -83,6 +84,40 @@ def resolve_deployed_apps():
             raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required")
         deployed_apps.append(app)
     return deployed_apps
+
+
+def resolve_additional_hostnames():
+    additional = []
+    additional_json = parse_json_env("ADDITIONAL_HOSTNAMES")
+    if additional_json is None:
+        additional_json = parse_json_env("additional_hostnames")
+    if additional_json is None:
+        return additional
+    if not isinstance(additional_json, list):
+        raise ValueError("ADDITIONAL_HOSTNAMES must be a JSON array")
+    for idx, entry in enumerate(additional_json):
+        if not isinstance(entry, dict):
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}] must be an object")
+        hostname = str(entry.get("hostname", "")).strip()
+        ip = str(entry.get("ip", "")).strip()
+        if not hostname:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].hostname is required")
+        if not ip:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip is required")
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError as exc:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip must be a valid IP address") from exc
+        if addr.version != 4:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip must be an IPv4 address for A records")
+        additional.append(
+            {
+                "id": str(entry.get("id", "")).strip(),
+                "hostname": hostname,
+                "ip": ip,
+            }
+        )
+    return additional
 
 
 def cloudflare_request(token: str, method: str, path: str, params=None, json_body=None):
@@ -191,6 +226,7 @@ def main() -> int:
     try:
         internal_fqdns = resolve_internal_fqdns()
         deployed_apps = resolve_deployed_apps()
+        additional_hostnames = resolve_additional_hostnames()
     except ValueError as exc:
         print(f"Invalid DNS inputs: {exc}", file=sys.stderr)
         return 1
@@ -228,9 +264,25 @@ def main() -> int:
         if fqdn:
             records.append({"name": fqdn, "content": args.lb_ip, "proxied": True})
 
+    for entry in additional_hostnames:
+        hostname = str(entry.get("hostname", "")).strip()
+        ip = str(entry.get("ip", "")).strip()
+        if hostname and ip:
+            records.append({"name": hostname, "content": ip, "proxied": False})
+
     if not records:
         print("No FQDNs provided; skipping DNS sync.")
         return 0
+
+    deduped: dict[str, dict] = {}
+    for record in records:
+        name = record["name"]
+        if name in deduped:
+            prev = deduped[name]
+            if prev.get("content") != record.get("content") or bool(prev.get("proxied")) != bool(record.get("proxied")):
+                print(f"Warning: duplicate DNS record '{name}' specified; last write wins.", file=sys.stderr)
+        deduped[name] = record
+    records = list(deduped.values())
 
     try:
         zones = list_zones(token)
