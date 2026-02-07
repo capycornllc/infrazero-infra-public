@@ -4,12 +4,14 @@ locals {
   # Extra cloud-init YAML snippets per role (optional).
   # We parse these as YAML maps and then merge into the base config while
   # concatenating list keys we care about so we don't accidentally replace them.
-  cloud_init_extra_bastion = length(trimspace(var.bastion_cloud_init)) > 0 ? yamldecode(var.bastion_cloud_init) : {}
-  cloud_init_extra_egress  = length(trimspace(var.egress_cloud_init)) > 0 ? yamldecode(var.egress_cloud_init) : {}
-  cloud_init_extra_db      = length(trimspace(var.db_cloud_init)) > 0 ? yamldecode(var.db_cloud_init) : {}
+  # Use try() instead of a conditional because conditional branches must have
+  # identical object types, which isn't true for arbitrary YAML overlays.
+  cloud_init_extra_bastion = try(yamldecode(var.bastion_cloud_init), {})
+  cloud_init_extra_egress  = try(yamldecode(var.egress_cloud_init), {})
+  cloud_init_extra_db      = try(yamldecode(var.db_cloud_init), {})
 
-  cloud_init_extra_node_primary    = length(trimspace(var.node_primary_cloud_init)) > 0 ? yamldecode(var.node_primary_cloud_init) : {}
-  cloud_init_extra_nodes_secondary = length(trimspace(var.nodes_secondary_cloud_init)) > 0 ? yamldecode(var.nodes_secondary_cloud_init) : {}
+  cloud_init_extra_node_primary    = try(yamldecode(var.node_primary_cloud_init), {})
+  cloud_init_extra_nodes_secondary = try(yamldecode(var.nodes_secondary_cloud_init), {})
 
   cloud_init_base_bastion = yamldecode(
     templatefile(local.cloud_init_template_path, {

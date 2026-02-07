@@ -484,7 +484,10 @@ def main() -> int:
             return f"https://github.com/{repo_ref}", []
         return f"https://github.com/{repo_ref}.git", []
 
+    # Don't leak config-only objects into tofu.tfvars.json (OpenTofu warns on
+    # undeclared variables). We read `argocd` here for derived settings only.
     argocd_cfg = config.get("argocd", {}) or {}
+    config.pop("argocd", None)
     argocd_repo_path = str(argocd_cfg.get("repo_path", "")).strip()
     argocd_repo_revision = str(argocd_cfg.get("repo_revision", "")).strip() or "main"
     argocd_app_name = str(argocd_cfg.get("app_name", "")).strip() or "root"
