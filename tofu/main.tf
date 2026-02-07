@@ -31,39 +31,15 @@ resource "hcloud_network_route" "wireguard" {
   gateway     = var.servers.bastion.private_ip
 }
 
-resource "hcloud_placement_group" "bastion" {
+resource "hcloud_placement_group" "main" {
   count = var.placement_groups.enabled ? 1 : 0
 
-  name = "${var.name_prefix}-bastion-pg"
-  type = var.placement_groups.type
-}
-
-resource "hcloud_placement_group" "egress" {
-  count = var.placement_groups.enabled ? 1 : 0
-
-  name = "${var.name_prefix}-egress-pg"
-  type = var.placement_groups.type
-}
-
-resource "hcloud_placement_group" "k3s" {
-  count = var.placement_groups.enabled ? 1 : 0
-
-  name = "${var.name_prefix}-k3s-pg"
-  type = var.placement_groups.type
-}
-
-resource "hcloud_placement_group" "db" {
-  count = var.placement_groups.enabled ? 1 : 0
-
-  name = "${var.name_prefix}-db-pg"
+  name = "${var.name_prefix}-pg"
   type = var.placement_groups.type
 }
 
 locals {
-  pg_bastion_id = var.placement_groups.enabled ? hcloud_placement_group.bastion[0].id : null
-  pg_egress_id  = var.placement_groups.enabled ? hcloud_placement_group.egress[0].id : null
-  pg_k3s_id     = var.placement_groups.enabled ? hcloud_placement_group.k3s[0].id : null
-  pg_db_id      = var.placement_groups.enabled ? hcloud_placement_group.db[0].id : null
+  pg_main_id = var.placement_groups.enabled ? hcloud_placement_group.main[0].id : null
 }
 
 resource "hcloud_ssh_key" "ops" {
@@ -185,18 +161,15 @@ resource "hcloud_firewall" "egress" {
 resource "hcloud_firewall" "k3s_server" {
   name = "${var.name_prefix}-k3s-server-fw"
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "30080"
-    source_ips = [local.lb_private_cidr]
-  }
-
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "30443"
-    source_ips = [local.lb_private_cidr]
+  dynamic "rule" {
+    for_each = local.k3s_lb_ports
+    iterator = lb_port
+    content {
+      direction  = "in"
+      protocol   = "tcp"
+      port       = lb_port.value
+      source_ips = [local.lb_private_cidr]
+    }
   }
 
   rule {
@@ -252,6 +225,17 @@ resource "hcloud_firewall" "k3s_server" {
 
 resource "hcloud_firewall" "k3s_agent" {
   name = "${var.name_prefix}-k3s-agent-fw"
+
+  dynamic "rule" {
+    for_each = local.k3s_lb_ports
+    iterator = lb_port
+    content {
+      direction  = "in"
+      protocol   = "tcp"
+      port       = lb_port.value
+      source_ips = [local.lb_private_cidr]
+    }
+  }
 
   rule {
     direction  = "in"
@@ -323,7 +307,7 @@ resource "hcloud_server" "bastion" {
 
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.bastion.id]
-  placement_group_id = local.pg_bastion_id
+  placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_bastion
 
   labels = {
@@ -352,7 +336,7 @@ resource "hcloud_server" "egress" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  placement_group_id = local.pg_egress_id
+  placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_egress
 
   labels = {
@@ -384,7 +368,7 @@ resource "hcloud_server" "k3s" {
 
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [each.key == local.k3s_server_key ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
-  placement_group_id = local.pg_k3s_id
+  placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_k3s[each.key]
 
   labels = {
@@ -414,7 +398,7 @@ resource "hcloud_server" "db" {
 
   ssh_keys           = local.ssh_key_ids
   firewall_ids       = [hcloud_firewall.db.id]
-  placement_group_id = local.pg_db_id
+  placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_db
 
   labels = {
@@ -447,10 +431,12 @@ resource "hcloud_load_balancer_network" "main" {
   ip               = var.load_balancer.private_ip
 }
 
-resource "hcloud_load_balancer_target" "k3s_server" {
+resource "hcloud_load_balancer_target" "k3s" {
+  for_each = hcloud_server.k3s
+
   type             = "server"
   load_balancer_id = hcloud_load_balancer.main.id
-  server_id        = hcloud_server.k3s[local.k3s_server_key].id
+  server_id        = each.value.id
   use_private_ip   = true
 }
 
@@ -474,6 +460,23 @@ resource "hcloud_load_balancer_service" "https" {
   protocol         = local.lb_services["https"].protocol
   listen_port      = local.lb_services["https"].listen_port
   destination_port = local.lb_services["https"].destination_port
+
+  health_check {
+    protocol = var.load_balancer.health_check.protocol
+    port     = var.load_balancer.health_check.port
+    interval = var.load_balancer.health_check.interval
+    timeout  = var.load_balancer.health_check.timeout
+    retries  = var.load_balancer.health_check.retries
+  }
+}
+
+resource "hcloud_load_balancer_service" "extra" {
+  for_each = local.lb_extra_services
+
+  load_balancer_id = hcloud_load_balancer.main.id
+  protocol         = each.value.protocol
+  listen_port      = each.value.listen_port
+  destination_port = each.value.destination_port
 
   health_check {
     protocol = var.load_balancer.health_check.protocol

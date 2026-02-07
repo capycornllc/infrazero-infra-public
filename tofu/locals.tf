@@ -1,5 +1,17 @@
 locals {
   lb_services = { for svc in var.load_balancer.services : svc.name => svc }
+  lb_extra_services = {
+    for svc in var.load_balancer.services : svc.name => svc
+    if svc.name != "http" && svc.name != "https"
+  }
+
+  # Ports that the LB should be able to reach on k3s nodes (NodePort destinations + health checks).
+  k3s_lb_ports = toset(
+    concat(
+      [for svc in var.load_balancer.services : tostring(svc.destination_port)],
+      [tostring(var.load_balancer.health_check.port)]
+    )
+  )
 
   lb_private_cidr      = can(regex("/", var.load_balancer.private_ip)) ? var.load_balancer.private_ip : "${var.load_balancer.private_ip}/32"
   bastion_cidr         = "${var.servers.bastion.private_ip}/32"

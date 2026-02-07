@@ -63,6 +63,7 @@ jobs:
       K3S_NODE_SERVER_TYPE: ${{ secrets.k3s_node_server_type }}
       K3S_NODE_COUNT: ${{ secrets.k3s_node_count }}
       K3S_JOIN_TOKEN: ${{ secrets.k3s_join_token }}
+      LOAD_BALANCER_CONFIG: ${{ secrets.load_balancer_config }}
       ARGOCD_ADMIN_PASSWORD: ${{ secrets.argocd_admin_password }}
       ARGOCD_FQDN: ${{ secrets.argocd_fqdn }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.cloudflare_api_token }}

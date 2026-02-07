@@ -53,10 +53,8 @@ destroy_targets_prefix() {
   tofu destroy -auto-approve "${var_args[@]}" "${targets[@]}"
 }
 
-destroy_targets \
-  hcloud_load_balancer_service.http \
-  hcloud_load_balancer_service.https \
-  hcloud_load_balancer_target.k3s_server
+destroy_targets_prefix hcloud_load_balancer_service
+destroy_targets_prefix hcloud_load_balancer_target
 
 destroy_targets hcloud_load_balancer_network.main
 destroy_targets hcloud_load_balancer.main
@@ -74,6 +72,7 @@ destroy_targets \
   hcloud_firewall.db
 
 destroy_targets \
+  hcloud_placement_group.main \
   hcloud_placement_group.bastion \
   hcloud_placement_group.egress \
   hcloud_placement_group.k3s \

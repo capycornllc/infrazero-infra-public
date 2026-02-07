@@ -42,6 +42,75 @@ def main() -> int:
     if cloud_region:
         config["location"] = cloud_region
 
+    # Optional override to source load balancer service mappings from a GitHub secret.
+    # Expected JSON format:
+    #   [{"protocol":"tcp","source":80,"destination":30080}, ...]
+    lb_config_raw = (os.getenv("LOAD_BALANCER_CONFIG") or os.getenv("load_balancer_config") or "").strip()
+    if lb_config_raw:
+        try:
+            lb_config = json.loads(lb_config_raw)
+        except json.JSONDecodeError as exc:
+            print(f"LOAD_BALANCER_CONFIG is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+
+        if not isinstance(lb_config, list) or not lb_config:
+            print("LOAD_BALANCER_CONFIG must be a non-empty JSON array", file=sys.stderr)
+            return 1
+
+        def parse_port(idx: int, key: str, value) -> int | None:
+            try:
+                port = int(value)
+            except (TypeError, ValueError):
+                print(f"LOAD_BALANCER_CONFIG[{idx}].{key} must be an integer", file=sys.stderr)
+                return None
+            if port < 1 or port > 65535:
+                print(f"LOAD_BALANCER_CONFIG[{idx}].{key} must be between 1 and 65535", file=sys.stderr)
+                return None
+            return port
+
+        overridden_services = []
+        seen_names = set()
+        for idx, item in enumerate(lb_config):
+            if not isinstance(item, dict):
+                print(f"LOAD_BALANCER_CONFIG[{idx}] must be an object", file=sys.stderr)
+                return 1
+
+            protocol = str(item.get("protocol", "")).strip().lower()
+            if protocol not in ("tcp", "http", "https"):
+                print(
+                    f"LOAD_BALANCER_CONFIG[{idx}].protocol must be one of: tcp, http, https",
+                    file=sys.stderr,
+                )
+                return 1
+
+            source = parse_port(idx, "source", item.get("source"))
+            destination = parse_port(idx, "destination", item.get("destination"))
+            if source is None or destination is None:
+                return 1
+
+            if source == 80:
+                name = "http"
+            elif source == 443:
+                name = "https"
+            else:
+                name = f"{protocol}-{source}"
+
+            if name in seen_names:
+                print(f"LOAD_BALANCER_CONFIG service names must be unique (duplicate: {name})", file=sys.stderr)
+                return 1
+            seen_names.add(name)
+
+            overridden_services.append(
+                {
+                    "name": name,
+                    "protocol": protocol,
+                    "listen_port": source,
+                    "destination_port": destination,
+                }
+            )
+
+        config.setdefault("load_balancer", {})["services"] = overridden_services
+
     services = {svc.get("name") for svc in config.get("load_balancer", {}).get("services", [])}
     missing_services = [svc for svc in ("http", "https") if svc not in services]
     if missing_services:

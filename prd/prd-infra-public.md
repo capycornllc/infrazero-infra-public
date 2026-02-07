@@ -61,11 +61,11 @@ Five fixed servers (naming prefix from config):
 
 ### 6.3 Load balancer (public entrypoint)
 - Dedicated public LB attached to the private network.
-- **Port forwarding**:
-  - 80 -> node1 private IP: **30080**
-  - 443 -> node1 private IP: **30443**
-- Health checks on node1.
-- Firewall rules allow LB private IP to access node1 NodePorts.
+- **Port forwarding** comes from `load_balancer.services` (optionally overridden via the `load_balancer_config` GitHub secret).
+  - Example: 80 -> **30080**, 443 -> **30443**, 7777 -> **31777**
+- LB targets include **all k3s nodes** (private IP).
+- Single global health check settings (from `load_balancer.health_check`) applied to all services.
+- Firewall rules allow LB private IP to access the configured destination ports (and health check port) on all k3s nodes.
 
 ### 6.4 DB volume
 - Persistent volume attached to db server.
@@ -76,7 +76,7 @@ Five fixed servers (naming prefix from config):
 - Automount disabled; volume is mounted by bootstrap script.
 
 ### 6.5 Placement groups
-- Placement groups (type `spread`) for bastion, egress, nodes, db.
+- Single placement group (type `spread`) shared by all servers (bastion, egress, nodes, db).
 - Configurable and optional (enabled by default).
 
 ### 6.6 Firewalls (default deny)
@@ -88,11 +88,12 @@ Rules based on the current repo, adapted to new roles:
   - Allow private network to reach egress for NAT (TCP/UDP/ICMP from private CIDR).
   - Allow SSH only via WireGuard/bastion network.
 - **node1**
-  - Allow LB private IP -> TCP 30080/30443.
+  - Allow LB private IP -> TCP ports from `load_balancer.services[*].destination_port` (and health check port).
   - Allow SSH only via WireGuard network.
   - Allow k3s API (6443) only from WireGuard + node2.
   - Allow k3s supervisor (9345), flannel (UDP 8472), kubelet (10250) from node2.
 - **node2**
+  - Allow LB private IP -> TCP ports from `load_balancer.services[*].destination_port` (and health check port).
   - Allow SSH only via WireGuard network.
   - Allow flannel/kubelet from node1.
 - **db**
@@ -147,7 +148,7 @@ Must include:
 - Region/location, network zone, CIDR.
 - Server types for bastion/egress/node/db.
 - Explicit private IP allocations (or deterministic offsets).
-- LB type, LB private IP, forwarding ports (80->30080, 443->30443).
+- LB type, LB private IP, and service mappings (`load_balancer.services`, e.g. 80->30080, 443->30443, 7777->31777).
 - Placement group toggle/type.
 - DB volume name + size.
 - S3 backend settings (endpoint, region, state prefix, bucket name from `infra_state_bucket`).
@@ -215,7 +216,7 @@ Core resources:
 - Servers (bastion, egress, node1, node2, db).
 - Firewalls per role.
 - Placement groups.
-- LB + services (80->30080, 443->30443).
+- LB + services (from `load_balancer.services`; targets include all k3s nodes).
 - DB volume (conditional create + prevent_destroy) + attachment.
 
 ## 11) Security requirements
@@ -231,7 +232,7 @@ Core resources:
    - Editing **only** `config/infra.yaml`
    - Running the GitHub Actions `build.yml`
 2) DB volume persists across rebuilds and is reattached automatically.
-3) Load balancer forwards 80/443 to node1 30080/30443 and passes health checks.
+3) Load balancer forwards the configured service mappings to all k3s nodes and passes health checks.
 4) Private nodes have egress through egress NAT.
 5) SSH access is only possible via bastion/WireGuard, not public IPs.
 6) Bootstrap scripts download, verify, decompress, and execute successfully.

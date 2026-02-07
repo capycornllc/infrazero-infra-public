@@ -15,6 +15,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `k3s_node_server_type`
 - `k3s_node_count`
 - `k3s_join_token`
+- `load_balancer_config` (optional JSON array overriding LB services: `[{ protocol, source, destination }, ...]`)
 
 ## 2) GitHub Access
 - `gh_token` (GitHub PAT for repo/bootstrap automation)
