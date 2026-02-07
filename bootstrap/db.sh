@@ -499,6 +499,157 @@ ensure_databases() {
   done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
 }
 
+normalize_db_ownership_and_privileges() {
+  local db_name="$1"
+  local owner="$2"
+  local db_ident
+  local owner_ident
+  db_ident=$(sql_ident "$db_name")
+  owner_ident=$(sql_ident "$owner")
+
+  psql_as_postgres -c "ALTER DATABASE \"${db_ident}\" OWNER TO \"${owner_ident}\";"
+
+  echo "[db] ensuring non-system schemas/objects are owned by ${owner} in ${db_name}"
+  # Avoid `REASSIGN OWNED BY postgres` (fails on system-owned objects). Instead
+  # transfer ownership only for non-system, non-extension-owned objects.
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$db_name" -v owner="$owner" <<'SQL'
+SELECT format('ALTER SCHEMA %I OWNER TO %I;', n.nspname, :'owner')
+FROM pg_namespace n
+WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_%'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM pg_depend d
+    WHERE d.classid = 'pg_namespace'::regclass
+      AND d.objid = n.oid
+      AND d.deptype = 'e'
+      AND d.refclassid = 'pg_extension'::regclass
+  )
+\gexec
+
+WITH rels AS (
+  SELECT
+    n.nspname,
+    c.relname,
+    c.relkind,
+    pg_get_userbyid(c.relowner) AS owner
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND c.relkind IN ('r','p','v','m','S','f')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT format(
+  'ALTER %s %I.%I OWNER TO %I;',
+  CASE relkind
+    WHEN 'S' THEN 'SEQUENCE'
+    WHEN 'v' THEN 'VIEW'
+    WHEN 'm' THEN 'MATERIALIZED VIEW'
+    WHEN 'f' THEN 'FOREIGN TABLE'
+    ELSE 'TABLE'
+  END,
+  nspname,
+  relname,
+  :'owner'
+)
+FROM rels
+WHERE owner <> :'owner'
+\gexec
+
+SELECT format(
+  'ALTER FUNCTION %I.%I(%s) OWNER TO %I;',
+  n.nspname,
+  p.proname,
+  pg_get_function_identity_arguments(p.oid),
+  :'owner'
+)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_%'
+  AND pg_get_userbyid(p.proowner) <> :'owner'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM pg_depend d
+    WHERE d.classid = 'pg_proc'::regclass
+      AND d.objid = p.oid
+      AND d.deptype = 'e'
+      AND d.refclassid = 'pg_extension'::regclass
+  )
+\gexec
+
+WITH types AS (
+  SELECT
+    n.nspname,
+    t.typname,
+    t.typtype,
+    pg_get_userbyid(t.typowner) AS owner
+  FROM pg_type t
+  JOIN pg_namespace n ON n.oid = t.typnamespace
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND t.typtype IN ('e','d')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_type'::regclass
+        AND d.objid = t.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT format(
+  'ALTER %s %I.%I OWNER TO %I;',
+  CASE typtype
+    WHEN 'd' THEN 'DOMAIN'
+    ELSE 'TYPE'
+  END,
+  nspname,
+  typname,
+  :'owner'
+)
+FROM types
+WHERE owner <> :'owner'
+\gexec
+SQL
+
+  echo "[db] granting schema/table privileges to ${owner} in ${db_name}"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$db_name" -v grantee="$owner" -v owner="$owner" <<'SQL'
+SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I TO %I;', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT ALL ON TABLES TO %I;', :'owner', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT ALL ON SEQUENCES TO %I;', :'owner', nspname, :'grantee')
+FROM pg_namespace
+WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
+\gexec
+SQL
+}
+
 ensure_databases
 
 scrub_databases_json_private_b64_from_run_sh() {
@@ -591,8 +742,12 @@ restore_databases_from_s3() {
     psql_as_postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';" || true
     psql_as_postgres -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
     psql_as_postgres -c "CREATE DATABASE \"${db_ident}\" OWNER \"${user_ident}\";"
+    psql_as_postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"${db_ident}\" TO \"${user_ident}\";"
 
-    gunzip -c "$tmpdir/dump.sql.gz" | sudo -u postgres psql -d "$db_name"
+    gunzip -c "$tmpdir/dump.sql.gz" | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d;/^ALTER DEFAULT PRIVILEGES /d' | \
+      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$db_name"
+
+    normalize_db_ownership_and_privileges "$db_name" "$db_user"
 
     rm -f "$tmpdir/age.key" "$tmpdir/dump.age" "$tmpdir/dump.sql.gz" "$tmpdir/latest-dump.json"
   done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
@@ -1171,10 +1326,23 @@ if [ "${#mapped_old[@]}" -gt 0 ]; then
     fi
     idx=$((idx + 1))
   done
- elif [ "$skip_acl" = "true" ]; then
-   app_ident=$(sql_ident "$TARGET_DB_USER")
-   db_ident=$(sql_ident "$TARGET_DB_NAME")
-   sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"${db_ident}\" OWNER TO \"${app_ident}\";"
+fi
+
+force_owner="${DB_RESTORE_FORCE_TARGET_OWNER:-}"
+if [ -z "$force_owner" ]; then
+  # If we're skipping ACLs or doing role mapping, normalize ownership so the
+  # restored DB works even when dumps were taken from a different role.
+  if [ "$skip_acl" = "true" ] || [ -n "$role_map" ]; then
+    force_owner="true"
+  else
+    force_owner="false"
+  fi
+fi
+
+if [ "$force_owner" = "true" ]; then
+  app_ident=$(sql_ident "$TARGET_DB_USER")
+  db_ident=$(sql_ident "$TARGET_DB_NAME")
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"${db_ident}\" OWNER TO \"${app_ident}\";"
   echo "[db-restore] ensuring non-system schemas/objects are owned by ${TARGET_DB_USER}"
   # Avoid `REASSIGN OWNED BY postgres` (fails on system-owned objects). Instead
   # transfer ownership only for non-system, non-extension-owned objects.
@@ -1286,7 +1454,7 @@ FROM types
 WHERE owner <> :'owner'
 \gexec
 SQL
- fi
+fi
 
 grant_app_user="${DB_RESTORE_GRANT_APP_USER:-true}"
 if [ "$grant_app_user" = "true" ]; then
