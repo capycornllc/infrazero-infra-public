@@ -681,6 +681,63 @@ FROM pg_namespace
 WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
 \gexec
 SQL
+
+  # Heuristic search_path fix:
+  # - prefer `main` if it contains relations
+  # - otherwise if there is exactly 1 non-public user schema with relations, use it
+  local set_search_path="${DB_RESTORE_SET_SEARCH_PATH:-true}"
+  if [ "$set_search_path" = "true" ]; then
+    local desired_search_path="${DB_RESTORE_SEARCH_PATH:-}"
+    if [ -z "$desired_search_path" ]; then
+      desired_search_path=$(
+        sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$db_name" -tAc "
+WITH user_schemas AS (
+  SELECT n.oid, n.nspname
+  FROM pg_namespace n
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND n.nspname <> 'public'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_namespace'::regclass
+        AND d.objid = n.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+),
+schemas_with_rels AS (
+  SELECT DISTINCT n.nspname
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname IN (SELECT nspname FROM user_schemas)
+    AND c.relkind IN ('r','p','v','m','f')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM schemas_with_rels WHERE nspname='main')
+    THEN quote_ident('main') || ', public'
+  WHEN (SELECT count(*) FROM schemas_with_rels)=1
+    THEN (SELECT quote_ident(nspname) FROM schemas_with_rels LIMIT 1) || ', public'
+  ELSE ''
+END;
+" | tr -d ' \t\r\n'
+      )
+    fi
+
+    if [ -n "$desired_search_path" ]; then
+      local sp_lit
+      sp_lit=$(sql_escape "$desired_search_path")
+      psql_as_postgres -c "ALTER ROLE \"${owner_ident}\" IN DATABASE \"${db_ident}\" SET search_path = '${sp_lit}';"
+    fi
+  fi
 }
 
 ensure_databases
@@ -1551,6 +1608,61 @@ FROM pg_namespace
 WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname NOT LIKE 'pg_%'
 \gexec
 SQL
+fi
+
+set_search_path="${DB_RESTORE_SET_SEARCH_PATH:-true}"
+if [ "$set_search_path" = "true" ]; then
+  desired_search_path="${DB_RESTORE_SEARCH_PATH:-}"
+  if [ -z "$desired_search_path" ]; then
+    desired_search_path=$(
+      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME" -tAc "
+WITH user_schemas AS (
+  SELECT n.oid, n.nspname
+  FROM pg_namespace n
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND n.nspname <> 'public'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_namespace'::regclass
+        AND d.objid = n.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+),
+schemas_with_rels AS (
+  SELECT DISTINCT n.nspname
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname IN (SELECT nspname FROM user_schemas)
+    AND c.relkind IN ('r','p','v','m','f')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM schemas_with_rels WHERE nspname='main')
+    THEN quote_ident('main') || ', public'
+  WHEN (SELECT count(*) FROM schemas_with_rels)=1
+    THEN (SELECT quote_ident(nspname) FROM schemas_with_rels LIMIT 1) || ', public'
+  ELSE ''
+END;
+" | tr -d ' \t\r\n'
+    )
+  fi
+
+  if [ -n "$desired_search_path" ]; then
+    app_ident=$(sql_ident "$TARGET_DB_USER")
+    db_ident=$(sql_ident "$TARGET_DB_NAME")
+    sp_lit=$(sql_literal "$desired_search_path")
+    sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "ALTER ROLE \"${app_ident}\" IN DATABASE \"${db_ident}\" SET search_path = '${sp_lit}';"
+  fi
 fi
 
 rm -rf "$tmpdir"
