@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-REQUIRED_ROLES = ["bastion", "egress", "node1", "node2", "db"]
+REQUIRED_ROLES = ["bastion", "egress", "node1", "nodecp", "node2", "db"]
 
 
 def load_yaml(path: Path):
@@ -15,7 +15,8 @@ def load_yaml(path: Path):
 
 
 def load_json(path: Path):
-    return json.loads(path.read_text())
+    # utf-8-sig allows JSON files written with a UTF-8 BOM (common on Windows).
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def main() -> int:
@@ -214,30 +215,38 @@ def main() -> int:
             return None
 
     servers_cfg = config.get("servers", {})
-    k3s_nodes = config.get("k3s_nodes")
-    if not k3s_nodes:
-        legacy_nodes = []
-        for key in ("node1", "node2"):
-            node = servers_cfg.get(key)
-            if node:
-                legacy_nodes.append(node)
-        if legacy_nodes:
-            k3s_nodes = legacy_nodes
+    k3s_control_planes = config.get("k3s_control_planes")
+    k3s_workers = config.get("k3s_workers")
 
-    if not isinstance(k3s_nodes, list):
-        errors.append("k3s_nodes must be a list")
-        k3s_nodes = []
+    if not isinstance(k3s_control_planes, list):
+        errors.append("k3s_control_planes must be a list")
+        k3s_control_planes = []
+    if not isinstance(k3s_workers, list):
+        errors.append("k3s_workers must be a list")
+        k3s_workers = []
 
-    k3s_node_count = parse_int_env("K3S_NODE_COUNT", minimum=1)
-    if k3s_node_count is None:
-        k3s_node_count = len(k3s_nodes)
+    k3s_control_planes_count = parse_int_env("K3S_CONTROL_PLANES_COUNT", minimum=1)
+    if k3s_control_planes_count is None:
+        # Source of truth is GitHub Actions secrets; fail fast if not provided.
+        missing_env.append("K3S_CONTROL_PLANES_COUNT")
+        k3s_control_planes_count = 1
+    if k3s_control_planes_count not in (1, 3, 5):
+        errors.append("K3S_CONTROL_PLANES_COUNT must be one of: 1, 3, 5")
+    if len(k3s_control_planes) < k3s_control_planes_count:
+        errors.append("k3s_control_planes must include at least K3S_CONTROL_PLANES_COUNT entries")
 
-    if k3s_node_count < 1:
-        errors.append("K3S_NODE_COUNT must be >= 1")
-    if len(k3s_nodes) < k3s_node_count:
-        errors.append("k3s_nodes must include at least K3S_NODE_COUNT entries")
+    k3s_workers_count = parse_int_env("K3S_WORKERS_COUNT", minimum=0)
+    if k3s_workers_count is None:
+        # Source of truth is GitHub Actions secrets; fail fast if not provided.
+        missing_env.append("K3S_WORKERS_COUNT")
+        k3s_workers_count = 0
+    if len(k3s_workers) < k3s_workers_count:
+        errors.append("k3s_workers must include at least K3S_WORKERS_COUNT entries")
 
-    config["k3s_nodes"] = k3s_nodes[:k3s_node_count]
+    config["k3s_control_planes"] = k3s_control_planes[:k3s_control_planes_count]
+    config["k3s_workers"] = k3s_workers[:k3s_workers_count]
+    config["k3s_nodes"] = config["k3s_control_planes"] + config["k3s_workers"]
+    config["k3s_control_planes_count"] = k3s_control_planes_count
 
     k3s_node_cidrs = []
     for node in config["k3s_nodes"]:
@@ -258,10 +267,18 @@ def main() -> int:
         missing_env.append(k3s_token_name)
 
     k3s_server_private_ip = ""
-    if config["k3s_nodes"]:
-        k3s_server_private_ip = str(config["k3s_nodes"][0].get("private_ip", "")).strip()
+    if config["k3s_control_planes"]:
+        k3s_server_private_ip = str(config["k3s_control_planes"][0].get("private_ip", "")).strip()
     if not k3s_server_private_ip:
-        errors.append("k3s_nodes[0].private_ip is required for k3s server")
+        errors.append("k3s_control_planes[0].private_ip is required for k3s server")
+
+    k3s_api_lb_private_ip = ""
+    api_lb_cfg = config.get("k3s_api_load_balancer", {}) or {}
+    if isinstance(api_lb_cfg, dict):
+        k3s_api_lb_private_ip = str(api_lb_cfg.get("private_ip", "")).strip()
+
+    if k3s_control_planes_count > 1 and not k3s_api_lb_private_ip:
+        errors.append("k3s_api_load_balancer.private_ip is required when K3S_CONTROL_PLANES_COUNT > 1")
 
     s3_access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
     s3_secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
@@ -503,6 +520,8 @@ def main() -> int:
         egress_secrets["KUBERNETES_FQDN"] = kubernetes_fqdn
     if k3s_server_private_ip:
         egress_secrets["K3S_SERVER_PRIVATE_IP"] = k3s_server_private_ip
+    if k3s_control_planes_count > 1 and k3s_api_lb_private_ip:
+        egress_secrets["K3S_API_LB_PRIVATE_IP"] = k3s_api_lb_private_ip
     if not infisical_site_url and infisical_fqdn:
         infisical_site_url = f"https://{infisical_fqdn}"
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
@@ -608,10 +627,18 @@ def main() -> int:
         missing_env.append("GH_TOKEN")
 
     egress_private_ip = str(servers_cfg.get("egress", {}).get("private_ip", "")).strip()
+    k3s_server_url = ""
+    if k3s_control_planes_count > 1 and k3s_api_lb_private_ip:
+        k3s_server_url = f"https://{k3s_api_lb_private_ip}:6443"
+    elif k3s_server_private_ip:
+        k3s_server_url = f"https://{k3s_server_private_ip}:6443"
     k3s_secrets = {
         "K3S_TOKEN": k3s_token,
         "K3S_SERVER_IP": k3s_server_private_ip,
-        "K3S_SERVER_URL": f"https://{k3s_server_private_ip}:6443" if k3s_server_private_ip else "",
+        "K3S_SERVER_URL": k3s_server_url,
+        "K3S_CONTROL_PLANES_COUNT": str(k3s_control_planes_count),
+        "K3S_WORKERS_COUNT": str(k3s_workers_count),
+        "K3S_API_LB_PRIVATE_IP": k3s_api_lb_private_ip,
         "K3S_SERVER_TAINT": str(bool(k3s_cfg.get("server_taint", False))).lower(),
         "EGRESS_LOKI_URL": f"http://{egress_private_ip}:3100/loki/api/v1/push" if egress_private_ip else "",
     }
@@ -717,6 +744,12 @@ def main() -> int:
         config["bootstrap_artifacts"] = artifacts
     else:
         config["bootstrap_artifacts"] = {}
+
+    # OpenTofu consumes k3s nodes as a single ordered list (control planes first),
+    # along with k3s_control_planes_count. The explicit lists live in config/infra.yaml
+    # for readability but are not needed in tofu vars.
+    config.pop("k3s_control_planes", None)
+    config.pop("k3s_workers", None)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(config, indent=2))

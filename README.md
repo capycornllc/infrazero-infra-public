@@ -1,6 +1,6 @@
 # infrazero-infra-public
 
-Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bastion, egress, node1, node2, db, LB, firewalls, and persistent DB volume) from a single config file and GitHub Actions workflows.
+Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bastion, egress, k3s control planes + workers, db, LBs, firewalls, and persistent DB volume) from a single config file and GitHub Actions workflows.
 
 ## Quick start
 1) Edit `config/infra.yaml` for your project/env.
@@ -17,7 +17,8 @@ Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bast
 Render and validate locally:
 ```bash
 python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
-OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json
+# render-config.py expects the GitHub Actions secrets as env vars (see list below).
+python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json
 ```
 
 ## Required GitHub Actions secrets
@@ -37,7 +38,8 @@ OPS_SSH_KEYS_JSON='{"admin":["ssh-ed25519 AAA..."]}' python scripts/render-confi
 - `databases_json` (JSON array of databases; see below)
 - `db_type` (currently `postgresql`)
 - `db_version` (currently `14.20`)
-- `k3s_node_count` (optional; defaults to the number of `k3s_nodes`)
+- `k3s_control_planes_count` (`1`, `3`, or `5`; must be <= the number of `k3s_control_planes` entries in `config/infra.yaml`)
+- `k3s_workers_count` (must be <= the number of `k3s_workers` entries in `config/infra.yaml`)
 - `k3s_join_token`
 - `infisical_password`
 - `infisical_project_name`
@@ -109,12 +111,13 @@ Full list (including future epics): `docs/secrets-list.md`
 - `rebuild-bastion.yml`: replace only bastion.
 - `rebuild-egress.yml`: replace only egress.
 - `rebuild-db.yml`: replace only db server (volume preserved).
-- `rebuild-nodes.yml`: replace node1 and node2.
+- `rebuild-nodes.yml`: replace all k3s nodes (control planes + workers).
 
 ## Notes
 - DB volume is protected with `prevent_destroy` and imported automatically if it already exists.
 - DB bootstrap mounts the attached volume at `/mnt/db` when present.
 - If `db_fqdn` and `cloudflare_api_token` are set, DB bootstrap will obtain a Let's Encrypt cert via DNS-01 and enable PostgreSQL TLS.
+- `kubernetes_fqdn` points to egress (public IP). Egress terminates TLS and proxies `https://kubernetes_fqdn` to the k3s API (private k3s API LB when HA, otherwise node1).
 - Bootstrap artifacts are uploaded to `s3://$infra_state_bucket/bootstrap/` and referenced in cloud-init via presigned URLs.
 - `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.

@@ -59,6 +59,27 @@ variable "k3s_nodes" {
   }
 }
 
+variable "k3s_control_planes_count" {
+  type = number
+
+  validation {
+    condition     = contains([1, 3, 5], var.k3s_control_planes_count)
+    error_message = "k3s_control_planes_count must be one of: 1, 3, 5."
+  }
+
+  validation {
+    condition     = var.k3s_control_planes_count >= 1 && var.k3s_control_planes_count <= length(var.k3s_nodes)
+    error_message = "k3s_control_planes_count must be between 1 and the number of k3s_nodes."
+  }
+}
+
+variable "k3s_api_load_balancer" {
+  type = object({
+    type       = string
+    private_ip = string
+  })
+}
+
 variable "load_balancer" {
   type = object({
     type       = string

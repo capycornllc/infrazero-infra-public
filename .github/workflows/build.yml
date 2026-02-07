@@ -62,7 +62,8 @@ jobs:
       EGRESS_SERVER_TYPE: ${{ secrets.egress_server_type }}
       DB_SERVER_TYPE: ${{ secrets.db_server_type }}
       K3S_NODE_SERVER_TYPE: ${{ secrets.k3s_node_server_type }}
-      K3S_NODE_COUNT: ${{ secrets.k3s_node_count }}
+      K3S_CONTROL_PLANES_COUNT: ${{ secrets.k3s_control_planes_count }}
+      K3S_WORKERS_COUNT: ${{ secrets.k3s_workers_count }}
       K3S_JOIN_TOKEN: ${{ secrets.k3s_join_token }}
       LOAD_BALANCER_CONFIG: ${{ secrets.load_balancer_config }}
       ARGOCD_ADMIN_PASSWORD: ${{ secrets.argocd_admin_password }}
@@ -167,7 +168,7 @@ jobs:
           set -euo pipefail
           mkdir -p build/bootstrap
           chmod +x bootstrap/*.sh
-          for role in bastion egress node1 node2 db; do
+          for role in bastion egress node1 nodecp node2 db; do
             extra_files=()
             if [ "$role" = "egress" ]; then
               extra_files+=(infisical-bootstrap.sh)
@@ -185,7 +186,7 @@ jobs:
           done
 
           manifest='{}'
-          for role in bastion egress node1 node2 db; do
+          for role in bastion egress node1 nodecp node2 db; do
             sha=$(cat "build/bootstrap/${role}.sha256")
             url=$(cat "build/bootstrap/${role}.url")
             manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")

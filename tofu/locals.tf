@@ -23,12 +23,18 @@ locals {
   ssh_keys_map = { for idx, key in var.ssh_public_keys : idx => key }
   ssh_key_ids  = [for key in values(hcloud_ssh_key.ops) : key.id]
 
-  k3s_nodes_map         = { for idx, node in var.k3s_nodes : tostring(idx) => node }
-  k3s_node_cidrs        = [for node in var.k3s_nodes : "${node.private_ip}/32"]
-  k3s_server_key        = "0"
-  k3s_server_private_ip = var.k3s_nodes[0].private_ip
-  k3s_server_cidr       = "${var.k3s_nodes[0].private_ip}/32"
-  k3s_agent_cidrs       = length(var.k3s_nodes) > 1 ? [for node in slice(var.k3s_nodes, 1, length(var.k3s_nodes)) : "${node.private_ip}/32"] : []
+  k3s_nodes_map            = { for idx, node in var.k3s_nodes : tostring(idx) => node }
+  k3s_node_cidrs           = [for node in var.k3s_nodes : "${node.private_ip}/32"]
+  k3s_control_planes_count = var.k3s_control_planes_count
+  k3s_ha_enabled           = local.k3s_control_planes_count > 1
+  k3s_control_plane_nodes  = slice(var.k3s_nodes, 0, local.k3s_control_planes_count)
+  k3s_worker_nodes         = slice(var.k3s_nodes, local.k3s_control_planes_count, length(var.k3s_nodes))
+  k3s_control_plane_cidrs  = [for node in local.k3s_control_plane_nodes : "${node.private_ip}/32"]
+  k3s_worker_cidrs         = [for node in local.k3s_worker_nodes : "${node.private_ip}/32"]
+  k3s_api_lb_cidr          = "${var.k3s_api_load_balancer.private_ip}/32"
+  k3s_server_key           = "0"
+  k3s_server_private_ip    = local.k3s_control_plane_nodes[0].private_ip
+  k3s_server_cidr          = "${local.k3s_control_plane_nodes[0].private_ip}/32"
 
   wg_prefix_length            = tonumber(split("/", var.wg_server_address)[1])
   wg_network_ip               = cidrhost(var.wg_server_address, 0)

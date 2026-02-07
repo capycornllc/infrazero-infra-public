@@ -10,6 +10,10 @@ output "load_balancer_public_ipv4" {
   value = hcloud_load_balancer.main.ipv4
 }
 
+output "k3s_api_load_balancer_private_ipv4" {
+  value = local.k3s_ha_enabled ? var.k3s_api_load_balancer.private_ip : ""
+}
+
 output "private_ips" {
   value = {
     bastion   = var.servers.bastion.private_ip

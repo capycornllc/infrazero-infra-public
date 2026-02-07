@@ -10,7 +10,9 @@
     "private_cidr",
     "server_image",
     "servers",
-    "k3s_nodes",
+    "k3s_control_planes",
+    "k3s_workers",
+    "k3s_api_load_balancer",
     "load_balancer",
     "db_volume",
     "placement_groups",
@@ -37,10 +39,23 @@
       },
       "additionalProperties": true
     },
-    "k3s_nodes": {
+    "k3s_control_planes": {
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/server" }
+    },
+    "k3s_workers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/server" }
+    },
+    "k3s_api_load_balancer": {
+      "type": "object",
+      "required": ["type", "private_ip"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "private_ip": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
     },
     "load_balancer": {
       "type": "object",

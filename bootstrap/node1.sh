@@ -114,9 +114,16 @@ if ! command -v argocd >/dev/null 2>&1; then
 fi
 
 K3S_SERVER_TAINT="${K3S_SERVER_TAINT:-false}"
+K3S_CONTROL_PLANES_COUNT="${K3S_CONTROL_PLANES_COUNT:-1}"
 INSTALL_K3S_EXEC="server --node-ip ${NODE_IP} --advertise-address ${NODE_IP} --flannel-iface ${PRIVATE_IF} --write-kubeconfig-mode 644"
 if [ "${K3S_SERVER_TAINT,,}" = "true" ]; then
   INSTALL_K3S_EXEC="${INSTALL_K3S_EXEC} --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule"
+fi
+if [ "${K3S_CONTROL_PLANES_COUNT}" -gt 1 ]; then
+  INSTALL_K3S_EXEC="${INSTALL_K3S_EXEC} --cluster-init"
+fi
+if [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
+  INSTALL_K3S_EXEC="${INSTALL_K3S_EXEC} --tls-san ${K3S_API_LB_PRIVATE_IP}"
 fi
 if [ -n "${KUBERNETES_FQDN:-}" ]; then
   INSTALL_K3S_EXEC="${INSTALL_K3S_EXEC} --tls-san ${KUBERNETES_FQDN}"

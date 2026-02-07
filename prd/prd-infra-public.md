@@ -197,7 +197,8 @@ All secrets are stored as GitHub secrets (no Infisical):
 - `egress_server_type`
 - `db_server_type`
 - `k3s_node_server_type`
-- `k3s_node_count`
+- `k3s_control_planes_count` (`1`, `3`, or `5`)
+- `k3s_workers_count`
 - WireGuard keys and peer JSON (if using WG)
 - Service FQDNs (`bastion_fqdn`, `grafana_fqdn`, `loki_fqdn`, `infisical_fqdn`, `db_fqdn`) or `internal_services_domains_json`
 - `deployed_apps_json`

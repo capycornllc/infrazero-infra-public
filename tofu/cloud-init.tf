@@ -15,18 +15,18 @@ locals {
 
   cloud_init_base_bastion = yamldecode(
     templatefile(local.cloud_init_template_path, {
-      bootstrap_role            = "bastion"
-      bootstrap_url             = var.bootstrap_artifacts["bastion"].url
-      bootstrap_sha256          = var.bootstrap_artifacts["bastion"].sha256
-      db_volume_name            = var.db_volume.name
-      db_volume_format          = var.db_volume.format
-      private_cidr              = var.private_cidr
-      bastion_private_ip        = var.servers.bastion.private_ip
-      wg_server_address         = var.wg_server_address
-      wg_cidr                   = var.wireguard.allowed_cidrs[0]
-      admin_users_json_b64      = var.admin_users_json_b64
-      debug_root_password       = local.debug_root_password_escaped
-      egress_env                = []
+      bootstrap_role                      = "bastion"
+      bootstrap_url                       = var.bootstrap_artifacts["bastion"].url
+      bootstrap_sha256                    = var.bootstrap_artifacts["bastion"].sha256
+      db_volume_name                      = var.db_volume.name
+      db_volume_format                    = var.db_volume.format
+      private_cidr                        = var.private_cidr
+      bastion_private_ip                  = var.servers.bastion.private_ip
+      wg_server_address                   = var.wg_server_address
+      wg_cidr                             = var.wireguard.allowed_cidrs[0]
+      admin_users_json_b64                = var.admin_users_json_b64
+      debug_root_password                 = local.debug_root_password_escaped
+      egress_env                          = []
       infisical_db_backup_age_private_key = ""
       databases_json_private_b64          = ""
       bastion_env = concat(local.bastion_env_lines, [
@@ -40,45 +40,45 @@ locals {
 
   cloud_init_base_egress = yamldecode(
     templatefile(local.cloud_init_template_path, {
-      bootstrap_role            = "egress"
-      bootstrap_url             = var.bootstrap_artifacts["egress"].url
-      bootstrap_sha256          = var.bootstrap_artifacts["egress"].sha256
-      db_volume_name            = var.db_volume.name
-      db_volume_format          = var.db_volume.format
-      private_cidr              = var.private_cidr
-      bastion_private_ip        = var.servers.bastion.private_ip
-      wg_server_address         = var.wg_server_address
-      wg_cidr                   = var.wireguard.allowed_cidrs[0]
-      admin_users_json_b64      = var.admin_users_json_b64
-      debug_root_password       = local.debug_root_password_escaped
-      egress_env                = local.egress_env_lines
+      bootstrap_role                      = "egress"
+      bootstrap_url                       = var.bootstrap_artifacts["egress"].url
+      bootstrap_sha256                    = var.bootstrap_artifacts["egress"].sha256
+      db_volume_name                      = var.db_volume.name
+      db_volume_format                    = var.db_volume.format
+      private_cidr                        = var.private_cidr
+      bastion_private_ip                  = var.servers.bastion.private_ip
+      wg_server_address                   = var.wg_server_address
+      wg_cidr                             = var.wireguard.allowed_cidrs[0]
+      admin_users_json_b64                = var.admin_users_json_b64
+      debug_root_password                 = local.debug_root_password_escaped
+      egress_env                          = local.egress_env_lines
       infisical_db_backup_age_private_key = var.infisical_db_backup_age_private_key
       databases_json_private_b64          = ""
-      bastion_env               = []
-      node_env                  = []
-      node_role_env             = []
+      bastion_env                         = []
+      node_env                            = []
+      node_role_env                       = []
     })
   )
 
   cloud_init_base_db = yamldecode(
     templatefile(local.cloud_init_template_path, {
-      bootstrap_role            = "db"
-      bootstrap_url             = var.bootstrap_artifacts["db"].url
-      bootstrap_sha256          = var.bootstrap_artifacts["db"].sha256
-      db_volume_name            = var.db_volume.name
-      db_volume_format          = var.db_volume.format
-      private_cidr              = var.private_cidr
-      bastion_private_ip        = var.servers.bastion.private_ip
-      wg_server_address         = var.wg_server_address
-      wg_cidr                   = var.wireguard.allowed_cidrs[0]
-      admin_users_json_b64      = var.admin_users_json_b64
-      debug_root_password       = local.debug_root_password_escaped
-      egress_env                = []
+      bootstrap_role                      = "db"
+      bootstrap_url                       = var.bootstrap_artifacts["db"].url
+      bootstrap_sha256                    = var.bootstrap_artifacts["db"].sha256
+      db_volume_name                      = var.db_volume.name
+      db_volume_format                    = var.db_volume.format
+      private_cidr                        = var.private_cidr
+      bastion_private_ip                  = var.servers.bastion.private_ip
+      wg_server_address                   = var.wg_server_address
+      wg_cidr                             = var.wireguard.allowed_cidrs[0]
+      admin_users_json_b64                = var.admin_users_json_b64
+      debug_root_password                 = local.debug_root_password_escaped
+      egress_env                          = []
       infisical_db_backup_age_private_key = ""
       databases_json_private_b64          = var.databases_json_private_b64
-      bastion_env               = []
-      node_env                  = []
-      node_role_env             = local.db_env_lines
+      bastion_env                         = []
+      node_env                            = []
+      node_role_env                       = local.db_env_lines
     })
   )
 
@@ -104,26 +104,31 @@ locals {
   cloud_init_rendered_egress  = "#cloud-config\n${yamlencode(local.cloud_init_merged_egress)}"
   cloud_init_rendered_db      = "#cloud-config\n${yamlencode(local.cloud_init_merged_db)}"
 
+  k3s_bootstrap_roles = {
+    for key, _node in local.k3s_nodes_map :
+    key => (key == local.k3s_server_key ? "node1" : (tonumber(key) < local.k3s_control_planes_count ? "nodecp" : "node2"))
+  }
+
   cloud_init_base_k3s = {
     for key, node in local.k3s_nodes_map : key => yamldecode(
       templatefile(local.cloud_init_template_path, {
-        bootstrap_role            = key == local.k3s_server_key ? "node1" : "node2"
-        bootstrap_url             = var.bootstrap_artifacts[key == local.k3s_server_key ? "node1" : "node2"].url
-        bootstrap_sha256          = var.bootstrap_artifacts[key == local.k3s_server_key ? "node1" : "node2"].sha256
-        db_volume_name            = var.db_volume.name
-        db_volume_format          = var.db_volume.format
-        private_cidr              = var.private_cidr
-        bastion_private_ip        = var.servers.bastion.private_ip
-        wg_server_address         = var.wg_server_address
-        wg_cidr                   = var.wireguard.allowed_cidrs[0]
-        admin_users_json_b64      = var.admin_users_json_b64
-        debug_root_password       = local.debug_root_password_escaped
-        egress_env                = []
+        bootstrap_role                      = local.k3s_bootstrap_roles[key]
+        bootstrap_url                       = var.bootstrap_artifacts[local.k3s_bootstrap_roles[key]].url
+        bootstrap_sha256                    = var.bootstrap_artifacts[local.k3s_bootstrap_roles[key]].sha256
+        db_volume_name                      = var.db_volume.name
+        db_volume_format                    = var.db_volume.format
+        private_cidr                        = var.private_cidr
+        bastion_private_ip                  = var.servers.bastion.private_ip
+        wg_server_address                   = var.wg_server_address
+        wg_cidr                             = var.wireguard.allowed_cidrs[0]
+        admin_users_json_b64                = var.admin_users_json_b64
+        debug_root_password                 = local.debug_root_password_escaped
+        egress_env                          = []
         infisical_db_backup_age_private_key = ""
         databases_json_private_b64          = ""
-        bastion_env               = []
-        node_env                  = local.k3s_env_lines
-        node_role_env             = key == local.k3s_server_key ? local.k3s_server_env_lines : local.k3s_agent_env_lines
+        bastion_env                         = []
+        node_env                            = local.k3s_env_lines
+        node_role_env                       = tonumber(key) < local.k3s_control_planes_count ? local.k3s_server_env_lines : local.k3s_agent_env_lines
       })
     )
   }

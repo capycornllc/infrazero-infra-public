@@ -313,7 +313,7 @@ if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
 fi
 ARGOCD_UPSTREAM_ADDR="${ARGOCD_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
 ARGOCD_UPSTREAM_PORT="${ARGOCD_UPSTREAM_PORT:-30080}"
-KUBERNETES_UPSTREAM_ADDR="${KUBERNETES_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
+KUBERNETES_UPSTREAM_ADDR="${KUBERNETES_UPSTREAM_ADDR:-${K3S_API_LB_PRIVATE_IP:-${K3S_SERVER_PRIVATE_IP:-}}}"
 KUBERNETES_UPSTREAM_PORT="${KUBERNETES_UPSTREAM_PORT:-6443}"
 
 write_https_server_block() {
@@ -388,8 +388,10 @@ setup_k3s_haproxy() {
   if [ -z "$KUBERNETES_FQDN" ]; then
     return 0
   fi
-  if [ -z "$K3S_SERVER_PRIVATE_IP" ]; then
-    echo "[egress] KUBERNETES_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping haproxy" >&2
+
+  local target_ip="${K3S_API_LB_PRIVATE_IP:-${K3S_SERVER_PRIVATE_IP:-}}"
+  if [ -z "$target_ip" ]; then
+    echo "[egress] KUBERNETES_FQDN set but no k3s upstream (K3S_API_LB_PRIVATE_IP or K3S_SERVER_PRIVATE_IP); skipping haproxy" >&2
     return 1
   fi
 
@@ -413,7 +415,7 @@ frontend k3s_api
   default_backend k3s_api
 
 backend k3s_api
-  server k3s ${K3S_SERVER_PRIVATE_IP}:6443 check
+  server k3s ${target_ip}:6443 check
 EOF
 
   systemctl enable --now haproxy
@@ -497,7 +499,7 @@ EOF
     if [ -n "$KUBERNETES_UPSTREAM_ADDR" ]; then
       write_https_server_block_insecure_upstream "$KUBERNETES_FQDN" "https://${KUBERNETES_UPSTREAM_ADDR}:${KUBERNETES_UPSTREAM_PORT}"
     else
-      echo "[egress] KUBERNETES_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping kubernetes proxy" >&2
+      echo "[egress] KUBERNETES_FQDN set but no k3s upstream; skipping kubernetes proxy" >&2
     fi
   fi
 

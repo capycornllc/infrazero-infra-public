@@ -173,40 +173,47 @@ resource "hcloud_firewall" "k3s_server" {
   }
 
   rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "6443"
+    source_ips = concat(
+      var.wireguard.allowed_cidrs,
+      [local.bastion_cidr, local.egress_cidr],
+      local.k3s_node_cidrs,
+      local.k3s_ha_enabled ? [local.k3s_api_lb_cidr] : []
+    )
+  }
+
+  rule {
     direction  = "in"
     protocol   = "tcp"
-    port       = "6443"
-    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.egress_cidr], local.k3s_agent_cidrs)
+    port       = "9345"
+    source_ips = concat(local.k3s_node_cidrs, local.k3s_ha_enabled ? [local.k3s_api_lb_cidr] : [])
   }
 
   dynamic "rule" {
-    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
+    for_each = local.k3s_ha_enabled ? toset(["2379", "2380"]) : []
+    iterator = etcd_port
     content {
       direction  = "in"
       protocol   = "tcp"
-      port       = "9345"
-      source_ips = local.k3s_agent_cidrs
+      port       = etcd_port.value
+      source_ips = local.k3s_control_plane_cidrs
     }
   }
 
-  dynamic "rule" {
-    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
-    content {
-      direction  = "in"
-      protocol   = "udp"
-      port       = "8472"
-      source_ips = local.k3s_agent_cidrs
-    }
+  rule {
+    direction  = "in"
+    protocol   = "udp"
+    port       = "8472"
+    source_ips = local.k3s_node_cidrs
   }
 
-  dynamic "rule" {
-    for_each = length(local.k3s_agent_cidrs) > 0 ? [1] : []
-    content {
-      direction  = "in"
-      protocol   = "tcp"
-      port       = "10250"
-      source_ips = local.k3s_agent_cidrs
-    }
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "10250"
+    source_ips = local.k3s_control_plane_cidrs
   }
 
   rule {
@@ -241,14 +248,14 @@ resource "hcloud_firewall" "k3s_agent" {
     direction  = "in"
     protocol   = "udp"
     port       = "8472"
-    source_ips = [local.k3s_server_cidr]
+    source_ips = local.k3s_node_cidrs
   }
 
   rule {
     direction  = "in"
     protocol   = "tcp"
     port       = "10250"
-    source_ips = [local.k3s_server_cidr]
+    source_ips = local.k3s_control_plane_cidrs
   }
 
   rule {
@@ -367,7 +374,7 @@ resource "hcloud_server" "k3s" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [each.key == local.k3s_server_key ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
+  firewall_ids       = [tonumber(each.key) < local.k3s_control_planes_count ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_k3s[each.key]
 
@@ -422,6 +429,63 @@ resource "hcloud_load_balancer" "main" {
   labels = {
     project     = var.project
     environment = var.environment
+  }
+}
+
+resource "hcloud_load_balancer" "k3s_api" {
+  count              = local.k3s_ha_enabled ? 1 : 0
+  name               = "${var.name_prefix}-k3s-api-lb"
+  load_balancer_type = var.k3s_api_load_balancer.type
+  location           = var.location
+
+  algorithm {
+    type = "round_robin"
+  }
+
+  labels = {
+    project     = var.project
+    environment = var.environment
+    role        = "k3s-api"
+  }
+}
+
+resource "hcloud_load_balancer_network" "k3s_api" {
+  count            = local.k3s_ha_enabled ? 1 : 0
+  load_balancer_id = hcloud_load_balancer.k3s_api[0].id
+  network_id       = hcloud_network.main.id
+  ip               = var.k3s_api_load_balancer.private_ip
+}
+
+resource "hcloud_load_balancer_target" "k3s_api" {
+  for_each = local.k3s_ha_enabled ? {
+    for key, srv in hcloud_server.k3s :
+    key => srv
+    if tonumber(key) < local.k3s_control_planes_count
+  } : {}
+
+  type             = "server"
+  load_balancer_id = hcloud_load_balancer.k3s_api[0].id
+  server_id        = each.value.id
+  use_private_ip   = true
+}
+
+resource "hcloud_load_balancer_service" "k3s_api" {
+  for_each = local.k3s_ha_enabled ? {
+    "6443" = 6443
+    "9345" = 9345
+  } : {}
+
+  load_balancer_id = hcloud_load_balancer.k3s_api[0].id
+  protocol         = "tcp"
+  listen_port      = each.value
+  destination_port = each.value
+
+  health_check {
+    protocol = "tcp"
+    port     = each.value
+    interval = var.load_balancer.health_check.interval
+    timeout  = var.load_balancer.health_check.timeout
+    retries  = var.load_balancer.health_check.retries
   }
 }
 
