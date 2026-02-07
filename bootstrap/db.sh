@@ -537,7 +537,7 @@ WITH rels AS (
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname NOT IN ('pg_catalog','information_schema')
     AND n.nspname NOT LIKE 'pg_%'
-    AND c.relkind IN ('r','p','v','m','S','f')
+    AND c.relkind IN ('r','p','v','m','f')
     AND NOT EXISTS (
       SELECT 1
       FROM pg_depend d
@@ -550,7 +550,6 @@ WITH rels AS (
 SELECT format(
   'ALTER %s %I.%I OWNER TO %I;',
   CASE relkind
-    WHEN 'S' THEN 'SEQUENCE'
     WHEN 'v' THEN 'VIEW'
     WHEN 'm' THEN 'MATERIALIZED VIEW'
     WHEN 'f' THEN 'FOREIGN TABLE'
@@ -561,6 +560,40 @@ SELECT format(
   :'owner'
 )
 FROM rels
+WHERE owner <> :'owner'
+\gexec
+
+WITH seqs AS (
+  SELECT
+    n.nspname,
+    c.relname,
+    pg_get_userbyid(c.relowner) AS owner
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND c.relkind = 'S'
+    -- Sequences "owned by" a table column cannot have ownership changed directly.
+    -- Their owner is derived from the owning table, so handle those via ALTER TABLE OWNER.
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'a'
+        AND d.refclassid = 'pg_class'::regclass
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT format('ALTER SEQUENCE %I.%I OWNER TO %I;', nspname, relname, :'owner')
+FROM seqs
 WHERE owner <> :'owner'
 \gexec
 
@@ -1371,7 +1404,7 @@ WITH rels AS (
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname NOT IN ('pg_catalog','information_schema')
     AND n.nspname NOT LIKE 'pg_%'
-    AND c.relkind IN ('r','p','v','m','S','f')
+    AND c.relkind IN ('r','p','v','m','f')
     AND NOT EXISTS (
       SELECT 1
       FROM pg_depend d
@@ -1384,7 +1417,6 @@ WITH rels AS (
 SELECT format(
   'ALTER %s %I.%I OWNER TO %I;',
   CASE relkind
-    WHEN 'S' THEN 'SEQUENCE'
     WHEN 'v' THEN 'VIEW'
     WHEN 'm' THEN 'MATERIALIZED VIEW'
     WHEN 'f' THEN 'FOREIGN TABLE'
@@ -1395,6 +1427,40 @@ SELECT format(
   :'owner'
 )
 FROM rels
+WHERE owner <> :'owner'
+\gexec
+
+WITH seqs AS (
+  SELECT
+    n.nspname,
+    c.relname,
+    pg_get_userbyid(c.relowner) AS owner
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+    AND n.nspname NOT LIKE 'pg_%'
+    AND c.relkind = 'S'
+    -- Sequences "owned by" a table column cannot have ownership changed directly.
+    -- Their owner is derived from the owning table, so handle those via ALTER TABLE OWNER.
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'a'
+        AND d.refclassid = 'pg_class'::regclass
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_depend d
+      WHERE d.classid = 'pg_class'::regclass
+        AND d.objid = c.oid
+        AND d.deptype = 'e'
+        AND d.refclassid = 'pg_extension'::regclass
+    )
+)
+SELECT format('ALTER SEQUENCE %I.%I OWNER TO %I;', nspname, relname, :'owner')
+FROM seqs
 WHERE owner <> :'owner'
 \gexec
 
