@@ -876,18 +876,25 @@ apply_infrazero_hba() {
 
   {
     echo "$hba_begin"
+    cidrs=()
     if [ -n "${K3S_NODE_CIDRS:-}" ]; then
       IFS=',' read -r -a cidrs <<< "$K3S_NODE_CIDRS"
+    fi
+
+    while IFS= read -r db_b64; do
+      db=$(echo "$db_b64" | base64 -d)
+      db_name=$(echo "$db" | jq -r '.name')
+      db_user=$(echo "$db" | jq -r '.user')
       for cidr in "${cidrs[@]}"; do
         cidr=$(echo "$cidr" | xargs)
         if [ -n "$cidr" ]; then
-          echo "host ${TARGET_DB_NAME} ${TARGET_DB_USER} ${cidr} scram-sha-256"
+          echo "host ${db_name} ${db_user} ${cidr} scram-sha-256"
         fi
       done
-    fi
-    if [ -n "${WG_CIDR:-}" ]; then
-      echo "host ${TARGET_DB_NAME} ${TARGET_DB_USER} ${WG_CIDR} scram-sha-256"
-    fi
+      if [ -n "${WG_CIDR:-}" ]; then
+        echo "host ${db_name} ${db_user} ${WG_CIDR} scram-sha-256"
+      fi
+    done < <(echo "$DATABASES_JSON" | jq -cr '.[] | @base64')
     echo "$hba_end"
   } >> "$HBA_CONF"
 }
