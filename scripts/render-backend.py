@@ -18,6 +18,10 @@ def main() -> int:
 
     config = load_yaml(Path(args.config))
     s3_cfg = config.get("s3_backend", {})
+    environment = str(config.get("environment", "")).strip()
+    env_override = os.getenv("ENVIRONMENT", "").strip() or os.getenv("ENV", "").strip()
+    runtime_environment = env_override or environment
+    project_slug = os.getenv("PROJECT_SLUG", "").strip()
 
     bucket = os.getenv("INFRA_STATE_BUCKET")
     if not bucket:
@@ -33,6 +37,9 @@ def main() -> int:
         or "us-east-1"
     )
     state_prefix = s3_cfg.get("state_prefix", "")
+    if project_slug and runtime_environment:
+        # Keep backend state partitioned by env, controlled by GitHub secret `env`.
+        state_prefix = f"{project_slug}/{runtime_environment}"
 
     if not endpoint or not state_prefix:
         print("S3_ENDPOINT and s3_backend.state_prefix are required", file=sys.stderr)

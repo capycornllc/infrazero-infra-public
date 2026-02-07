@@ -104,9 +104,18 @@ jobs:
           bootstrap = cfg.get("bootstrap", {})
           db_volume = cfg.get("db_volume", {})
 
+          project_slug = (os.getenv("PROJECT_SLUG") or "").strip()
+          env_override = (os.getenv("ENVIRONMENT") or "").strip() or (os.getenv("ENV") or "").strip()
+          config_env = str(cfg.get("environment", "") or "").strip()
+          runtime_env = env_override or config_env
+
+          db_volume_name = db_volume.get("name", "")
+          if project_slug and runtime_env:
+              db_volume_name = f"{project_slug}-{runtime_env}-db"
+
           env_lines = [
               f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 3600)}",
-              f"DB_VOLUME_NAME={db_volume.get('name', '')}",
+              f"DB_VOLUME_NAME={db_volume_name}",
           ]
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(env_lines) + "\n")

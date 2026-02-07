@@ -34,12 +34,20 @@ def main() -> int:
     project_slug = os.getenv("PROJECT_SLUG", "").strip()
     cloud_region = os.getenv("CLOUD_REGION", "").strip()
     environment = str(config.get("environment", "")).strip()
-    runtime_environment = os.getenv("ENVIRONMENT", "").strip() or os.getenv("ENV", "").strip() or environment
+    env_override = os.getenv("ENVIRONMENT", "").strip() or os.getenv("ENV", "").strip()
+    runtime_environment = env_override or environment
+    if env_override:
+        # Environment is controlled by a GitHub secret in workflows; treat config/infra.yaml as a fallback.
+        config["environment"] = runtime_environment
     if project_slug:
-        if environment:
-            config["name_prefix"] = f"{project_slug}-{environment}"
+        if runtime_environment:
+            config["name_prefix"] = f"{project_slug}-{runtime_environment}"
         else:
             config["name_prefix"] = project_slug
+        if runtime_environment:
+            # Keep resource names stable across envs and avoid hardcoded `dev` in infra.yaml.
+            config.setdefault("db_volume", {})["name"] = f"{config['name_prefix']}-db"
+            config.setdefault("s3_backend", {})["state_prefix"] = f"{project_slug}/{runtime_environment}"
     if cloud_region:
         config["location"] = cloud_region
 
