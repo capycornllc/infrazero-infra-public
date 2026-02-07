@@ -72,7 +72,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 ## 6) Databases
 - `db_type` (currently `postgresql`)
 - `db_version` (currently `14.20`)
-- `databases_json` (JSON array: `{ name, user, password, backup_age_public_key, backup_age_private_key }`)
+- `databases_json` (JSON array: `{ name, user, password, backup_age_public_key, backup_age_private_key, restore_latest?, restore_dump_path? }`)
 
 Legacy (deprecated; ignored by this repo):
 - `app_db_name`

@@ -16,6 +16,17 @@ load_env() {
 load_env /etc/infrazero/db.env
 load_env /etc/infrazero/network.env
 
+cleanup_private_restore_secrets() {
+  # The per-DB Age private keys are only needed during bootstrap restore.
+  # Scrub them from the persisted bootstrap script to avoid leaving them on disk
+  # even when bootstrap fails.
+  unset DATABASES_JSON_PRIVATE_B64 || true
+  if [ -f /opt/infrazero/bootstrap/run.sh ]; then
+    sed -i 's/^export DATABASES_JSON_PRIVATE_B64=.*$/export DATABASES_JSON_PRIVATE_B64=""/' /opt/infrazero/bootstrap/run.sh || true
+  fi
+}
+trap cleanup_private_restore_secrets EXIT
+
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -318,8 +329,11 @@ if ! echo "$DATABASES_JSON_EFFECTIVE" | jq -e '
     and (.user|type=="string" and length>0 and (test("[[:space:]]")|not) and (contains("/")|not))
     and (.password|type=="string" and length>0)
     and (.backup_age_public_key|type=="string" and length>0)
+    and ((has("restore_latest")|not) or (.restore_latest==null) or (.restore_latest|type=="boolean"))
+    and ((.restore_dump_path // "") | (type=="string" and (test("[[:space:]]")|not)))
+    and (((.restore_dump_path // "")|length==0) or ((.restore_dump_path // "") | test("^(db/|s3://)")))
   )' >/dev/null 2>&1; then
-  echo "[db] DATABASES_JSON entries must include non-empty name/user/password/backup_age_public_key (no whitespace in name/user)" >&2
+  echo "[db] DATABASES_JSON entries must include non-empty name/user/password/backup_age_public_key (no whitespace in name/user) and valid optional restore_latest/restore_dump_path" >&2
   exit 1
 fi
 
@@ -742,113 +756,190 @@ END;
 
 ensure_databases
 
-scrub_databases_json_private_b64_from_run_sh() {
-  # The per-DB Age private keys are only needed during bootstrap restore.
-  # Scrub them from the persisted bootstrap script to avoid leaving them on disk.
-  if [ -f /opt/infrazero/bootstrap/run.sh ]; then
-    sed -i 's/^export DATABASES_JSON_PRIVATE_B64=.*$/export DATABASES_JSON_PRIVATE_B64=""/' /opt/infrazero/bootstrap/run.sh || true
-  fi
-}
-
 restore_databases_from_s3() {
   if [ "$fresh_cluster" != "true" ]; then
-    echo "[db] existing PostgreSQL data directory detected; skipping S3 restore"
-    unset DATABASES_JSON_PRIVATE_B64
-    scrub_databases_json_private_b64_from_run_sh
+    echo "[db] existing PostgreSQL data directory detected; skipping bootstrap restore"
+    cleanup_private_restore_secrets
     return 0
   fi
 
   if [ -z "${DATABASES_JSON_PRIVATE_B64:-}" ]; then
     echo "[db] DATABASES_JSON_PRIVATE_B64 not set; skipping restore"
-    scrub_databases_json_private_b64_from_run_sh
+    cleanup_private_restore_secrets
     return 0
   fi
 
   local tmpdir
-  tmpdir=$(mktemp -d /run/infrazero-db-restore.XXXX)
+  tmpdir=$(mktemp -d /run/infrazero-db-bootstrap-restore.XXXX)
   chmod 700 "$tmpdir"
 
-  echo "$DATABASES_JSON_PRIVATE_B64" | base64 -d > "$tmpdir/databases.json" || {
+  if ! echo "$DATABASES_JSON_PRIVATE_B64" | base64 -d > "$tmpdir/databases.json"; then
     echo "[db] unable to decode DATABASES_JSON_PRIVATE_B64" >&2
     rm -rf "$tmpdir"
-    unset DATABASES_JSON_PRIVATE_B64
-    scrub_databases_json_private_b64_from_run_sh
+    cleanup_private_restore_secrets
     return 1
-  }
+  fi
   chmod 600 "$tmpdir/databases.json" || true
 
   if ! jq -e 'type=="array"' "$tmpdir/databases.json" >/dev/null 2>&1; then
     echo "[db] decoded DATABASES_JSON_PRIVATE_B64 is not a JSON array" >&2
     rm -rf "$tmpdir"
-    unset DATABASES_JSON_PRIVATE_B64
-    scrub_databases_json_private_b64_from_run_sh
+    cleanup_private_restore_secrets
     return 1
   fi
 
-  echo "[db] restoring latest DB backups from S3 (fresh cluster)"
+  local -a restored=()
+  local -a skipped=()
+  local -a failed=()
+
+  echo "[db] restoring DB backups (fresh cluster)"
   while IFS= read -r db_b64; do
+    local db
+    local db_name
+    local restore_latest
+    local restore_dump_path
+    local backup_ref
+    local expected_sha
+    local manifest_key
+    local manifest_path
+    local manifest_url
+    local manifest_bucket
+    local manifest_file
+    local key
+    local sha
+    local pk
+
     db=$(echo "$db_b64" | base64 -d)
     db_name=$(echo "$db" | jq -r '.name')
-    db_user=$(echo "$db" | jq -r '.user')
+    restore_latest=$(echo "$db" | jq -r 'if has("restore_latest") and (.restore_latest!=null) then .restore_latest else true end')
+    restore_dump_path=$(echo "$db" | jq -r '.restore_dump_path // empty')
+
+    if [ "$restore_latest" != "true" ] && [ "$restore_latest" != "false" ]; then
+      echo "[db] invalid restore_latest for ${db_name}; must be boolean" >&2
+      failed+=("$db_name")
+      continue
+    fi
+
+    if [ "$restore_latest" = "true" ] && [ -n "$restore_dump_path" ]; then
+      echo "[db] warning: restore_dump_path set for ${db_name} but restore_latest=true; ignoring restore_dump_path" >&2
+    fi
+
+    backup_ref=""
+    expected_sha=""
+    manifest_bucket=""
+    manifest_file="$tmpdir/latest-dump-${db_name}.json"
+    rm -f "$manifest_file" || true
+
+    if [ "$restore_latest" = "false" ]; then
+      if [ -z "$restore_dump_path" ]; then
+        echo "[db] restore disabled for ${db_name} (restore_latest=false and restore_dump_path empty); skipping"
+        skipped+=("$db_name")
+        continue
+      fi
+
+      manifest_path=""
+      if [[ "$restore_dump_path" == */ ]]; then
+        # Prefix containing a latest-dump.json manifest.
+        manifest_path="${restore_dump_path}latest-dump.json"
+      elif [[ "$restore_dump_path" == *latest-dump.json ]]; then
+        # Explicit manifest path.
+        manifest_path="$restore_dump_path"
+      fi
+
+      if [ -n "$manifest_path" ]; then
+        if [[ "$manifest_path" == s3://* ]]; then
+          manifest_url="$manifest_path"
+          manifest_bucket="${manifest_path#s3://}"
+          manifest_bucket="${manifest_bucket%%/*}"
+        else
+          manifest_url="s3://${DB_BACKUP_BUCKET}/${manifest_path}"
+        fi
+
+        if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "$manifest_url" "$manifest_file" >/dev/null 2>&1; then
+          echo "[db] unable to fetch latest-dump manifest at ${manifest_path} for ${db_name}" >&2
+          failed+=("$db_name")
+          continue
+        fi
+
+        key=$(jq -r '.key' "$manifest_file")
+        sha=$(jq -r '.sha256' "$manifest_file")
+        if [ -z "$key" ] || [ "$key" = "null" ]; then
+          echo "[db] latest-dump manifest missing key for ${db_name}" >&2
+          failed+=("$db_name")
+          continue
+        fi
+        if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+          echo "[db] latest-dump manifest missing sha256 for ${db_name}" >&2
+          failed+=("$db_name")
+          continue
+        fi
+
+        if [[ "$key" == s3://* ]]; then
+          backup_ref="$key"
+        elif [ -n "$manifest_bucket" ]; then
+          backup_ref="s3://${manifest_bucket}/${key}"
+        else
+          backup_ref="$key"
+        fi
+        expected_sha="$sha"
+      else
+        backup_ref="$restore_dump_path"
+      fi
+    else
+      manifest_key="db/${db_name}/latest-dump.json"
+      if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${manifest_key}" "$manifest_file" >/dev/null 2>&1; then
+        echo "[db] no latest-dump manifest found for ${db_name}; skipping restore"
+        skipped+=("$db_name")
+        continue
+      fi
+
+      key=$(jq -r '.key' "$manifest_file")
+      sha=$(jq -r '.sha256' "$manifest_file")
+      if [ -z "$key" ] || [ "$key" = "null" ]; then
+        echo "[db] latest-dump manifest missing key for ${db_name}" >&2
+        failed+=("$db_name")
+        continue
+      fi
+      if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+        echo "[db] latest-dump manifest missing sha256 for ${db_name}" >&2
+        failed+=("$db_name")
+        continue
+      fi
+
+      backup_ref="$key"
+      expected_sha="$sha"
+    fi
 
     pk=$(jq -r --arg name "$db_name" '.[] | select(.name==$name) | .backup_age_private_key // empty' "$tmpdir/databases.json" | tail -n 1)
-    if [ -z "$pk" ]; then
-      echo "[db] no backup_age_private_key found for ${db_name}; skipping restore" >&2
+    restore_env=(DB_RESTORE_NON_INTERACTIVE=true)
+    if [ -n "$pk" ]; then
+      restore_env+=(DB_RESTORE_AGE_PRIVATE_KEY="$pk")
+    fi
+    if [ -n "$expected_sha" ] && [ "$expected_sha" != "null" ]; then
+      restore_env+=(DB_RESTORE_EXPECTED_SHA256="$expected_sha")
+    fi
+
+    echo "[db] restoring ${db_name} from ${backup_ref}"
+    if ! "${restore_env[@]}" /opt/infrazero/db/restore.sh "$db_name" "$backup_ref"; then
+      echo "[db] restore failed for ${db_name}" >&2
+      failed+=("$db_name")
       continue
     fi
 
-    local manifest_key="db/${db_name}/latest-dump.json"
-    if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${manifest_key}" "$tmpdir/latest-dump.json" >/dev/null 2>&1; then
-      echo "[db] no latest-dump manifest found for ${db_name}; skipping restore"
-      continue
-    fi
-
-    key=$(jq -r '.key' "$tmpdir/latest-dump.json")
-    sha=$(jq -r '.sha256' "$tmpdir/latest-dump.json")
-
-    if [ -z "$key" ] || [ "$key" = "null" ]; then
-      echo "[db] latest-dump manifest missing key for ${db_name}" >&2
-      rm -f "$tmpdir/latest-dump.json"
-      continue
-    fi
-    if [ -z "$sha" ] || [ "$sha" = "null" ]; then
-      echo "[db] latest-dump manifest missing sha256 for ${db_name}" >&2
-      rm -f "$tmpdir/latest-dump.json"
-      continue
-    fi
-
-    aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${key}" "$tmpdir/dump.age"
-    echo "$sha  $tmpdir/dump.age" | sha256sum -c -
-
-    echo "$pk" > "$tmpdir/age.key"
-    chmod 600 "$tmpdir/age.key"
-    age -d -i "$tmpdir/age.key" -o "$tmpdir/dump.sql.gz" "$tmpdir/dump.age"
-
-    user_ident=$(sql_ident "$db_user")
-    db_ident=$(sql_ident "$db_name")
-    db_lit=$(sql_escape "$db_name")
-
-    echo "[db] restoring ${db_name}"
-    psql_as_postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';" || true
-    psql_as_postgres -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
-    psql_as_postgres -c "CREATE DATABASE \"${db_ident}\" OWNER \"${user_ident}\";"
-    psql_as_postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"${db_ident}\" TO \"${user_ident}\";"
-
-    gunzip -c "$tmpdir/dump.sql.gz" | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d;/^ALTER DEFAULT PRIVILEGES /d' | \
-      sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$db_name"
-
-    normalize_db_ownership_and_privileges "$db_name" "$db_user"
-
-    rm -f "$tmpdir/age.key" "$tmpdir/dump.age" "$tmpdir/dump.sql.gz" "$tmpdir/latest-dump.json"
+    restored+=("$db_name")
   done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
 
   rm -rf "$tmpdir"
-  unset DATABASES_JSON_PRIVATE_B64
-  scrub_databases_json_private_b64_from_run_sh
+  cleanup_private_restore_secrets
+
+  echo "[db] restore summary: restored=${#restored[@]} skipped=${#skipped[@]} failed=${#failed[@]}"
+  if [ "${#failed[@]}" -gt 0 ]; then
+    echo "[db] restore failures: ${failed[*]}" >&2
+    return 1
+  fi
+
   echo "[db] restore complete"
 }
-
-restore_databases_from_s3
 
 mkdir -p /opt/infrazero/db /opt/infrazero/db/backups
 
@@ -1204,6 +1295,12 @@ PY
 
 tmpdir=$(mktemp -d /run/infrazero-db-restore.XXXX)
 chmod 700 "$tmpdir"
+
+cleanup_tmpdir() {
+  rm -rf "$tmpdir"
+}
+trap cleanup_tmpdir EXIT
+
 src_path="$tmpdir/dump.src"
 dump_path="$tmpdir/dump.sql"
 age_key="$tmpdir/age.key"
@@ -1216,6 +1313,15 @@ fi
 
 echo "[db-restore] downloading ${s3_url}"
 aws --endpoint-url "$S3_ENDPOINT" s3 cp "$s3_url" "$src_path"
+
+expected_sha="${DB_RESTORE_EXPECTED_SHA256:-}"
+if [ -n "$expected_sha" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "${expected_sha}  ${src_path}" | sha256sum -c -
+  else
+    echo "[db-restore] warning: sha256sum not available; skipping checksum verification" >&2
+  fi
+fi
 
 try_decrypt() {
   local key_value="$1"
@@ -1283,7 +1389,20 @@ if [ "$is_age_encrypted" = "true" ]; then
     exit 1
   fi
 
-  if [ ! -s "$dump_path" ]; then
+  provided_key="${DB_RESTORE_AGE_PRIVATE_KEY:-}"
+  non_interactive="${DB_RESTORE_NON_INTERACTIVE:-false}"
+  if [ -n "$provided_key" ]; then
+    if ! try_decrypt "$provided_key"; then
+      echo "[db-restore] decryption failed with DB_RESTORE_AGE_PRIVATE_KEY" >&2
+      rm -rf "$tmpdir"
+      exit 1
+    fi
+  else
+    if [ "$non_interactive" = "true" ]; then
+      echo "[db-restore] encrypted backup requires DB_RESTORE_AGE_PRIVATE_KEY (non-interactive)" >&2
+      rm -rf "$tmpdir"
+      exit 1
+    fi
     echo "[db-restore] enter Age private key to decrypt backup:"
     read -r -s input_key
     echo
@@ -1679,5 +1798,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 
 chmod 0644 /etc/cron.d/infrazero-db-backup
+
+restore_databases_from_s3
 
 echo "[db] $(date -Is) complete"

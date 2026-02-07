@@ -14,6 +14,8 @@ Required:
   - `password`
   - `backup_age_public_key`
   - `backup_age_private_key`
+  - `restore_latest` (optional; default `true`)
+  - `restore_dump_path` (optional; used when `restore_latest` is `false`)
 - `infisical_db_backup_age_public_key`
 - `infisical_db_backup_age_private_key`
 
@@ -36,7 +38,9 @@ Infisical DB backups:
 - Creates/updates all roles and DBs listed in `DATABASES_JSON` (from `/etc/infrazero/db.env`).
 - Restores latest backups automatically *only on a fresh cluster*:
   - Uses `DATABASES_JSON_PRIVATE_B64` (base64 of full `databases_json`, including private keys) passed via cloud-init.
-  - Fetches `db/<db_name>/latest-dump.json` and restores the referenced object for each DB.
+  - For each DB:
+    - When `restore_latest` is `true` (default), fetches `db/<db_name>/latest-dump.json` and restores the referenced object.
+    - When `restore_latest` is `false`, restores from `restore_dump_path` (or skips restore if it is empty/missing).
   - Drops and recreates each DB before restoring.
   - Unsets `DATABASES_JSON_PRIVATE_B64` and scrubs its export line in `/opt/infrazero/bootstrap/run.sh` after restore.
 - Installs:

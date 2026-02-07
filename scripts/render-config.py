@@ -328,6 +328,41 @@ def main() -> int:
                     password = str(item.get("password", "")).strip()
                     pub = str(item.get("backup_age_public_key", "")).strip()
                     priv = str(item.get("backup_age_private_key", "")).strip()
+                    restore_latest_raw = item.get("restore_latest", True)
+                    restore_dump_path_raw = item.get("restore_dump_path", "")
+
+                    restore_latest = True
+                    if "restore_latest" in item:
+                        if restore_latest_raw is None:
+                            restore_latest = True
+                        elif isinstance(restore_latest_raw, bool):
+                            restore_latest = restore_latest_raw
+                        else:
+                            errors.append(f"DATABASES_JSON[{idx}].restore_latest must be a boolean")
+                            continue
+
+                    restore_dump_path = ""
+                    if "restore_dump_path" in item:
+                        if restore_dump_path_raw is None:
+                            restore_dump_path = ""
+                        elif isinstance(restore_dump_path_raw, str):
+                            restore_dump_path = restore_dump_path_raw.strip()
+                        else:
+                            errors.append(f"DATABASES_JSON[{idx}].restore_dump_path must be a string")
+                            continue
+
+                    if restore_dump_path and any(ch.isspace() for ch in restore_dump_path):
+                        errors.append(
+                            f"DATABASES_JSON[{idx}].restore_dump_path must not contain whitespace"
+                        )
+                        continue
+                    if restore_dump_path and not (
+                        restore_dump_path.startswith("db/") or restore_dump_path.startswith("s3://")
+                    ):
+                        errors.append(
+                            f"DATABASES_JSON[{idx}].restore_dump_path must start with 'db/' or 's3://'"
+                        )
+                        continue
 
                     if not name:
                         errors.append(f"DATABASES_JSON[{idx}].name is required")
@@ -352,6 +387,8 @@ def main() -> int:
                             "password": password,
                             "backup_age_public_key": pub,
                             "backup_age_private_key": priv,
+                            "restore_latest": restore_latest,
+                            "restore_dump_path": restore_dump_path,
                         }
                     )
 
@@ -366,6 +403,8 @@ def main() -> int:
                             "user": d["user"],
                             "password": d["password"],
                             "backup_age_public_key": d["backup_age_public_key"],
+                            "restore_latest": d.get("restore_latest", True),
+                            "restore_dump_path": d.get("restore_dump_path", ""),
                         }
                         for d in databases_full
                     ]

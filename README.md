@@ -70,6 +70,11 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 `databases_json` is a JSON array of database definitions:
 - `name`, `user`, `password`
 - `backup_age_public_key`, `backup_age_private_key`
+- `restore_latest` (optional boolean; default `true`)
+- `restore_dump_path` (optional string; used only when `restore_latest` is `false`)
+  - If empty/missing, DB bootstrap skips restore for that DB.
+  - Accepts `db/<db_name>/<timestamp>...` or `s3://<bucket>/db/<db_name>/<timestamp>...`
+  - If it ends with `/`, it's treated as a prefix containing `latest-dump.json`.
 
 Example:
 ```json
@@ -79,7 +84,8 @@ Example:
     "user": "messenger",
     "password": "REDACTED",
     "backup_age_public_key": "age1...",
-    "backup_age_private_key": "AGE-SECRET-KEY-1..."
+    "backup_age_private_key": "AGE-SECRET-KEY-1...",
+    "restore_latest": true
   }
 ]
 ```
@@ -173,7 +179,7 @@ sudo systemd-run --unit=infisical-backup-once --wait /opt/infrazero/infisical/ba
 On the **db** node you can restore a specific database backup from S3. The script will:
 - Download the object from S3
 - Detect whether it is age-encrypted or plaintext
-- Prompt for an Age private key if needed
+- Prompt for an Age private key if needed (or set `DB_RESTORE_AGE_PRIVATE_KEY` to avoid the prompt)
 - Reapply Infrazero PostgreSQL settings (listen address + HBA block for k3s/WG)
 - Wipe and recreate the target database before restoring
 
