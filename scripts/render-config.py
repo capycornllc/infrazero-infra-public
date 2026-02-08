@@ -33,6 +33,7 @@ def main() -> int:
     config = load_yaml(config_path)
 
     project_slug = os.getenv("PROJECT_SLUG", "").strip()
+    config_project = str(config.get("project", "")).strip()
     cloud_region = os.getenv("CLOUD_REGION", "").strip()
     environment = str(config.get("environment", "")).strip()
     env_override = os.getenv("ENVIRONMENT", "").strip() or os.getenv("ENV", "").strip()
@@ -40,15 +41,27 @@ def main() -> int:
     if env_override:
         # Environment is controlled by a GitHub secret in workflows; treat config/infra.yaml as a fallback.
         config["environment"] = runtime_environment
-    if project_slug:
+
+    # Base slug used for naming/state partitioning.
+    # Prefer explicit PROJECT_SLUG, but fall back to infra.yaml "project" so ENVIRONMENT alone is sufficient
+    # to prevent "dev" leaking into prod resource names.
+    base_slug = project_slug or config_project
+    if not base_slug:
+        existing_prefix = str(config.get("name_prefix", "")).strip()
+        if existing_prefix:
+            base_slug = existing_prefix
+            if environment and base_slug.endswith(f"-{environment}"):
+                base_slug = base_slug[: -(len(environment) + 1)]
+
+    if base_slug:
         if runtime_environment:
-            config["name_prefix"] = f"{project_slug}-{runtime_environment}"
+            config["name_prefix"] = f"{base_slug}-{runtime_environment}"
         else:
-            config["name_prefix"] = project_slug
+            config["name_prefix"] = base_slug
         if runtime_environment:
             # Keep resource names stable across envs and avoid hardcoded `dev` in infra.yaml.
             config.setdefault("db_volume", {})["name"] = f"{config['name_prefix']}-db"
-            config.setdefault("s3_backend", {})["state_prefix"] = f"{project_slug}/{runtime_environment}"
+            config.setdefault("s3_backend", {})["state_prefix"] = f"{base_slug}/{runtime_environment}"
     if cloud_region:
         config["location"] = cloud_region
 
