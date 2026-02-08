@@ -56,8 +56,11 @@ destroy_targets_prefix() {
 destroy_targets_prefix hcloud_load_balancer_service
 destroy_targets_prefix hcloud_load_balancer_target
 
-destroy_targets hcloud_load_balancer_network.main
-destroy_targets hcloud_load_balancer.main
+# Subnet/network destroy can hang/fail if any LB is still attached to the network.
+destroy_targets_prefix hcloud_load_balancer_network
+destroy_targets_prefix hcloud_load_balancer.
+
+destroy_targets_prefix hcloud_volume_attachment
 destroy_targets \
   hcloud_server.bastion \
   hcloud_server.egress \
@@ -78,5 +81,6 @@ destroy_targets \
   hcloud_placement_group.k3s \
   hcloud_placement_group.db
 
-destroy_targets hcloud_network_subnet.main
-destroy_targets hcloud_network.main
+destroy_targets_prefix hcloud_network_route
+destroy_targets_prefix hcloud_network_subnet
+destroy_targets_prefix hcloud_network.
