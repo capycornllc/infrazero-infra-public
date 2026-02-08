@@ -159,18 +159,41 @@ jobs:
       - name: Validate config
         run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
 
+      - name: Render backend
+        run: python scripts/render-backend.py --config config/infra.yaml --output tofu/backend.hcl
+
+      - name: Init OpenTofu
+        run: tofu -chdir=tofu init -no-color -backend-config=backend.hcl
+
+      - name: Read existing bootstrap artifacts (from state)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          if tofu -chdir=tofu output -no-color -json bootstrap_artifacts > build/bootstrap_artifacts_existing.json; then
+            echo "HAS_EXISTING_BOOTSTRAP_ARTIFACTS=1" >> "$GITHUB_ENV"
+          else
+            echo "WARN: missing OpenTofu output 'bootstrap_artifacts' in state; seeding by regenerating all bootstrap artifacts." >&2
+            echo "{}" > build/bootstrap_artifacts_existing.json
+            echo "HAS_EXISTING_BOOTSTRAP_ARTIFACTS=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Package and upload bootstraps
         run: |
           set -euo pipefail
           mkdir -p build/bootstrap
           chmod +x bootstrap/*.sh
-          for role in bastion egress node1 nodecp node2 db; do
+          roles=(node1 nodecp node2)
+          if [ "${HAS_EXISTING_BOOTSTRAP_ARTIFACTS:-0}" != "1" ]; then
+            roles=(bastion egress node1 nodecp node2 db)
+          fi
+
+          for role in "${roles[@]}"; do
             extra_files=()
-            if [ "$role" = "egress" ]; then
-              extra_files+=(infisical-bootstrap.sh)
-            fi
             if [ "$role" = "node1" ]; then
               extra_files+=(infisical-admin-secret.sh)
+            fi
+            if [ "$role" = "egress" ]; then
+              extra_files+=(infisical-bootstrap.sh)
             fi
             tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh" "${extra_files[@]}"
             sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
@@ -182,20 +205,19 @@ jobs:
           done
 
           manifest='{}'
-          for role in bastion egress node1 nodecp node2 db; do
+          for role in "${roles[@]}"; do
             sha=$(cat "build/bootstrap/${role}.sha256")
             url=$(cat "build/bootstrap/${role}.url")
             manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")
           done
-          echo "$manifest" | jq '.' > build/bootstrap_artifacts.json
+          echo "$manifest" | jq '.' > build/bootstrap_artifacts_new.json
 
-      - name: Render backend + tfvars
+          # Merge: keep existing for non-node roles; override node roles with freshly presigned URLs.
+          jq -s '.[0] * .[1]' build/bootstrap_artifacts_existing.json build/bootstrap_artifacts_new.json > build/bootstrap_artifacts.json
+
+      - name: Render tfvars
         run: |
-          python scripts/render-backend.py --config config/infra.yaml --output tofu/backend.hcl
           python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
-
-      - name: Init OpenTofu
-        run: tofu -chdir=tofu init -no-color -backend-config=backend.hcl
 
       - name: Import SSH keys if exist
         run: python scripts/import-ssh-keys.py --tofu-dir tofu
@@ -218,7 +240,11 @@ jobs:
           for i in $(seq 0 $((count - 1))); do
             replace_args+=("-replace=hcloud_server.k3s[\"${i}\"]")
           done
-          bash scripts/tofu-retry.sh tofu -chdir=tofu apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json "${replace_args[@]}"
+          bash scripts/tofu-retry.sh tofu -chdir=tofu apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
+            -target=hcloud_server.k3s \
+            -target=hcloud_load_balancer_target.k3s \
+            -target=hcloud_load_balancer_target.k3s_api \
+            "${replace_args[@]}"
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

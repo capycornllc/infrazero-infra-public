@@ -152,10 +152,6 @@ resource "hcloud_firewall" "egress" {
     port       = "6443"
     source_ips = [format("%s/32", hcloud_server.egress.ipv4_address), local.egress_cidr]
   }
-
-  apply_to {
-    server = hcloud_server.egress.id
-  }
 }
 
 resource "hcloud_firewall" "k3s_server" {
@@ -317,6 +313,13 @@ resource "hcloud_server" "bastion" {
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_bastion
 
+  lifecycle {
+    # Hetzner treats user_data as ForceNew; we rebuild servers explicitly via
+    # workflow-driven `-replace` rather than replacing on every presigned URL
+    # refresh or cloud-init template tweak.
+    ignore_changes = [user_data]
+  }
+
   labels = {
     project     = var.project
     environment = var.environment
@@ -343,8 +346,13 @@ resource "hcloud_server" "egress" {
   }
 
   ssh_keys           = local.ssh_key_ids
+  firewall_ids       = [hcloud_firewall.egress.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_egress
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   labels = {
     project     = var.project
@@ -378,6 +386,10 @@ resource "hcloud_server" "k3s" {
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_k3s[each.key]
 
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
   labels = {
     project     = var.project
     environment = var.environment
@@ -407,6 +419,10 @@ resource "hcloud_server" "db" {
   firewall_ids       = [hcloud_firewall.db.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_db
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   labels = {
     project     = var.project
