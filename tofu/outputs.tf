@@ -11,7 +11,7 @@ output "load_balancer_public_ipv4" {
 }
 
 output "k3s_api_load_balancer_private_ipv4" {
-  value = local.k3s_ha_enabled ? var.k3s_api_load_balancer.private_ip : ""
+  value = local.k3s_ha_enabled ? local.k3s_api_lb_private_ip : ""
 }
 
 output "private_ips" {

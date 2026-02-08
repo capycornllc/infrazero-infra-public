@@ -453,7 +453,11 @@ resource "hcloud_load_balancer_network" "k3s_api" {
   count            = local.k3s_ha_enabled ? 1 : 0
   load_balancer_id = hcloud_load_balancer.k3s_api[0].id
   network_id       = hcloud_network.main.id
-  ip               = var.k3s_api_load_balancer.private_ip
+  ip               = local.k3s_api_lb_private_ip
+
+  # Prevent flakiness: Hetzner may temporarily report no subnet available if the
+  # subnet isn't fully ready yet.
+  depends_on = [hcloud_network_subnet.main]
 }
 
 resource "hcloud_load_balancer_target" "k3s_api" {
@@ -467,6 +471,10 @@ resource "hcloud_load_balancer_target" "k3s_api" {
   load_balancer_id = hcloud_load_balancer.k3s_api[0].id
   server_id        = each.value.id
   use_private_ip   = true
+
+  # Required for use_private_ip; otherwise this can race and fail with
+  # "no private networks".
+  depends_on = [hcloud_load_balancer_network.k3s_api]
 }
 
 resource "hcloud_load_balancer_service" "k3s_api" {
@@ -492,7 +500,11 @@ resource "hcloud_load_balancer_service" "k3s_api" {
 resource "hcloud_load_balancer_network" "main" {
   load_balancer_id = hcloud_load_balancer.main.id
   network_id       = hcloud_network.main.id
-  ip               = var.load_balancer.private_ip
+  ip               = local.lb_private_ip
+
+  # Prevent flakiness: Hetzner may temporarily report no subnet available if the
+  # subnet isn't fully ready yet.
+  depends_on = [hcloud_network_subnet.main]
 }
 
 resource "hcloud_load_balancer_target" "k3s" {
@@ -502,6 +514,10 @@ resource "hcloud_load_balancer_target" "k3s" {
   load_balancer_id = hcloud_load_balancer.main.id
   server_id        = each.value.id
   use_private_ip   = true
+
+  # Required for use_private_ip; otherwise this can race and fail with
+  # "no private networks".
+  depends_on = [hcloud_load_balancer_network.main]
 }
 
 resource "hcloud_load_balancer_service" "http" {

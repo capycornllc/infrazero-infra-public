@@ -13,6 +13,9 @@ locals {
     )
   )
 
+  # Accept either an IP (10.0.0.1) or CIDR (10.0.0.1/32) in vars; strip CIDR
+  # where an IP is required by the Hetzner API.
+  lb_private_ip        = split("/", var.load_balancer.private_ip)[0]
   lb_private_cidr      = can(regex("/", var.load_balancer.private_ip)) ? var.load_balancer.private_ip : "${var.load_balancer.private_ip}/32"
   bastion_cidr         = "${var.servers.bastion.private_ip}/32"
   egress_cidr          = "${var.servers.egress.private_ip}/32"
@@ -31,7 +34,8 @@ locals {
   k3s_worker_nodes         = slice(var.k3s_nodes, local.k3s_control_planes_count, length(var.k3s_nodes))
   k3s_control_plane_cidrs  = [for node in local.k3s_control_plane_nodes : "${node.private_ip}/32"]
   k3s_worker_cidrs         = [for node in local.k3s_worker_nodes : "${node.private_ip}/32"]
-  k3s_api_lb_cidr          = "${var.k3s_api_load_balancer.private_ip}/32"
+  k3s_api_lb_private_ip    = split("/", var.k3s_api_load_balancer.private_ip)[0]
+  k3s_api_lb_cidr          = can(regex("/", var.k3s_api_load_balancer.private_ip)) ? var.k3s_api_load_balancer.private_ip : "${var.k3s_api_load_balancer.private_ip}/32"
   k3s_server_key           = "0"
   k3s_server_private_ip    = local.k3s_control_plane_nodes[0].private_ip
   k3s_server_cidr          = "${local.k3s_control_plane_nodes[0].private_ip}/32"
