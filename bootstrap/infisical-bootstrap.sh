@@ -296,6 +296,30 @@ for env_def in "${default_envs[@]}"; do
     "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/environments" || true
 done
 
+if [ -z "${INFISICAL_BOOTSTRAP_SECRETS:-}" ] && [ -n "${INFISICAL_BOOTSTRAP_SECRETS_GZ_B64:-}" ]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[infisical-bootstrap] python3 required to decode INFISICAL_BOOTSTRAP_SECRETS_GZ_B64" >&2
+    exit 1
+  fi
+  if ! INFISICAL_BOOTSTRAP_SECRETS=$(python3 - <<'PY'
+import base64
+import gzip
+import os
+import sys
+
+data = os.environ.get("INFISICAL_BOOTSTRAP_SECRETS_GZ_B64", "")
+try:
+    decoded = base64.b64decode(data.encode("utf-8"))
+    sys.stdout.write(gzip.decompress(decoded).decode("utf-8"))
+except Exception:
+    raise SystemExit(1)
+PY
+  ); then
+    echo "[infisical-bootstrap] failed to decode INFISICAL_BOOTSTRAP_SECRETS_GZ_B64" >&2
+    exit 1
+  fi
+fi
+
 if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
   env_list=$(echo "$INFISICAL_BOOTSTRAP_SECRETS" | jq -r '
     [to_entries[] | .value[] | to_entries[] | .value | keys[]] | unique[]' 2>/dev/null)

@@ -1,5 +1,6 @@
 import argparse
 import base64
+import gzip
 import json
 import os
 import sys
@@ -437,6 +438,7 @@ def main() -> int:
 
     infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
     infisical_bootstrap_secrets = ""
+    infisical_bootstrap_secrets_gz_b64 = ""
     if infisical_bootstrap_secrets_raw:
         try:
             parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
@@ -446,7 +448,12 @@ def main() -> int:
             if not isinstance(parsed_bootstrap_secrets, dict):
                 errors.append("INFISICAL_BOOTSTRAP_SECRETS must be a JSON object")
             else:
-                infisical_bootstrap_secrets = json.dumps(parsed_bootstrap_secrets)
+                infisical_bootstrap_secrets = json.dumps(parsed_bootstrap_secrets, separators=(",", ":"))
+                if len(infisical_bootstrap_secrets) > 4096:
+                    infisical_bootstrap_secrets_gz_b64 = base64.b64encode(
+                        gzip.compress(infisical_bootstrap_secrets.encode("utf-8"), compresslevel=9)
+                    ).decode("utf-8")
+                    infisical_bootstrap_secrets = ""
 
     infisical_db_backup_age_public_key = require_env("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY")
     infisical_db_backup_age_private_key = require_env("INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY")
@@ -490,6 +497,8 @@ def main() -> int:
 
     if infisical_bootstrap_secrets:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
+    elif infisical_bootstrap_secrets_gz_b64:
+        egress_secrets["INFISICAL_BOOTSTRAP_SECRETS_GZ_B64"] = infisical_bootstrap_secrets_gz_b64
 
     internal_services = {}
     internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
@@ -748,8 +757,6 @@ def main() -> int:
             "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
         }
     )
-    if infisical_bootstrap_secrets:
-        k3s_server_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
     if project_slug:
         k3s_server_secrets["PROJECT_SLUG"] = project_slug
     if runtime_environment:
