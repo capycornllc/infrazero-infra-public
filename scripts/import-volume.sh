@@ -6,7 +6,7 @@ if [ -z "${DB_VOLUME_NAME:-}" ]; then
   exit 1
 fi
 
-if tofu -no-color state list 2>/dev/null | grep -qx "hcloud_volume.db"; then
+if tofu state list 2>/dev/null | grep -qx "hcloud_volume.db"; then
   echo "DB volume already in state"
   exit 0
 fi
@@ -21,7 +21,7 @@ if [ -n "$volume_id" ]; then
   elif [ -f "tofu.tfvars.json" ]; then
     var_args+=("-var-file=tofu.tfvars.json")
   fi
-  tofu -no-color import "${var_args[@]}" hcloud_volume.db "$volume_id"
+  tofu import -no-color -input=false "${var_args[@]}" hcloud_volume.db "$volume_id"
 else
   echo "No existing volume found; will create on apply"
 fi

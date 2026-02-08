@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-existing=$(tofu -no-color state list 2>/dev/null || true)
+existing=$(tofu state list 2>/dev/null || true)
 
 if [ -z "$existing" ]; then
   echo "No state found; skipping destroy"
@@ -27,7 +27,7 @@ destroy_targets() {
     var_args+=("-var-file=tofu.tfvars.json")
   fi
 
-  tofu -no-color destroy -auto-approve "${var_args[@]}" "${targets[@]}"
+  tofu destroy -no-color -auto-approve "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix() {
@@ -50,7 +50,7 @@ destroy_targets_prefix() {
     var_args+=("-var-file=tofu.tfvars.json")
   fi
 
-  tofu -no-color destroy -auto-approve "${var_args[@]}" "${targets[@]}"
+  tofu destroy -no-color -auto-approve "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix hcloud_load_balancer_service

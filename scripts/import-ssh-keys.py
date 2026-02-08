@@ -180,7 +180,7 @@ def main(argv: List[str]) -> int:
     env = dict(os.environ)
     env.setdefault("TF_INPUT", "0")
     env.setdefault("TOFU_INPUT", "0")
-    state_rc, state_out = _run(["tofu", "-no-color", "state", "list"], cwd=tofu_dir, env=env)
+    state_rc, state_out = _run(["tofu", "state", "list"], cwd=tofu_dir, env=env)
     existing_state = set()
     if state_rc == 0:
         existing_state = {line.strip() for line in state_out.splitlines() if line.strip()}
@@ -204,8 +204,8 @@ def main(argv: List[str]) -> int:
         rc, out = _run(
             [
                 "tofu",
-                "-no-color",
                 "import",
+                "-no-color",
                 "-input=false",
                 f"-var-file={os.path.relpath(tfvars_path, tofu_dir)}",
                 addr,
