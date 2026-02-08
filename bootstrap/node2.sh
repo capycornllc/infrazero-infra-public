@@ -103,7 +103,47 @@ fi
 INSTALL_K3S_EXEC="agent --node-ip ${NODE_IP} --flannel-iface ${PRIVATE_IF}"
 retry 10 5 curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
 chmod +x /tmp/k3s-install.sh
-INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC" K3S_URL="$K3S_SERVER_URL" K3S_TOKEN="$K3S_TOKEN" /tmp/k3s-install.sh
+
+install_k3s() {
+  local attempts=5
+  local delay=10
+  local i
+  for i in $(seq 1 "$attempts"); do
+    set +e
+    INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC" K3S_URL="$K3S_SERVER_URL" K3S_TOKEN="$K3S_TOKEN" /tmp/k3s-install.sh
+    local rc=$?
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+
+    for _ in {1..6}; do
+      if systemctl is-active --quiet k3s-agent; then
+        echo "[k3s-agent] k3s installer failed (rc=$rc) but k3s-agent service is active; continuing"
+        return 0
+      fi
+      sleep 5
+    done
+
+    echo "[k3s-agent] k3s install attempt $i/$attempts failed (rc=$rc)"
+    systemctl status k3s-agent --no-pager || true
+    journalctl -u k3s-agent -b --no-pager -n 200 || true
+
+    if [ "$i" -lt "$attempts" ]; then
+      echo "[k3s-agent] retrying k3s install in ${delay}s"
+      sleep "$delay"
+      delay=$((delay * 2))
+      if [ "$delay" -gt 120 ]; then
+        delay=120
+      fi
+    fi
+  done
+
+  return 1
+}
+
+install_k3s
 
 # Promtail for journald to Loki
 if [ ! -f /usr/local/bin/promtail ]; then
