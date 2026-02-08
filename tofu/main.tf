@@ -57,6 +57,10 @@ resource "hcloud_ssh_key" "ops" {
 resource "hcloud_firewall" "bastion" {
   name = "${var.name_prefix}-bastion-fw"
 
+  apply_to {
+    label_selector = format("project=%s,environment=%s,role=bastion", var.project, var.environment)
+  }
+
   dynamic "rule" {
     for_each = var.wireguard.enabled ? [1] : []
     content {
@@ -97,6 +101,10 @@ resource "hcloud_firewall" "bastion" {
 
 resource "hcloud_firewall" "egress" {
   name = "${var.name_prefix}-egress-fw"
+
+  apply_to {
+    label_selector = format("project=%s,environment=%s,role=egress", var.project, var.environment)
+  }
 
   rule {
     direction  = "in"
@@ -149,6 +157,10 @@ resource "hcloud_firewall" "egress" {
 
 resource "hcloud_firewall" "k3s_server" {
   name = "${var.name_prefix}-k3s-server-fw"
+
+  apply_to {
+    label_selector = format("project=%s,environment=%s,k3s_role=server", var.project, var.environment)
+  }
 
   dynamic "rule" {
     for_each = local.k3s_lb_ports
@@ -222,6 +234,10 @@ resource "hcloud_firewall" "k3s_server" {
 resource "hcloud_firewall" "k3s_agent" {
   name = "${var.name_prefix}-k3s-agent-fw"
 
+  apply_to {
+    label_selector = format("project=%s,environment=%s,k3s_role=agent", var.project, var.environment)
+  }
+
   dynamic "rule" {
     for_each = local.k3s_lb_ports
     iterator = lb_port
@@ -264,6 +280,10 @@ resource "hcloud_firewall" "k3s_agent" {
 resource "hcloud_firewall" "db" {
   name = "${var.name_prefix}-db-fw"
 
+  apply_to {
+    label_selector = format("project=%s,environment=%s,role=db", var.project, var.environment)
+  }
+
   rule {
     direction  = "in"
     protocol   = "tcp"
@@ -302,7 +322,6 @@ resource "hcloud_server" "bastion" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.bastion.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_bastion
 
@@ -339,7 +358,6 @@ resource "hcloud_server" "egress" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.egress.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_egress
 
@@ -375,7 +393,6 @@ resource "hcloud_server" "k3s" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [tonumber(each.key) < local.k3s_control_planes_count ? hcloud_firewall.k3s_server.id : hcloud_firewall.k3s_agent.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_k3s[each.key]
 
@@ -387,6 +404,7 @@ resource "hcloud_server" "k3s" {
     project     = var.project
     environment = var.environment
     role        = each.key == local.k3s_server_key ? "node1" : "node${tonumber(each.key) + 1}"
+    k3s_role    = tonumber(each.key) < local.k3s_control_planes_count ? "server" : "agent"
   }
 
   depends_on = [hcloud_network_subnet.main]
@@ -409,7 +427,6 @@ resource "hcloud_server" "db" {
   }
 
   ssh_keys           = local.ssh_key_ids
-  firewall_ids       = [hcloud_firewall.db.id]
   placement_group_id = local.pg_main_id
   user_data          = local.cloud_init_rendered_db
 
