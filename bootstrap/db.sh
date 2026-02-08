@@ -921,7 +921,10 @@ restore_databases_from_s3() {
     fi
 
     echo "[db] restoring ${db_name} from ${backup_ref}"
-    if ! "${restore_env[@]}" /opt/infrazero/db/restore.sh "$db_name" "$backup_ref"; then
+    # NOTE: `VAR=VAL cmd` environment assignments are parsed by the shell *before* expansion.
+    # When constructed via array expansion, `VAR=VAL` becomes the first "word" and is treated
+    # as a command name. Use `env` to apply the `VAR=VAL` pairs at runtime.
+    if ! env "${restore_env[@]}" /opt/infrazero/db/restore.sh "$db_name" "$backup_ref"; then
       echo "[db] restore failed for ${db_name}" >&2
       failed+=("$db_name")
       continue
