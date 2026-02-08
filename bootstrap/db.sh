@@ -358,6 +358,13 @@ fi
   if [ -n "${K3S_NODE_CIDRS:-}" ]; then
     IFS=',' read -r -a cidrs <<< "$K3S_NODE_CIDRS"
   fi
+
+  # WireGuard is the operator/admin access path; allow connecting to any DB as any user
+  # from the WireGuard client CIDR(s). (Auth still enforced by password/SCRAM.)
+  if [ -n "${WG_CIDR:-}" ]; then
+    echo "host all all ${WG_CIDR} scram-sha-256"
+  fi
+
   while IFS= read -r db_b64; do
     db=$(echo "$db_b64" | base64 -d)
     db_name=$(echo "$db" | jq -r '.name')
@@ -368,9 +375,6 @@ fi
         echo "host ${db_name} ${db_user} ${cidr} scram-sha-256"
       fi
     done
-    if [ -n "${WG_CIDR:-}" ]; then
-      echo "host ${db_name} ${db_user} ${WG_CIDR} scram-sha-256"
-    fi
   done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
   echo "$HBA_END"
 } >> "$HBA_CONF"
@@ -1221,6 +1225,12 @@ apply_infrazero_hba() {
       IFS=',' read -r -a cidrs <<< "$K3S_NODE_CIDRS"
     fi
 
+    # WireGuard is the operator/admin access path; allow connecting to any DB as any user
+    # from the WireGuard client CIDR(s). (Auth still enforced by password/SCRAM.)
+    if [ -n "${WG_CIDR:-}" ]; then
+      echo "host all all ${WG_CIDR} scram-sha-256"
+    fi
+
     while IFS= read -r db_b64; do
       db=$(echo "$db_b64" | base64 -d)
       db_name=$(echo "$db" | jq -r '.name')
@@ -1231,9 +1241,6 @@ apply_infrazero_hba() {
           echo "host ${db_name} ${db_user} ${cidr} scram-sha-256"
         fi
       done
-      if [ -n "${WG_CIDR:-}" ]; then
-        echo "host ${db_name} ${db_user} ${WG_CIDR} scram-sha-256"
-      fi
     done < <(echo "$DATABASES_JSON" | jq -cr '.[] | @base64')
     echo "$hba_end"
   } >> "$HBA_CONF"
