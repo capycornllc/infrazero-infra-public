@@ -21,7 +21,7 @@ if [ -n "$volume_id" ]; then
   elif [ -f "tofu.tfvars.json" ]; then
     var_args+=("-var-file=tofu.tfvars.json")
   fi
-  tofu import -no-color -input=false "${var_args[@]}" hcloud_volume.db "$volume_id"
+  bash "$script_dir/tofu-retry.sh" tofu import -no-color -input=false "${var_args[@]}" hcloud_volume.db "$volume_id"
 else
   echo "No existing volume found; will create on apply"
 fi

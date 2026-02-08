@@ -27,7 +27,9 @@ destroy_targets() {
     var_args+=("-var-file=tofu.tfvars.json")
   fi
 
-  tofu destroy -no-color -auto-approve "${var_args[@]}" "${targets[@]}"
+  local script_dir
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  bash "$script_dir/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix() {
@@ -50,7 +52,9 @@ destroy_targets_prefix() {
     var_args+=("-var-file=tofu.tfvars.json")
   fi
 
-  tofu destroy -no-color -auto-approve "${var_args[@]}" "${targets[@]}"
+  local script_dir
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  bash "$script_dir/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix hcloud_load_balancer_service

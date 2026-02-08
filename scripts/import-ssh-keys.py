@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -55,19 +56,48 @@ def _hcloud_get_json(url: str, token: str) -> Dict[str, Any]:
         },
         method="GET",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        body = ""
+
+    attempts = 6
+    delay = 2.0
+    max_delay = 30.0
+    retryable_http = {429, 500, 502, 503, 504}
+
+    last_err: Optional[BaseException] = None
+    for attempt in range(1, attempts + 1):
         try:
-            body = e.read().decode("utf-8")
-        except Exception:
-            pass
-        raise RuntimeError(f"Hetzner API error {e.code} for {url}: {body or e.reason}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Hetzner API request failed for {url}: {e.reason}") from e
-    return json.loads(payload)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                payload = resp.read().decode("utf-8")
+            return json.loads(payload)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8")
+            except Exception:
+                pass
+
+            if e.code not in retryable_http or attempt >= attempts:
+                raise RuntimeError(f"Hetzner API error {e.code} for {url}: {body or e.reason}") from e
+
+            retry_after = e.headers.get("Retry-After", "") if hasattr(e, "headers") else ""
+            sleep_for = delay
+            if retry_after and retry_after.isdigit():
+                sleep_for = float(retry_after)
+            _eprint(f"Hetzner API rate limited/unavailable (http {e.code}); retry {attempt}/{attempts} in {sleep_for:.0f}s")
+            time.sleep(sleep_for)
+            delay = min(max_delay, delay * 2.0)
+            last_err = e
+            continue
+        except urllib.error.URLError as e:
+            if attempt >= attempts:
+                raise RuntimeError(f"Hetzner API request failed for {url}: {e.reason}") from e
+            _eprint(f"Hetzner API request failed ({e.reason}); retry {attempt}/{attempts} in {delay:.0f}s")
+            time.sleep(delay)
+            delay = min(max_delay, delay * 2.0)
+            last_err = e
+            continue
+
+    # Should be unreachable, but keep mypy happy.
+    raise RuntimeError(f"Hetzner API request failed for {url}") from last_err
 
 
 def _list_hcloud_ssh_keys(token: str) -> List[Dict[str, Any]]:

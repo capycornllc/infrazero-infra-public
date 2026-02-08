@@ -230,7 +230,7 @@ jobs:
         run: python scripts/import-ssh-keys.py --tofu-dir tofu
 
       - name: Apply OpenTofu
-        run: tofu -chdir=tofu apply -no-color -auto-approve -var-file=tofu.tfvars.json
+        run: bash scripts/tofu-retry.sh tofu -chdir=tofu apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
