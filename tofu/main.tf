@@ -145,13 +145,6 @@ resource "hcloud_firewall" "egress" {
     port       = "22"
     source_ips = [local.bastion_cidr]
   }
-
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "6443"
-    source_ips = [format("%s/32", hcloud_server.egress.ipv4_address), local.egress_cidr]
-  }
 }
 
 resource "hcloud_firewall" "k3s_server" {
