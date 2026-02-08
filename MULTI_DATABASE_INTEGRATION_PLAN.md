@@ -15,7 +15,7 @@ Required:
   - `backup_age_public_key`
   - `backup_age_private_key`
   - `restore_latest` (optional; default `true`)
-  - `restore_dump_path` (optional; used when `restore_latest` is `false`)
+  - `restore_dump_path` (optional; used when `restore_latest` is `false`; S3 key or full `s3://...`)
 - `infisical_db_backup_age_public_key`
 - `infisical_db_backup_age_private_key`
 

@@ -331,7 +331,8 @@ if ! echo "$DATABASES_JSON_EFFECTIVE" | jq -e '
     and (.backup_age_public_key|type=="string" and length>0)
     and ((has("restore_latest")|not) or (.restore_latest==null) or (.restore_latest|type=="boolean"))
     and ((.restore_dump_path // "") | (type=="string" and (test("[[:space:]]")|not)))
-    and (((.restore_dump_path // "")|length==0) or ((.restore_dump_path // "") | test("^(db/|s3://)")))
+    and (((.restore_dump_path // "")|length==0) or (((.restore_dump_path // "") | test("^/"))|not))
+    and (((.restore_dump_path // "")|length==0) or (((.restore_dump_path // "") | test("^https?://"))|not))
   )' >/dev/null 2>&1; then
   echo "[db] DATABASES_JSON entries must include non-empty name/user/password/backup_age_public_key (no whitespace in name/user) and valid optional restore_latest/restore_dump_path" >&2
   exit 1

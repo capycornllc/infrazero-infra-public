@@ -364,11 +364,14 @@ def main() -> int:
                             f"DATABASES_JSON[{idx}].restore_dump_path must not contain whitespace"
                         )
                         continue
-                    if restore_dump_path and not (
-                        restore_dump_path.startswith("db/") or restore_dump_path.startswith("s3://")
-                    ):
+                    if restore_dump_path and restore_dump_path.startswith("/"):
                         errors.append(
-                            f"DATABASES_JSON[{idx}].restore_dump_path must start with 'db/' or 's3://'"
+                            f"DATABASES_JSON[{idx}].restore_dump_path must not start with '/'"
+                        )
+                        continue
+                    if restore_dump_path and restore_dump_path.startswith(("http://", "https://")):
+                        errors.append(
+                            f"DATABASES_JSON[{idx}].restore_dump_path must be an S3 key or s3:// URL (http(s) not supported)"
                         )
                         continue
 

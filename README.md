@@ -73,7 +73,7 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `restore_latest` (optional boolean; default `true`)
 - `restore_dump_path` (optional string; used only when `restore_latest` is `false`)
   - If empty/missing, DB bootstrap skips restore for that DB.
-  - Accepts `db/<db_name>/<timestamp>...` or `s3://<bucket>/db/<db_name>/<timestamp>...`
+  - Accepts any S3 key (relative to `db_backup_bucket`) or a full `s3://<bucket>/<key>`.
   - If it ends with `/`, it's treated as a prefix containing `latest-dump.json`.
 
 Example:
