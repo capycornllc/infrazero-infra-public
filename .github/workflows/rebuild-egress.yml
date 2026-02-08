@@ -194,15 +194,18 @@ jobs:
           python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
       - name: Init OpenTofu
-        run: tofu -chdir=tofu init -backend-config=backend.hcl
+        run: tofu -chdir=tofu init -no-color -backend-config=backend.hcl
+
+      - name: Import SSH keys if exist
+        run: python scripts/import-ssh-keys.py --tofu-dir tofu
 
       - name: Replace egress
-        run: tofu -chdir=tofu apply -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.egress
+        run: tofu -chdir=tofu apply -no-color -auto-approve -var-file=tofu.tfvars.json -replace=hcloud_server.egress
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: |
-          LB_IP=$(tofu -chdir=tofu output -raw load_balancer_public_ipv4)
-          BASTION_IP=$(tofu -chdir=tofu output -raw bastion_public_ipv4)
-          EGRESS_IP=$(tofu -chdir=tofu output -raw egress_public_ipv4)
+          LB_IP=$(tofu -chdir=tofu output -no-color -raw load_balancer_public_ipv4)
+          BASTION_IP=$(tofu -chdir=tofu output -no-color -raw bastion_public_ipv4)
+          EGRESS_IP=$(tofu -chdir=tofu output -no-color -raw egress_public_ipv4)
           python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP" --egress-public-ip "$EGRESS_IP"
