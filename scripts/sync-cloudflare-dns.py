@@ -262,7 +262,8 @@ def main() -> int:
     for app in deployed_apps:
         fqdn = str(app.get("fqdn", "")).strip()
         if fqdn:
-            records.append({"name": fqdn, "content": args.lb_ip, "proxied": True})
+            # Deployed app domains should be DNS-only (Cloudflare proxy disabled).
+            records.append({"name": fqdn, "content": args.lb_ip, "proxied": False})
 
     for entry in additional_hostnames:
         hostname = str(entry.get("hostname", "")).strip()
