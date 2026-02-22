@@ -123,6 +123,17 @@ fi
 
 tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
 
+revoke_bootstrap_admin_token_artifacts() {
+  echo "[infisical-admin-secret] revoking bootstrap admin token artifacts"
+  kubectl -n kube-system delete secret infisical-admin-token --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n infisical-bootstrap delete secret infisical-admin-token --ignore-not-found >/dev/null 2>&1 || true
+
+  if [ -n "${admin_key:-}" ] && [ "$admin_key" != "null" ]; then
+    aws --endpoint-url "$S3_ENDPOINT" s3 rm "s3://${DB_BACKUP_BUCKET}/${admin_key}" >/dev/null 2>&1 || true
+  fi
+  aws --endpoint-url "$S3_ENDPOINT" s3 rm "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" >/dev/null 2>&1 || true
+}
+
 workdir=$(mktemp -d /run/infisical-admin-secret.XXXX)
 chmod 700 "$workdir"
 
@@ -1067,6 +1078,8 @@ else
   echo "[infisical-admin-secret] gitops overlay already up to date"
   git_push_changes || true
 fi
+
+revoke_bootstrap_admin_token_artifacts
 
 rm -f "$workdir/age.key" "$workdir/admin.token" "$workdir/admin.token.age" "$workdir/latest-tokens.json"
 rm -rf "$workdir"

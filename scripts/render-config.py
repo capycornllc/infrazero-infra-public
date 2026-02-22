@@ -1,14 +1,18 @@
 import argparse
 import base64
 import gzip
+import hashlib
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
 
 REQUIRED_ROLES = ["bastion", "egress", "node1", "nodecp", "node2", "db"]
+BUNDLE_SENTINEL = "__BUNDLE__"
 
 
 def load_yaml(path: Path):
@@ -18,6 +22,116 @@ def load_yaml(path: Path):
 def load_json(path: Path):
     # utf-8-sig allows JSON files written with a UTF-8 BOM (common on Windows).
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _normalize_s3_endpoint(raw: str) -> str:
+    endpoint = str(raw or "").strip()
+    if not endpoint:
+        return ""
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint
+    return f"https://{endpoint}"
+
+
+def hydrate_env_from_bootstrap_bundle(errors: list[str]) -> None:
+    bundle_key = (os.getenv("BOOTSTRAP_BUNDLE_S3_KEY") or os.getenv("bootstrap_bundle_s3_key") or "").strip()
+    if not bundle_key:
+        return
+
+    bucket = (os.getenv("INFRA_STATE_BUCKET") or os.getenv("infra_state_bucket") or "").strip()
+    endpoint = _normalize_s3_endpoint(os.getenv("S3_ENDPOINT") or os.getenv("s3_endpoint"))
+    access_key = (os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
+    secret_key = (os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
+    region = (
+        os.getenv("S3_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or os.getenv("CLOUD_REGION")
+        or "us-east-1"
+    ).strip()
+
+    if not bucket:
+        errors.append("BOOTSTRAP_BUNDLE_S3_KEY is set, but INFRA_STATE_BUCKET is missing")
+        return
+    if not endpoint:
+        errors.append("BOOTSTRAP_BUNDLE_S3_KEY is set, but S3_ENDPOINT is missing")
+        return
+    if not access_key or not secret_key:
+        errors.append("BOOTSTRAP_BUNDLE_S3_KEY is set, but S3 credentials are missing")
+        return
+
+    expected_sha = (os.getenv("BOOTSTRAP_BUNDLE_SHA256") or os.getenv("bootstrap_bundle_sha256") or "").strip().lower()
+    if expected_sha and (len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha)):
+        errors.append("BOOTSTRAP_BUNDLE_SHA256 must be a 64-character lowercase hex string")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="infrazero-bootstrap-bundle-") as tmpdir:
+        bundle_path = Path(tmpdir) / "bundle.json"
+        cmd = [
+            "aws",
+            "--endpoint-url",
+            endpoint,
+            "s3",
+            "cp",
+            f"s3://{bucket}/{bundle_key}",
+            str(bundle_path),
+        ]
+        env = os.environ.copy()
+        env["AWS_ACCESS_KEY_ID"] = access_key
+        env["AWS_SECRET_ACCESS_KEY"] = secret_key
+        env["AWS_DEFAULT_REGION"] = region
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+        except FileNotFoundError:
+            errors.append("aws CLI is required to fetch BOOTSTRAP_BUNDLE_S3_KEY")
+            return
+        except subprocess.CalledProcessError as exc:
+            details = (exc.stderr or exc.stdout or "").strip().replace("\n", " ")
+            if len(details) > 240:
+                details = f"{details[:240]}..."
+            errors.append(f"Failed to fetch bootstrap bundle from s3://{bucket}/{bundle_key}: {details}")
+            return
+
+        try:
+            raw = bundle_path.read_bytes()
+        except OSError as exc:
+            errors.append(f"Unable to read downloaded bootstrap bundle: {exc}")
+            return
+
+    if expected_sha:
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if actual_sha != expected_sha:
+            errors.append(
+                f"BOOTSTRAP_BUNDLE_SHA256 mismatch for {bundle_key}: expected {expected_sha}, got {actual_sha}"
+            )
+            return
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        errors.append(f"Bootstrap bundle is not valid UTF-8 JSON: {exc}")
+        return
+
+    if not isinstance(payload, dict):
+        errors.append("Bootstrap bundle payload must be a JSON object")
+        return
+
+    env_map = payload.get("env")
+    if not isinstance(env_map, dict):
+        errors.append("Bootstrap bundle payload must contain an object field named 'env'")
+        return
+
+    for key, value in env_map.items():
+        if not isinstance(key, str):
+            continue
+        current = os.getenv(key, "")
+        if current and current.strip() and current.strip() != BUNDLE_SENTINEL:
+            continue
+        if value is None:
+            os.environ[key] = ""
+        elif isinstance(value, (dict, list)):
+            os.environ[key] = json.dumps(value, separators=(",", ":"))
+        else:
+            os.environ[key] = str(value)
 
 
 def main() -> int:
@@ -31,6 +145,13 @@ def main() -> int:
     output_path = Path(args.output)
 
     config = load_yaml(config_path)
+    bundle_errors: list[str] = []
+    hydrate_env_from_bootstrap_bundle(bundle_errors)
+    if bundle_errors:
+        print("Bootstrap bundle hydration failed:", file=sys.stderr)
+        for error in bundle_errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
 
     project_slug = os.getenv("PROJECT_SLUG", "").strip()
     config_project = str(config.get("project", "")).strip()
@@ -192,6 +313,8 @@ def main() -> int:
         if value is None:
             return ""
         return value
+
+    deployment_id = optional_env("INFRAZERO_DEPLOYMENT_ID")
 
     debug_root_password = optional_env("DEBUG_ROOT_PASSWORD")
     config["debug_root_password"] = debug_root_password
@@ -490,6 +613,7 @@ def main() -> int:
         "INFISICAL_POSTGRES_PASSWORD": require_env("INFISICAL_POSTGRES_PASSWORD"),
         "INFISICAL_ENCRYPTION_KEY": require_env("INFISICAL_ENCRYPTION_KEY"),
         "INFISICAL_AUTH_SECRET": require_env("INFISICAL_AUTH_SECRET"),
+        "INFRAZERO_DEPLOYMENT_ID": deployment_id,
     }
 
     db_secrets = {
@@ -502,6 +626,7 @@ def main() -> int:
         "S3_REGION": s3_region,
         "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
         "K3S_NODE_CIDRS": ",".join(k3s_node_cidrs),
+        "INFRAZERO_DEPLOYMENT_ID": deployment_id,
     }
 
     infisical_site_url = os.getenv("INFISICAL_SITE_URL", "").strip()
@@ -619,7 +744,15 @@ def main() -> int:
         "WG_LISTEN_PORT": require_env("WG_LISTEN_PORT"),
         "WG_ADMIN_PEERS_JSON": require_env("WG_ADMIN_PEERS_JSON"),
         "WG_PRESHARED_KEYS_JSON": require_env("WG_PRESHARED_KEYS_JSON"),
+        "INFRAZERO_DEPLOYMENT_ID": deployment_id,
     }
+
+    if project_slug:
+        bastion_secrets["PROJECT_SLUG"] = project_slug
+        db_secrets["PROJECT_SLUG"] = project_slug
+    if runtime_environment:
+        bastion_secrets["ENVIRONMENT"] = runtime_environment
+        db_secrets["ENVIRONMENT"] = runtime_environment
 
     gh_token = optional_env("GH_TOKEN")
     gh_owner = optional_env("GH_OWNER")
@@ -713,7 +846,12 @@ def main() -> int:
         "K3S_API_LB_PRIVATE_IP": k3s_api_lb_private_ip,
         "K3S_SERVER_TAINT": str(bool(k3s_cfg.get("server_taint", False))).lower(),
         "EGRESS_LOKI_URL": f"http://{egress_private_ip}:3100/loki/api/v1/push" if egress_private_ip else "",
+        "INFRAZERO_DEPLOYMENT_ID": deployment_id,
     }
+    if project_slug:
+        k3s_secrets["PROJECT_SLUG"] = project_slug
+    if runtime_environment:
+        k3s_secrets["ENVIRONMENT"] = runtime_environment
 
     k3s_server_secrets = {}
     k3s_agent_secrets = {}
@@ -776,6 +914,8 @@ def main() -> int:
         k3s_server_secrets["ENVIRONMENT"] = runtime_environment
     if infisical_project_name:
         k3s_server_secrets["INFISICAL_PROJECT_NAME"] = infisical_project_name
+    if deployment_id:
+        k3s_server_secrets["INFRAZERO_DEPLOYMENT_ID"] = deployment_id
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type

@@ -217,6 +217,63 @@ for i in {1..30}; do
   sleep 2
 done
 
+# Promtail for journald to local Loki
+if [ ! -f /usr/local/bin/promtail ]; then
+  if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+    unzip -o /tmp/promtail.zip -d /usr/local/bin
+    mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
+    chmod +x /usr/local/bin/promtail
+  else
+    echo "[egress] promtail download failed; skipping"
+  fi
+fi
+
+mkdir -p /etc/promtail /var/lib/promtail
+PROMTAIL_DEPLOYMENT_ID="${INFRAZERO_DEPLOYMENT_ID:-unknown}"
+PROMTAIL_PROJECT="${PROJECT_SLUG:-unknown}"
+PROMTAIL_ENV="${ENVIRONMENT:-unknown}"
+cat > /etc/promtail/promtail.yml <<EOF
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+positions:
+  filename: /var/lib/promtail/positions.yaml
+clients:
+  - url: http://127.0.0.1:3100/loki/api/v1/push
+    external_labels:
+      host: ${HOSTNAME}
+      role: egress
+      deployment_id: ${PROMTAIL_DEPLOYMENT_ID}
+      project: ${PROMTAIL_PROJECT}
+      env: ${PROMTAIL_ENV}
+scrape_configs:
+  - job_name: systemd-journal
+    journal:
+      max_age: 12h
+      labels:
+        job: systemd-journal
+    relabel_configs:
+      - source_labels: ["__journal__systemd_unit"]
+        target_label: unit
+EOF
+
+cat > /etc/systemd/system/promtail.service <<'EOF'
+[Unit]
+Description=Promtail log shipper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/promtail.yml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now promtail
+
 # Infisical + Postgres + Redis
 INFISICAL_FQDN="${INFISICAL_FQDN:-}"
 GRAFANA_FQDN="${GRAFANA_FQDN:-}"
@@ -344,6 +401,51 @@ server {
     proxy_set_header X-Forwarded-Host \$host;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection "upgrade";
+  }
+}
+EOF
+}
+
+write_loki_https_server_block() {
+  local name="$1"
+  cat >> "$INFISICAL_NGINX_CONF" <<EOF
+server {
+  listen 80;
+  server_name ${name};
+  return 301 https://\$host\$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  server_name ${name};
+
+  ssl_certificate ${INFISICAL_TLS_CERT};
+  ssl_certificate_key ${INFISICAL_TLS_KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers HIGH:!aNULL:!MD5;
+
+  location / {
+    if (\$request_method = OPTIONS) {
+      add_header Access-Control-Allow-Origin "*" always;
+      add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+      add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+      add_header Access-Control-Max-Age 86400 always;
+      add_header Content-Length 0;
+      return 204;
+    }
+
+    proxy_pass http://127.0.0.1:3100;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
   }
 }
 EOF
@@ -486,7 +588,7 @@ EOF
     write_https_server_block "$GRAFANA_FQDN" "http://127.0.0.1:3000"
   fi
   if [ -n "$LOKI_FQDN" ]; then
-    write_https_server_block "$LOKI_FQDN" "http://127.0.0.1:3100"
+    write_loki_https_server_block "$LOKI_FQDN"
   fi
   if [ -n "$ARGOCD_FQDN" ]; then
     if [ -n "$ARGOCD_UPSTREAM_ADDR" ]; then

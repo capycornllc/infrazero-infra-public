@@ -157,6 +157,9 @@ if [ ! -f /usr/local/bin/promtail ]; then
 fi
 
 mkdir -p /etc/promtail /var/lib/promtail
+PROMTAIL_DEPLOYMENT_ID="${INFRAZERO_DEPLOYMENT_ID:-unknown}"
+PROMTAIL_PROJECT="${PROJECT_SLUG:-unknown}"
+PROMTAIL_ENV="${ENVIRONMENT:-unknown}"
 cat > /etc/promtail/promtail.yml <<EOF
 server:
   http_listen_port: 9080
@@ -168,6 +171,9 @@ clients:
     external_labels:
       host: ${HOSTNAME}
       role: k3s-agent
+      deployment_id: ${PROMTAIL_DEPLOYMENT_ID}
+      project: ${PROMTAIL_PROJECT}
+      env: ${PROMTAIL_ENV}
 scrape_configs:
   - job_name: journal
     journal:

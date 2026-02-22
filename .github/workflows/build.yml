@@ -53,6 +53,9 @@ jobs:
       INTERNAL_SERVICES_DOMAINS_JSON: ${{ secrets.internal_services_domains_json }}
       DEPLOYED_APPS_JSON: ${{ secrets.deployed_apps_json }}
       ADDITIONAL_HOSTNAMES: ${{ secrets.additional_hostnames }}
+      BOOTSTRAP_BUNDLE_S3_KEY: ${{ secrets.bootstrap_bundle_s3_key }}
+      BOOTSTRAP_BUNDLE_SHA256: ${{ secrets.bootstrap_bundle_sha256 }}
+      INFRAZERO_DEPLOYMENT_ID: ${{ secrets.infrazero_deployment_id }}
       GH_TOKEN: ${{ secrets.gh_token }}
       GH_OWNER: ${{ secrets.gh_owner }}
       GH_INFRA_REPO: ${{ secrets.gh_infra_repo }}
@@ -241,3 +244,4 @@ jobs:
           BASTION_IP=$(tofu -chdir=tofu output -no-color -raw bastion_public_ipv4)
           EGRESS_IP=$(tofu -chdir=tofu output -no-color -raw egress_public_ipv4)
           python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP" --egress-public-ip "$EGRESS_IP"
+
