@@ -81,8 +81,30 @@ def resolve_deployed_apps():
             raise ValueError(f"DEPLOYED_APPS_JSON[{idx}] must be an object")
         fqdn = str(app.get("fqdn", "")).strip()
         if not fqdn:
+            workloads = app.get("workloads")
+            if isinstance(workloads, list):
+                preferred_fqdn = ""
+                fallback_fqdn = ""
+                for workload in workloads:
+                    if not isinstance(workload, dict):
+                        continue
+                    workload_fqdn = str(workload.get("fqdn", "")).strip()
+                    if not workload_fqdn:
+                        continue
+                    kind = str(workload.get("kind", "")).strip().lower()
+                    expose_raw = workload.get("expose")
+                    expose = expose_raw is True or str(expose_raw).strip().lower() == "true"
+                    if not fallback_fqdn and kind == "deployment":
+                        fallback_fqdn = workload_fqdn
+                    if kind == "deployment" and expose:
+                        preferred_fqdn = workload_fqdn
+                        break
+                fqdn = preferred_fqdn or fallback_fqdn
+        if not fqdn:
             raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required")
-        deployed_apps.append(app)
+        normalized_app = dict(app)
+        normalized_app["fqdn"] = fqdn
+        deployed_apps.append(normalized_app)
     return deployed_apps
 
 
