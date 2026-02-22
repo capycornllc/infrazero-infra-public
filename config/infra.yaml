@@ -81,7 +81,7 @@ load_balancer:
 
 db_volume:
   name: infrazero-dev-db
-  size: 50
+  size: 200
   format: ext4
 
 placement_groups:

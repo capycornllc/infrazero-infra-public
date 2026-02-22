@@ -128,6 +128,7 @@ Full list (including future epics): `docs/secrets-list.md`
 - `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.
 - Backend config skips AWS region validation to allow Hetzner regions (e.g. `fsn1`).
+- When validating outbound egress IP, use IPv4 explicitly: `curl -4 ifconfig.me`. If IPv6 is enabled, plain `curl ifconfig.me` may return an IPv6 address that bypasses IPv4-only egress/NAT.
 
 ## Bootstrap scripts (manual re-run)
 If cloud-init fails or you need to re-run a role bootstrap, the scripts are designed to be **idempotent** and can be run manually on the target host. After the initial run, the extracted scripts live under `/opt/infrazero/bootstrap/`.

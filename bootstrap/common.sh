@@ -188,6 +188,19 @@ net.ipv6.conf.lo.disable_ipv6=1
 EOF
 sysctl --system || true
 
+# Some distros/interfaces can keep IPv6 enabled even after setting the "all/default"
+# sysctls; force-disable per-interface too so outbound doesn't bypass IPv4-only egress.
+if [ -d /proc/sys/net/ipv6/conf ]; then
+  for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+    echo 1 > "$f" 2>/dev/null || true
+  done
+fi
+
+# Best-effort cleanup of any existing IPv6 default route (harmless if already gone).
+if command -v ip >/dev/null 2>&1; then
+  ip -6 route del default 2>/dev/null || true
+fi
+
 # WG routing handled via network route (preferred) or SNAT on bastion; see bastion bootstrap.
 
 # Persist network CIDR for routing helpers
