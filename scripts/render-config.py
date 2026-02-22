@@ -593,6 +593,8 @@ def main() -> int:
 
     infisical_db_backup_age_public_key = require_env("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY")
     infisical_db_backup_age_private_key = require_env("INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY")
+    infisical_name = optional_env("INFISICAL_NAME") or "Infrazero"
+    infisical_surname = optional_env("INFISICAL_SURNAME") or "Admin"
 
     egress_secrets = {
         "S3_ACCESS_KEY_ID": s3_access_key,
@@ -605,8 +607,8 @@ def main() -> int:
         "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
         "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
         "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),
-        "INFISICAL_NAME": require_env("INFISICAL_NAME"),
-        "INFISICAL_SURNAME": require_env("INFISICAL_SURNAME"),
+        "INFISICAL_NAME": infisical_name,
+        "INFISICAL_SURNAME": infisical_surname,
         "INFISICAL_PROJECT_NAME": infisical_project_name,
         "INFISICAL_POSTGRES_DB": require_env("INFISICAL_POSTGRES_DB"),
         "INFISICAL_POSTGRES_USER": require_env("INFISICAL_POSTGRES_USER"),
