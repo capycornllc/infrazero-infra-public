@@ -275,7 +275,14 @@ def main() -> int:
         for key, fqdn in internal_fqdns.items():
             ip = service_ip_map.get(key)
             if ip:
-                records.append({"name": fqdn, "content": ip, "proxied": False})
+                records.append(
+                    {
+                        "name": fqdn,
+                        "content": ip,
+                        "proxied": False,
+                        "required": key in REQUIRED_SERVICE_KEYS,
+                    }
+                )
 
     if deployed_apps and not args.lb_ip.strip():
         print("lb-ip is required when deployed_apps_json is provided.", file=sys.stderr)
@@ -285,13 +292,27 @@ def main() -> int:
         fqdn = str(app.get("fqdn", "")).strip()
         if fqdn:
             # Deployed app domains should be DNS-only (Cloudflare proxy disabled).
-            records.append({"name": fqdn, "content": args.lb_ip, "proxied": False})
+            records.append(
+                {
+                    "name": fqdn,
+                    "content": args.lb_ip,
+                    "proxied": False,
+                    "required": False,
+                }
+            )
 
     for entry in additional_hostnames:
         hostname = str(entry.get("hostname", "")).strip()
         ip = str(entry.get("ip", "")).strip()
         if hostname and ip:
-            records.append({"name": hostname, "content": ip, "proxied": False})
+            records.append(
+                {
+                    "name": hostname,
+                    "content": ip,
+                    "proxied": False,
+                    "required": False,
+                }
+            )
 
     if not records:
         print("No FQDNs provided; skipping DNS sync.")
@@ -312,11 +333,21 @@ def main() -> int:
         if not zones:
             raise RuntimeError("No active zones found in Cloudflare account.")
 
+        applied_records = 0
         for record in records:
             zone_id = find_zone_id(record["name"], zones)
             if not zone_id:
-                raise RuntimeError(f"No matching Cloudflare zone for {record['name']}")
+                if record.get("required"):
+                    raise RuntimeError(f"No matching Cloudflare zone for required record {record['name']}")
+                print(
+                    f"Warning: skipping unmanaged DNS record {record['name']} (no matching Cloudflare zone).",
+                    file=sys.stderr,
+                )
+                continue
             upsert_record(token, zone_id, record["name"], record["content"], record["proxied"])
+            applied_records += 1
+        if applied_records == 0:
+            raise RuntimeError("No DNS records matched zones in this Cloudflare account.")
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
