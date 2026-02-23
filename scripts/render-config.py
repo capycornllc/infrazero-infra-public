@@ -299,18 +299,30 @@ def main() -> int:
     missing_env = []
     errors = []
 
+    def read_env(name: str) -> str:
+        value = os.getenv(name, "")
+        if value is None:
+            return ""
+        trimmed = value.strip()
+        # If bundle hydration left a sentinel unresolved, treat it as empty.
+        if trimmed == BUNDLE_SENTINEL:
+            return ""
+        return trimmed
+
     def require_env(name: str) -> str:
-        value = os.getenv(name, "").strip()
+        value = read_env(name)
         if not value:
             missing_env.append(name)
         return value
 
     def optional_env(name: str) -> str:
-        return os.getenv(name, "").strip()
+        return read_env(name)
 
     def optional_multiline_env(name: str) -> str:
         value = os.getenv(name)
         if value is None:
+            return ""
+        if value.strip() == BUNDLE_SENTINEL:
             return ""
         return value
 
@@ -336,7 +348,7 @@ def main() -> int:
     ) or optional_multiline_env("nodes_secondary_cloud_init")
 
     def parse_int_env(name: str, minimum: int | None = None) -> int | None:
-        raw = os.getenv(name, "").strip()
+        raw = read_env(name)
         if not raw:
             return None
         try:
@@ -350,7 +362,7 @@ def main() -> int:
         return value
 
     def parse_json_env(name: str):
-        raw = os.getenv(name, "").strip()
+        raw = read_env(name)
         if not raw:
             return None
         try:
@@ -403,11 +415,11 @@ def main() -> int:
     k3s_token_name = str(k3s_cfg.get("token_name", "")).strip()
     if not k3s_token_name:
         k3s_token_name = "K3S_TOKEN"
-    k3s_token = os.getenv(k3s_token_name, "").strip()
+    k3s_token = read_env(k3s_token_name)
     if not k3s_token:
-        k3s_token = os.getenv(k3s_token_name.upper(), "").strip()
+        k3s_token = read_env(k3s_token_name.upper())
     if not k3s_token:
-        k3s_token = os.getenv("K3S_TOKEN", "").strip()
+        k3s_token = read_env("K3S_TOKEN")
     if not k3s_token:
         missing_env.append(k3s_token_name)
 
@@ -575,7 +587,7 @@ def main() -> int:
     external_sync_enabled = str(external_sync_raw).strip().lower() in ("1", "true", "yes", "on")
     external_sync_marker_key = optional_env("INFISICAL_EXTERNAL_SYNC_MARKER_KEY")
 
-    infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
+    infisical_bootstrap_secrets_raw = optional_env("INFISICAL_BOOTSTRAP_SECRETS")
     infisical_bootstrap_secrets = ""
     infisical_bootstrap_secrets_gz_b64 = ""
     if external_sync_enabled:

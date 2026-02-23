@@ -38,6 +38,8 @@ jobs:
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
       INFISICAL_BOOTSTRAP_SECRETS: ${{ secrets.infisical_bootstrap_secrets }}
+      INFRAZERO_EXTERNAL_SECRETS_SYNC: ${{ secrets.infrazero_external_secrets_sync }}
+      INFISICAL_EXTERNAL_SYNC_MARKER_KEY: ${{ secrets.infisical_external_sync_marker_key }}
       INFISICAL_PROJECT_NAME: ${{ secrets.infisical_project_name }}
       BASTION_CLOUD_INIT: ${{ secrets.bastion_cloud_init }}
       EGRESS_CLOUD_INIT: ${{ secrets.egress_cloud_init }}
