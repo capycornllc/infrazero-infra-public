@@ -526,8 +526,6 @@ def main() -> int:
         "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
         "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
         "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),
-        "INFISICAL_NAME": require_env("INFISICAL_NAME"),
-        "INFISICAL_SURNAME": require_env("INFISICAL_SURNAME"),
         "INFISICAL_PROJECT_NAME": infisical_project_name,
         "INFISICAL_POSTGRES_DB": require_env("INFISICAL_POSTGRES_DB"),
         "INFISICAL_POSTGRES_USER": require_env("INFISICAL_POSTGRES_USER"),
@@ -833,8 +831,6 @@ def main() -> int:
             "INFISICAL_PASSWORD": egress_secrets.get("INFISICAL_PASSWORD", ""),
             "INFISICAL_EMAIL": egress_secrets.get("INFISICAL_EMAIL", ""),
             "INFISICAL_ORGANIZATION": egress_secrets.get("INFISICAL_ORGANIZATION", ""),
-            "INFISICAL_NAME": egress_secrets.get("INFISICAL_NAME", ""),
-            "INFISICAL_SURNAME": egress_secrets.get("INFISICAL_SURNAME", ""),
         }
     )
     k3s_server_secrets.update(

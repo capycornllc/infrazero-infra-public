@@ -45,8 +45,6 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `infisical_project_name`
 - `infisical_email`
 - `infisical_organization`
-- `infisical_name`
-- `infisical_surname`
 - `infisical_postgres_db`
 - `infisical_postgres_user`
 - `infisical_postgres_password`

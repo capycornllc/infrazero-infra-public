@@ -29,8 +29,6 @@ jobs:
       INFISICAL_PASSWORD: ${{ secrets.infisical_password }}
       INFISICAL_EMAIL: ${{ secrets.infisical_email }}
       INFISICAL_ORGANIZATION: ${{ secrets.infisical_organization }}
-      INFISICAL_NAME: ${{ secrets.infisical_name }}
-      INFISICAL_SURNAME: ${{ secrets.infisical_surname }}
       INFISICAL_POSTGRES_DB: ${{ secrets.infisical_postgres_db }}
       INFISICAL_POSTGRES_USER: ${{ secrets.infisical_postgres_user }}
       INFISICAL_POSTGRES_PASSWORD: ${{ secrets.infisical_postgres_password }}

@@ -33,8 +33,6 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_password`
 - `infisical_email`
 - `infisical_organization`
-- `infisical_name`
-- `infisical_surname`
 - `infisical_postgres_db`
 - `infisical_postgres_user`
 - `infisical_postgres_password`
