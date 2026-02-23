@@ -27,6 +27,20 @@ def parse_json_env(name: str):
         raise ValueError(f"{name} is not valid JSON: {exc}") from exc
 
 
+def to_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
 def resolve_internal_fqdns():
     internal_services = {}
     internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
@@ -69,21 +83,48 @@ def resolve_internal_fqdns():
     return internal_services
 
 
-def resolve_deployed_apps():
-    deployed_apps = []
+def resolve_deployed_app_fqdns():
+    fqdns: list[str] = []
     deployed_apps_json = parse_json_env("DEPLOYED_APPS_JSON")
     if deployed_apps_json is None:
-        return deployed_apps
+        return fqdns
     if not isinstance(deployed_apps_json, list):
         raise ValueError("DEPLOYED_APPS_JSON must be a JSON array")
     for idx, app in enumerate(deployed_apps_json):
         if not isinstance(app, dict):
             raise ValueError(f"DEPLOYED_APPS_JSON[{idx}] must be an object")
-        fqdn = str(app.get("fqdn", "")).strip()
-        if not fqdn:
-            raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required")
-        deployed_apps.append(app)
-    return deployed_apps
+
+        workloads = app.get("workloads")
+        if workloads is None:
+            # Legacy payload shape: app-level fqdn.
+            fqdn = str(app.get("fqdn", "")).strip()
+            if not fqdn:
+                raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required for legacy entries without workloads")
+            fqdns.append(fqdn)
+            continue
+
+        if not isinstance(workloads, list):
+            raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].workloads must be a JSON array")
+
+        for workload_idx, workload in enumerate(workloads):
+            if not isinstance(workload, dict):
+                raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}] must be an object")
+
+            kind = str(workload.get("kind", workload.get("type", ""))).strip().lower()
+            if kind in {"cronjob", "job"}:
+                continue
+
+            fqdn = str(workload.get("fqdn", "")).strip()
+            expose = to_bool(workload.get("expose"), default=bool(fqdn))
+            if expose and not fqdn:
+                raise ValueError(
+                    f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}].fqdn is required when expose=true"
+                )
+            if expose and fqdn:
+                fqdns.append(fqdn)
+
+    # Preserve first-seen order while removing duplicates.
+    return list(dict.fromkeys(fqdns))
 
 
 def resolve_additional_hostnames():
@@ -225,7 +266,7 @@ def main() -> int:
 
     try:
         internal_fqdns = resolve_internal_fqdns()
-        deployed_apps = resolve_deployed_apps()
+        deployed_app_fqdns = resolve_deployed_app_fqdns()
         additional_hostnames = resolve_additional_hostnames()
     except ValueError as exc:
         print(f"Invalid DNS inputs: {exc}", file=sys.stderr)
@@ -255,15 +296,13 @@ def main() -> int:
             if ip:
                 records.append({"name": fqdn, "content": ip, "proxied": False})
 
-    if deployed_apps and not args.lb_ip.strip():
+    if deployed_app_fqdns and not args.lb_ip.strip():
         print("lb-ip is required when deployed_apps_json is provided.", file=sys.stderr)
         return 1
 
-    for app in deployed_apps:
-        fqdn = str(app.get("fqdn", "")).strip()
-        if fqdn:
-            # Deployed app domains should be DNS-only (Cloudflare proxy disabled).
-            records.append({"name": fqdn, "content": args.lb_ip, "proxied": False})
+    for fqdn in deployed_app_fqdns:
+        # Deployed app domains should be DNS-only (Cloudflare proxy disabled).
+        records.append({"name": fqdn, "content": args.lb_ip, "proxied": False})
 
     for entry in additional_hostnames:
         hostname = str(entry.get("hostname", "")).strip()

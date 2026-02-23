@@ -236,6 +236,19 @@ def main() -> int:
             errors.append(f"{name} is not valid JSON: {exc}")
             return None
 
+    def parse_bool(value, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+        return bool(value)
+
     servers_cfg = config.get("servers", {})
     k3s_control_planes = config.get("k3s_control_planes")
     k3s_workers = config.get("k3s_workers")
@@ -586,6 +599,7 @@ def main() -> int:
                 internal_services[key] = fqdn
 
     deployed_apps = []
+    deployed_app_fqdns = []
     deployed_apps_json = parse_json_env("DEPLOYED_APPS_JSON")
     if deployed_apps_json is not None:
         if not isinstance(deployed_apps_json, list):
@@ -595,14 +609,45 @@ def main() -> int:
                 if not isinstance(app, dict):
                     errors.append(f"DEPLOYED_APPS_JSON[{idx}] must be an object")
                     continue
-                fqdn = str(app.get("fqdn", "")).strip()
-                if not fqdn:
-                    errors.append(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required")
-                    continue
                 deployed_apps.append(app)
 
+                workloads = app.get("workloads")
+                if workloads is None:
+                    # Legacy payload shape: app-level fqdn.
+                    fqdn = str(app.get("fqdn", "")).strip()
+                    if not fqdn:
+                        errors.append(
+                            f"DEPLOYED_APPS_JSON[{idx}].fqdn is required for legacy entries without workloads"
+                        )
+                        continue
+                    deployed_app_fqdns.append(fqdn)
+                    continue
+
+                if not isinstance(workloads, list):
+                    errors.append(f"DEPLOYED_APPS_JSON[{idx}].workloads must be a JSON array")
+                    continue
+
+                for workload_idx, workload in enumerate(workloads):
+                    if not isinstance(workload, dict):
+                        errors.append(f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}] must be an object")
+                        continue
+
+                    kind = str(workload.get("kind", workload.get("type", ""))).strip().lower()
+                    if kind in {"cronjob", "job"}:
+                        continue
+
+                    fqdn = str(workload.get("fqdn", "")).strip()
+                    expose = parse_bool(workload.get("expose"), default=bool(fqdn))
+                    if expose and not fqdn:
+                        errors.append(
+                            f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}].fqdn is required when expose=true"
+                        )
+                        continue
+                    if expose and fqdn:
+                        deployed_app_fqdns.append(fqdn)
+
     cloudflare_api_token = optional_env("CLOUDFLARE_API_TOKEN")
-    if (internal_services or deployed_apps) and not cloudflare_api_token:
+    if (internal_services or deployed_app_fqdns) and not cloudflare_api_token:
         missing_env.append("CLOUDFLARE_API_TOKEN")
 
     if cloudflare_api_token:
