@@ -38,7 +38,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_postgres_db`
 - `infisical_postgres_user`
 - `infisical_postgres_password`
-- `infisical_encryption_key`
+- `infisical_encryption_key` (must be exactly 32 hex chars, 16 bytes)
 - `infisical_auth_secret`
 - `infisical_db_backup_age_public_key`
 - `infisical_db_backup_age_private_key`

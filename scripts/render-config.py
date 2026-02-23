@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -610,6 +611,9 @@ def main() -> int:
 
     infisical_db_backup_age_public_key = require_env("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY")
     infisical_db_backup_age_private_key = require_env("INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY")
+    infisical_encryption_key = require_env("INFISICAL_ENCRYPTION_KEY")
+    if infisical_encryption_key and not re.fullmatch(r"[0-9a-fA-F]{32}", infisical_encryption_key):
+        errors.append("INFISICAL_ENCRYPTION_KEY must be exactly 32 hexadecimal characters (16 bytes)")
     infisical_name = optional_env("INFISICAL_NAME") or "Infrazero"
     infisical_surname = optional_env("INFISICAL_SURNAME") or "Admin"
 
@@ -630,7 +634,7 @@ def main() -> int:
         "INFISICAL_POSTGRES_DB": require_env("INFISICAL_POSTGRES_DB"),
         "INFISICAL_POSTGRES_USER": require_env("INFISICAL_POSTGRES_USER"),
         "INFISICAL_POSTGRES_PASSWORD": require_env("INFISICAL_POSTGRES_PASSWORD"),
-        "INFISICAL_ENCRYPTION_KEY": require_env("INFISICAL_ENCRYPTION_KEY"),
+        "INFISICAL_ENCRYPTION_KEY": infisical_encryption_key,
         "INFISICAL_AUTH_SECRET": require_env("INFISICAL_AUTH_SECRET"),
         "INFRAZERO_DEPLOYMENT_ID": deployment_id,
     }

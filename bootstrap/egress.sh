@@ -47,6 +47,11 @@ require_env "INFISICAL_POSTGRES_PASSWORD"
 require_env "INFISICAL_ENCRYPTION_KEY"
 require_env "INFISICAL_AUTH_SECRET"
 
+if ! [[ "$INFISICAL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{32}$ ]]; then
+  echo "[egress] INFISICAL_ENCRYPTION_KEY must be exactly 32 hex characters (16 bytes)" >&2
+  exit 1
+fi
+
 emit_postcheck() {
   local component="$1"
   local status="${2:-ok}"
