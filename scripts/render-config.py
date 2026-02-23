@@ -463,6 +463,7 @@ def main() -> int:
     infisical_project_name = require_env("INFISICAL_PROJECT_NAME")
 
     split_bootstrap_secrets = {}
+    merged_split_bootstrap_payload = {}
     split_prefix = "INFISICAL_BOOTSTRAP_SECRETS__"
     for env_name, env_value in os.environ.items():
         normalized_name = env_name.upper()
@@ -479,6 +480,16 @@ def main() -> int:
         if not isinstance(parsed, dict):
             errors.append(f"{normalized_name} must be a JSON object")
             continue
+        invalid_folder_payload = False
+        for folder, folder_payload in parsed.items():
+            if not isinstance(folder_payload, list):
+                errors.append(
+                    f"{normalized_name}.{folder} must be a JSON array"
+                )
+                invalid_folder_payload = True
+                break
+        if invalid_folder_payload:
+            continue
         split_bootstrap_secrets[normalized_name] = json.dumps(parsed, separators=(",", ":"))
 
     infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
@@ -491,7 +502,21 @@ def main() -> int:
         ).strip()
     infisical_bootstrap_secrets = ""
     infisical_bootstrap_secrets_gz_b64 = ""
-    if not split_bootstrap_secrets:
+    if split_bootstrap_secrets:
+        for env_name in sorted(split_bootstrap_secrets):
+            parsed_split_payload = json.loads(split_bootstrap_secrets[env_name])
+            for folder, folder_payload in parsed_split_payload.items():
+                merged_split_bootstrap_payload.setdefault(folder, [])
+                merged_split_bootstrap_payload[folder].extend(folder_payload)
+
+        merged_bootstrap_json = json.dumps(merged_split_bootstrap_payload, separators=(",", ":"))
+        if len(merged_bootstrap_json) > 4096:
+            infisical_bootstrap_secrets_gz_b64 = base64.b64encode(
+                gzip.compress(merged_bootstrap_json.encode("utf-8"), compresslevel=9)
+            ).decode("utf-8")
+        else:
+            infisical_bootstrap_secrets = merged_bootstrap_json
+    else:
         if infisical_bootstrap_secrets_raw:
             try:
                 parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
@@ -550,10 +575,7 @@ def main() -> int:
     if infisical_site_url:
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
 
-    if split_bootstrap_secrets:
-        for env_name, value in sorted(split_bootstrap_secrets.items()):
-            egress_secrets[env_name] = value
-    elif infisical_bootstrap_secrets:
+    if infisical_bootstrap_secrets:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
     elif infisical_bootstrap_secrets_gz_b64:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS_GZ_B64"] = infisical_bootstrap_secrets_gz_b64
