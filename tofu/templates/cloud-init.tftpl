@@ -191,11 +191,11 @@ write_files:
       emit_stage() {
         local status="$1"
         shift || true
-        local marker="INFRAZERO_STAGE role=${ROLE} status=${status}"
+        local marker="INFRAZERO_STAGE role=$${ROLE} status=$${status}"
         if [ "$#" -gt 0 ]; then
-          marker="${marker} $*"
+          marker="$${marker} $*"
         fi
-        echo "[bootstrap] ${marker}"
+        echo "[bootstrap] $${marker}"
         if command -v logger >/dev/null 2>&1; then
           logger -t infrazero-bootstrap -- "$marker" || true
         fi
@@ -203,7 +203,7 @@ write_files:
 
       on_bootstrap_error() {
         local exit_code="$?"
-        emit_stage "failed" "exit_code=${exit_code}"
+        emit_stage "failed" "exit_code=$${exit_code}"
         exit "$exit_code"
       }
       trap on_bootstrap_error ERR
