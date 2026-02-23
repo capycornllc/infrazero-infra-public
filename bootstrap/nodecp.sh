@@ -32,6 +32,16 @@ require_env "K3S_TOKEN"
 require_env "K3S_SERVER_URL"
 require_env "EGRESS_LOKI_URL"
 
+emit_postcheck() {
+  local component="$1"
+  local status="${2:-ok}"
+  local marker="INFRAZERO_POSTCHECK role=nodecp component=${component} status=${status}"
+  echo "[nodecp] ${marker}"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t infrazero-bootstrap -- "$marker" || true
+  fi
+}
+
 retry() {
   local attempts="$1"
   local delay="$2"
@@ -159,14 +169,21 @@ install_k3s
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
+k3s_ready="false"
 for i in {1..60}; do
   if kubectl get nodes >/dev/null 2>&1; then
     if kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready" {exit 0} END {exit 1}'; then
+      k3s_ready="true"
       break
     fi
   fi
   sleep 2
 done
+if [ "$k3s_ready" != "true" ]; then
+  echo "[nodecp] k3s did not become Ready in time" >&2
+  exit 1
+fi
+emit_postcheck "k3s" "ok"
 
 # Promtail for journald to Loki
 if [ ! -f /usr/local/bin/promtail ]; then
@@ -203,9 +220,35 @@ scrape_configs:
       max_age: 12h
       labels:
         job: systemd-journal
+        source: journald
+        vm_role: nodecp
     relabel_configs:
       - source_labels: ['__journal__systemd_unit']
         target_label: 'unit'
+  - job_name: cloud-init-output
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init-output
+          vm_role: nodecp
+          __path__: /var/log/cloud-init-output.log
+  - job_name: cloud-init
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init
+          vm_role: nodecp
+          __path__: /var/log/cloud-init.log
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: bootstrap
+          vm_role: nodecp
+          __path__: /var/log/infrazero-bootstrap.log
 EOF
 
 cat > /etc/systemd/system/promtail.service <<'EOF'

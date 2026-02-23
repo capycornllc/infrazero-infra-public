@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LOG_FILE="/var/log/infrazero-bootstrap.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 echo "[db] $(date -Is) start"
 
 load_env() {
@@ -44,6 +47,16 @@ require_env "S3_ENDPOINT"
 require_env "S3_REGION"
 require_env "DB_BACKUP_BUCKET"
 require_env "K3S_NODE_CIDRS"
+
+emit_postcheck() {
+  local component="$1"
+  local status="${2:-ok}"
+  local marker="INFRAZERO_POSTCHECK role=db component=${component} status=${status}"
+  echo "[db] ${marker}"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t infrazero-bootstrap -- "$marker" || true
+  fi
+}
 
 db_type_lower=$(echo "$DB_TYPE" | tr '[:upper:]' '[:lower:]')
 if [ "$db_type_lower" != "postgresql" ] && [ "$db_type_lower" != "postgres" ]; then
@@ -472,6 +485,7 @@ if ! wait_for_postgres; then
   echo "[db] postgresql did not become ready" >&2
   exit 1
 fi
+emit_postcheck "postgres" "ok"
 
 psql_as_postgres() {
   sudo -u postgres psql -v ON_ERROR_STOP=1 "$@"
@@ -1811,5 +1825,92 @@ EOF
 chmod 0644 /etc/cron.d/infrazero-db-backup
 
 restore_databases_from_s3
+
+# Promtail for journald + cloud-init/bootstrap files to Loki
+if [ -n "${EGRESS_LOKI_URL:-}" ]; then
+  if [ ! -f /usr/local/bin/promtail ]; then
+    if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+      unzip -o /tmp/promtail.zip -d /usr/local/bin
+      mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
+      chmod +x /usr/local/bin/promtail
+    else
+      echo "[db] promtail download failed; skipping" >&2
+    fi
+  fi
+
+  mkdir -p /etc/promtail /var/lib/promtail
+  PROMTAIL_DEPLOYMENT_ID="${INFRAZERO_DEPLOYMENT_ID:-unknown}"
+  PROMTAIL_PROJECT="${PROJECT_SLUG:-unknown}"
+  PROMTAIL_ENV="${ENVIRONMENT:-unknown}"
+  cat > /etc/promtail/promtail.yml <<EOF
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+positions:
+  filename: /var/lib/promtail/positions.yaml
+clients:
+  - url: ${EGRESS_LOKI_URL}
+    external_labels:
+      host: ${HOSTNAME}
+      role: db
+      deployment_id: ${PROMTAIL_DEPLOYMENT_ID}
+      project: ${PROMTAIL_PROJECT}
+      env: ${PROMTAIL_ENV}
+scrape_configs:
+  - job_name: systemd-journal
+    journal:
+      max_age: 12h
+      labels:
+        job: systemd-journal
+        source: journald
+        vm_role: db
+    relabel_configs:
+      - source_labels: ["__journal__systemd_unit"]
+        target_label: unit
+  - job_name: cloud-init-output
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init-output
+          vm_role: db
+          __path__: /var/log/cloud-init-output.log
+  - job_name: cloud-init
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init
+          vm_role: db
+          __path__: /var/log/cloud-init.log
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: bootstrap
+          vm_role: db
+          __path__: /var/log/infrazero-bootstrap.log
+EOF
+
+  cat > /etc/systemd/system/promtail.service <<'EOF'
+[Unit]
+Description=Promtail log shipper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/promtail.yml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now promtail
+else
+  echo "[db] EGRESS_LOKI_URL missing; skipping promtail setup" >&2
+fi
 
 echo "[db] $(date -Is) complete"

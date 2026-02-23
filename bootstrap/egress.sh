@@ -47,6 +47,16 @@ require_env "INFISICAL_POSTGRES_PASSWORD"
 require_env "INFISICAL_ENCRYPTION_KEY"
 require_env "INFISICAL_AUTH_SECRET"
 
+emit_postcheck() {
+  local component="$1"
+  local status="${2:-ok}"
+  local marker="INFRAZERO_POSTCHECK role=egress component=${component} status=${status}"
+  echo "[egress] ${marker}"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t infrazero-bootstrap -- "$marker" || true
+  fi
+}
+
 export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
@@ -209,13 +219,20 @@ EOF
 
 compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
 
+loki_ready="false"
 for i in {1..30}; do
   if curl -sf http://127.0.0.1:3100/ready >/dev/null; then
     echo "[egress] loki ready"
+    loki_ready="true"
     break
   fi
   sleep 2
 done
+if [ "$loki_ready" != "true" ]; then
+  echo "[egress] loki did not become ready in time" >&2
+  exit 1
+fi
+emit_postcheck "loki" "ok"
 
 # Promtail for journald to local Loki
 if [ ! -f /usr/local/bin/promtail ]; then
@@ -252,9 +269,35 @@ scrape_configs:
       max_age: 12h
       labels:
         job: systemd-journal
+        source: journald
+        vm_role: egress
     relabel_configs:
       - source_labels: ["__journal__systemd_unit"]
         target_label: unit
+  - job_name: cloud-init-output
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init-output
+          vm_role: egress
+          __path__: /var/log/cloud-init-output.log
+  - job_name: cloud-init
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init
+          vm_role: egress
+          __path__: /var/log/cloud-init.log
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: bootstrap
+          vm_role: egress
+          __path__: /var/log/infrazero-bootstrap.log
 EOF
 
 cat > /etc/systemd/system/promtail.service <<'EOF'
@@ -738,6 +781,21 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
     echo "[egress] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
   fi
 fi
+
+infisical_health_url="${INFISICAL_SITE_URL%/}/"
+infisical_ready="false"
+for i in {1..30}; do
+  if curl -kfsS --connect-timeout 5 --max-time 10 -o /dev/null "$infisical_health_url"; then
+    infisical_ready="true"
+    break
+  fi
+  sleep 4
+done
+if [ "$infisical_ready" != "true" ]; then
+  echo "[egress] infisical did not become reachable at ${infisical_health_url}" >&2
+  exit 1
+fi
+emit_postcheck "infisical" "ok"
 
 cat > /opt/infrazero/infisical/backup.sh <<'EOF'
 #!/usr/bin/env bash

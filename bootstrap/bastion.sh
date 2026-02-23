@@ -31,6 +31,16 @@ require_env "EGRESS_LOKI_URL"
 
 DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
 
+emit_postcheck() {
+  local component="$1"
+  local status="${2:-ok}"
+  local marker="INFRAZERO_POSTCHECK role=bastion component=${component} status=${status}"
+  echo "[bastion] ${marker}"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t infrazero-bootstrap -- "$marker" || true
+  fi
+}
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
@@ -73,6 +83,12 @@ while IFS='|' read -r name pubkey ip; do
 done <<< "$peers"
 
 systemctl enable --now wg-quick@wg0
+
+if ! ip link show wg0 >/dev/null 2>&1; then
+  echo "[bastion] WireGuard interface wg0 is missing after startup" >&2
+  exit 1
+fi
+emit_postcheck "wireguard" "ok"
 
 # Enable routing between WireGuard and private subnet
 cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
@@ -435,9 +451,35 @@ scrape_configs:
       max_age: 12h
       labels:
         job: systemd-journal
+        source: journald
+        vm_role: bastion
     relabel_configs:
       - source_labels: ["__journal__systemd_unit"]
         target_label: unit
+  - job_name: cloud-init-output
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init-output
+          vm_role: bastion
+          __path__: /var/log/cloud-init-output.log
+  - job_name: cloud-init
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init
+          vm_role: bastion
+          __path__: /var/log/cloud-init.log
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: bootstrap
+          vm_role: bastion
+          __path__: /var/log/infrazero-bootstrap.log
 EOF
 
 cat > /etc/systemd/system/promtail.service <<'EOF'

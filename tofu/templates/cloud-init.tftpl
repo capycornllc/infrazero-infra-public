@@ -188,6 +188,28 @@ write_files:
       ensure_private_dns
       wait_for_bootstrap_url "$URL"
 
+      emit_stage() {
+        local status="$1"
+        shift || true
+        local marker="INFRAZERO_STAGE role=${ROLE} status=${status}"
+        if [ "$#" -gt 0 ]; then
+          marker="${marker} $*"
+        fi
+        echo "[bootstrap] ${marker}"
+        if command -v logger >/dev/null 2>&1; then
+          logger -t infrazero-bootstrap -- "$marker" || true
+        fi
+      }
+
+      on_bootstrap_error() {
+        local exit_code="$?"
+        emit_stage "failed" "exit_code=${exit_code}"
+        exit "$exit_code"
+      }
+      trap on_bootstrap_error ERR
+
+      emit_stage "start"
+
       echo "[bootstrap] downloading $ROLE artifact"
       curl -fsSL "$URL" -o "$ROLE.tar.zst"
       echo "$SHA  $ROLE.tar.zst" | sha256sum -c -
@@ -199,7 +221,11 @@ write_files:
 
       echo "[bootstrap] running common + role scripts"
       ./common.sh
+      emit_stage "common_done"
       "./$ROLE.sh"
+      emit_stage "role_done"
+      emit_stage "ready"
+      trap - ERR
 
 %{ if length(egress_env) > 0 ~}
   - path: /etc/infrazero/egress.env

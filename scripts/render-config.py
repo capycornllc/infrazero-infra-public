@@ -856,6 +856,9 @@ def main() -> int:
         missing_env.append("GH_TOKEN")
 
     egress_private_ip = str(servers_cfg.get("egress", {}).get("private_ip", "")).strip()
+    if egress_private_ip:
+        db_secrets["EGRESS_LOKI_URL"] = f"http://{egress_private_ip}:3100/loki/api/v1/push"
+
     k3s_server_url = ""
     if k3s_control_planes_count > 1 and k3s_api_lb_private_ip:
         k3s_server_url = f"https://{k3s_api_lb_private_ip}:6443"

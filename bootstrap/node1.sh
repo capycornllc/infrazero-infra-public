@@ -31,6 +31,16 @@ require_env() {
 require_env "K3S_TOKEN"
 require_env "EGRESS_LOKI_URL"
 
+emit_postcheck() {
+  local component="$1"
+  local status="${2:-ok}"
+  local marker="INFRAZERO_POSTCHECK role=node1 component=${component} status=${status}"
+  echo "[node1] ${marker}"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t infrazero-bootstrap -- "$marker" || true
+  fi
+}
+
 retry() {
   local attempts="$1"
   local delay="$2"
@@ -176,14 +186,21 @@ install_k3s
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
+k3s_ready="false"
 for i in {1..60}; do
   if kubectl get nodes >/dev/null 2>&1; then
     if kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready" {exit 0} END {exit 1}'; then
+      k3s_ready="true"
       break
     fi
   fi
   sleep 2
 done
+if [ "$k3s_ready" != "true" ]; then
+  echo "[node1] k3s did not become Ready in time" >&2
+  exit 1
+fi
+emit_postcheck "k3s" "ok"
 
 if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
   kubectl -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":"web","nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":"websecure","nodePort":30443}]}}' || true
@@ -213,9 +230,18 @@ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 # the 256KiB limit on large CRDs (e.g. ApplicationSet).
 retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
+argocd_ready="true"
 for dep in argocd-server argocd-repo-server argocd-application-controller argocd-dex-server; do
-  kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s || true
+  if ! kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s; then
+    argocd_ready="false"
+    break
+  fi
 done
+if [ "$argocd_ready" != "true" ]; then
+  echo "[node1] ArgoCD deployments did not become ready" >&2
+  exit 1
+fi
+emit_postcheck "argocd" "ok"
 
 if [ -n "${ARGOCD_ADMIN_PASSWORD:-}" ]; then
   if command -v htpasswd >/dev/null 2>&1; then
@@ -345,9 +371,35 @@ scrape_configs:
       max_age: 12h
       labels:
         job: systemd-journal
+        source: journald
+        vm_role: node1
     relabel_configs:
       - source_labels: ['__journal__systemd_unit']
         target_label: 'unit'
+  - job_name: cloud-init-output
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init-output
+          vm_role: node1
+          __path__: /var/log/cloud-init-output.log
+  - job_name: cloud-init
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: cloud-init
+          vm_role: node1
+          __path__: /var/log/cloud-init.log
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: bootstrap-file
+          source: bootstrap
+          vm_role: node1
+          __path__: /var/log/infrazero-bootstrap.log
 EOF
 
 cat > /etc/systemd/system/promtail.service <<'EOF'
