@@ -329,11 +329,17 @@ def main() -> int:
         if not zones:
             raise RuntimeError("No active zones found in Cloudflare account.")
 
+        skipped_no_zone = 0
         for record in records:
             zone_id = find_zone_id(record["name"], zones)
             if not zone_id:
-                raise RuntimeError(f"No matching Cloudflare zone for {record['name']}")
+                print(f"No matching Cloudflare zone for {record['name']}; skipping.", file=sys.stderr)
+                skipped_no_zone += 1
+                continue
             upsert_record(token, zone_id, record["name"], record["content"], record["proxied"])
+
+        if skipped_no_zone:
+            print(f"Cloudflare DNS: skipped {skipped_no_zone} record(s) with no matching zone")
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
