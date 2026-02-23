@@ -124,6 +124,44 @@ wait_for_url() {
   return 1
 }
 
+log_infisical_response() {
+  local context="$1"
+  local file="$2"
+
+  if [ ! -f "$file" ]; then
+    echo "[infisical-bootstrap] ${context} response file missing" >&2
+    return 0
+  fi
+
+  # Redact sensitive values before logging response payloads.
+  local sanitized
+  sanitized=$(jq -c '
+    def sanitize:
+      if type == "object" then
+        with_entries(
+          .value |= sanitize
+          | if (.key | test("token|secret|password|authorization|private[_-]?key|api[_-]?key|jwt|access[_-]?token|refresh[_-]?token"; "i"))
+            then .value = "***REDACTED***"
+            else .
+            end
+        )
+      elif type == "array" then
+        map(sanitize)
+      else
+        .
+      end;
+    sanitize
+  ' "$file" 2>/dev/null || true)
+
+  if [ -n "$sanitized" ]; then
+    echo "[infisical-bootstrap] ${context} response: ${sanitized}" >&2
+  else
+    local bytes
+    bytes=$(wc -c < "$file" 2>/dev/null || echo "0")
+    echo "[infisical-bootstrap] ${context} response unavailable (non-JSON, ${bytes} bytes)" >&2
+  fi
+}
+
 wait_for_url "https://${INFISICAL_FQDN}" || {
   echo "[infisical-bootstrap] infisical_fqdn not ready (still returning 5xx/000)" >&2
   exit 1
@@ -188,7 +226,7 @@ if [[ "$bootstrap_code" != 2* ]]; then
     exit 1
   fi
   echo "[infisical-bootstrap] bootstrap failed (http ${bootstrap_code})" >&2
-  cat "$bootstrap_tmp" >&2 || true
+  log_infisical_response "bootstrap" "$bootstrap_tmp"
   exit 1
 fi
 
@@ -196,7 +234,7 @@ ADMIN_TOKEN=$(jq -r '.identity.credentials.token // empty' "$bootstrap_tmp")
 
 if [ -z "$ADMIN_TOKEN" ]; then
   echo "[infisical-bootstrap] bootstrap response missing required fields" >&2
-  cat "$bootstrap_tmp" >&2 || true
+  log_infisical_response "bootstrap" "$bootstrap_tmp"
   exit 1
 fi
 
@@ -216,28 +254,56 @@ project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
   "${INFISICAL_API_BASE}/v1/projects/slug/${PROJECT_SLUG}" || true)
 
 if [ "$project_code" = "404" ]; then
-  project_description="${INFISICAL_PROJECT_DESCRIPTION:-${PROJECT_NAME} secrets}"
+  # Keep payload minimal for API compatibility across Infisical versions.
+  # Older/newer versions can reject extra fields (for example slug/description).
   create_payload=$(jq -n \
     --arg name "$PROJECT_NAME" \
-    --arg slug "$PROJECT_SLUG" \
-    --arg desc "$project_description" \
-    '{projectName:$name, projectDescription:$desc, slug:$slug, template:"default", type:"secret-manager", shouldCreateDefaultEnvs:false}')
+    '{projectName:$name, template:"default", type:"secret-manager", shouldCreateDefaultEnvs:true}')
   project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$create_payload" \
     "${INFISICAL_API_BASE}/v1/projects" || true)
-  if [[ "$project_code" != 2* ]]; then
-    echo "[infisical-bootstrap] failed to create project (http ${project_code})" >&2
-    cat "$project_tmp" >&2 || true
-    exit 1
+fi
+
+if [[ "$project_code" != 2* ]]; then
+  # Fallback: project may already exist (e.g. 422) or slug lookup may be unavailable.
+  # Resolve by listing projects and matching slug/name.
+  projects_tmp=$(mktemp)
+  projects_code=$(curl -sS -o "$projects_tmp" -w "%{http_code}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${INFISICAL_API_BASE}/v1/projects" || true)
+  if [[ "$projects_code" == 2* ]]; then
+    resolved_project=$(jq -c --arg slug "$PROJECT_SLUG" --arg name "$PROJECT_NAME" '
+      .projects
+      | map(select((.slug // "") == $slug))
+      | if length > 0 then .[0] else empty end
+    ' "$projects_tmp")
+    if [ -z "$resolved_project" ] || [ "$resolved_project" = "null" ]; then
+      resolved_project=$(jq -c --arg name "$PROJECT_NAME" '
+        .projects
+        | map(select((.name // "") == $name))
+        | if length > 0 then .[0] else empty end
+      ' "$projects_tmp")
+    fi
+    if [ -n "$resolved_project" ] && [ "$resolved_project" != "null" ]; then
+      jq -n --argjson project "$resolved_project" '{project:$project}' > "$project_tmp"
+      project_code="200"
+    fi
   fi
+  rm -f "$projects_tmp"
+fi
+
+if [[ "$project_code" != 2* ]]; then
+  echo "[infisical-bootstrap] failed to create/resolve project (http ${project_code})" >&2
+  log_infisical_response "project create/resolve" "$project_tmp"
+  exit 1
 fi
 
 PROJECT_ID=$(jq -r '.id // .project.id // empty' "$project_tmp")
 if [ -z "$PROJECT_ID" ]; then
   echo "[infisical-bootstrap] unable to resolve project id" >&2
-  cat "$project_tmp" >&2 || true
+  log_infisical_response "project id lookup" "$project_tmp"
   exit 1
 fi
 
@@ -274,7 +340,7 @@ if [[ "$membership_code" != 2* ]]; then
     echo "[infisical-bootstrap] admin already added to project; continuing"
   else
     echo "[infisical-bootstrap] failed to add admin to project (http ${membership_code})" >&2
-    cat "$membership_tmp" >&2 || true
+    log_infisical_response "project membership" "$membership_tmp"
     exit 1
   fi
 fi
@@ -443,7 +509,7 @@ upsert_secret() {
 
   if [[ "$code" != 2* ]]; then
     echo "[infisical-bootstrap] failed to upsert secret ${secret_name} (${env_slug}:${secret_path})" >&2
-    cat "$tmp" >&2 || true
+    log_infisical_response "secret upsert ${secret_name}" "$tmp"
   fi
   rm -f "$tmp"
 }
