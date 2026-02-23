@@ -44,7 +44,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `infisical_db_backup_age_private_key`
 - `infisical_project_name`
 - `infisical_restore_from_s3` (`true` to restore from S3 before bootstrap)
-- `infisical_bootstrap_secrets` (JSON payload for Infisical bootstrap secrets)
+- `INFISICAL_BOOTSTRAP_SECRETS__*` (JSON payloads for Infisical bootstrap, split per folder)
+- Legacy fallback: `infisical_bootstrap_secrets` / `INFISICAL_BOOTSTRAP_SECRETS`
 - `infisical_spc_namespace` (namespace for Infisical SecretProviderClass; defaults to `default` if unset or set to `example`)
 
 ## 4.1) Service FQDNs & DNS (Cloudflare)

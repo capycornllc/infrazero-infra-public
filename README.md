@@ -55,7 +55,8 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `infisical_db_backup_age_public_key`
 - `infisical_db_backup_age_private_key`
 - `infisical_restore_from_s3` (optional; `true` to restore from S3 before bootstrap)
-- `infisical_bootstrap_secrets` (optional JSON payload for Infisical bootstrap secrets)
+- `INFISICAL_BOOTSTRAP_SECRETS__*` (optional split JSON payloads for Infisical bootstrap; one secret per folder)
+- Legacy fallback: `infisical_bootstrap_secrets` or `INFISICAL_BOOTSTRAP_SECRETS` (single JSON payload)
 - `argocd_admin_password`
 - `argocd_fqdn`
 - `kubernetes_fqdn`

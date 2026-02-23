@@ -37,7 +37,6 @@ jobs:
       INFISICAL_ENCRYPTION_KEY: ${{ secrets.infisical_encryption_key }}
       INFISICAL_AUTH_SECRET: ${{ secrets.infisical_auth_secret }}
       INFISICAL_RESTORE_FROM_S3: ${{ secrets.infisical_restore_from_s3 }}
-      INFISICAL_BOOTSTRAP_SECRETS: ${{ secrets.infisical_bootstrap_secrets }}
       INFISICAL_PROJECT_NAME: ${{ secrets.infisical_project_name }}
       BASTION_CLOUD_INIT: ${{ secrets.bastion_cloud_init }}
       EGRESS_CLOUD_INIT: ${{ secrets.egress_cloud_init }}
@@ -92,6 +91,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml jsonschema requests
+
+      - name: Export Infisical bootstrap secret payloads
+        run: |
+          cat > "${RUNNER_TEMP}/github-secrets.json" <<'JSON'
+          ${{ toJson(secrets) }}
+          JSON
+          python scripts/export-bootstrap-folder-secrets.py \
+            --secrets-json "${RUNNER_TEMP}/github-secrets.json" \
+            --github-env "${GITHUB_ENV}"
+          rm -f "${RUNNER_TEMP}/github-secrets.json"
 
       - name: Read config values
         run: |

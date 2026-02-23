@@ -320,6 +320,46 @@ PY
   fi
 fi
 
+# Merge split payload secrets (INFISICAL_BOOTSTRAP_SECRETS__*) into the
+# canonical INFISICAL_BOOTSTRAP_SECRETS object expected below.
+split_vars=$(compgen -A variable INFISICAL_BOOTSTRAP_SECRETS__ || true)
+if [ -n "$split_vars" ]; then
+  payloads_tmp=$(mktemp)
+  if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
+    printf '%s\n' "$INFISICAL_BOOTSTRAP_SECRETS" >> "$payloads_tmp"
+  fi
+
+  while read -r var_name; do
+    [ -z "$var_name" ] && continue
+    payload_value="${!var_name:-}"
+    [ -z "$payload_value" ] && continue
+    printf '%s\n' "$payload_value" >> "$payloads_tmp"
+  done <<< "$split_vars"
+
+  if [ -s "$payloads_tmp" ]; then
+    if ! INFISICAL_BOOTSTRAP_SECRETS=$(jq -cs '
+      reduce .[] as $item ({};
+        if ($item | type) != "object" then
+          error("bootstrap payload entry must be a JSON object")
+        else
+          reduce ($item | to_entries[]) as $folder (.;
+            if ($folder.value | type) != "array" then
+              error("bootstrap folder payload must be an array")
+            else
+              .[$folder.key] = ((.[ $folder.key ] // []) + $folder.value)
+            end
+          )
+        end
+      )' "$payloads_tmp"); then
+      rm -f "$payloads_tmp"
+      echo "[infisical-bootstrap] failed to merge split INFISICAL_BOOTSTRAP_SECRETS payloads" >&2
+      exit 1
+    fi
+  fi
+
+  rm -f "$payloads_tmp"
+fi
+
 if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
   env_list=$(echo "$INFISICAL_BOOTSTRAP_SECRETS" | jq -r '
     [to_entries[] | .value[] | to_entries[] | .value | keys[]] | unique[]' 2>/dev/null)

@@ -449,24 +449,55 @@ def main() -> int:
 
     infisical_project_name = require_env("INFISICAL_PROJECT_NAME")
 
+    split_bootstrap_secrets = {}
+    split_prefix = "INFISICAL_BOOTSTRAP_SECRETS__"
+    for env_name, env_value in os.environ.items():
+        normalized_name = env_name.upper()
+        if not normalized_name.startswith(split_prefix):
+            continue
+        value = str(env_value).strip()
+        if not value:
+            continue
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{normalized_name} is not valid JSON: {exc}")
+            continue
+        if not isinstance(parsed, dict):
+            errors.append(f"{normalized_name} must be a JSON object")
+            continue
+        split_bootstrap_secrets[normalized_name] = json.dumps(parsed, separators=(",", ":"))
+
     infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
+    if not infisical_bootstrap_secrets_raw:
+        infisical_bootstrap_secrets_raw = os.getenv("infisical_bootstrap_secrets", "").strip()
+    infisical_bootstrap_secrets_gz_b64_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS_GZ_B64", "").strip()
+    if not infisical_bootstrap_secrets_gz_b64_raw:
+        infisical_bootstrap_secrets_gz_b64_raw = os.getenv(
+            "infisical_bootstrap_secrets_gz_b64", ""
+        ).strip()
     infisical_bootstrap_secrets = ""
     infisical_bootstrap_secrets_gz_b64 = ""
-    if infisical_bootstrap_secrets_raw:
-        try:
-            parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
-        except json.JSONDecodeError as exc:
-            errors.append(f"INFISICAL_BOOTSTRAP_SECRETS is not valid JSON: {exc}")
-        else:
-            if not isinstance(parsed_bootstrap_secrets, dict):
-                errors.append("INFISICAL_BOOTSTRAP_SECRETS must be a JSON object")
+    if not split_bootstrap_secrets:
+        if infisical_bootstrap_secrets_raw:
+            try:
+                parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
+            except json.JSONDecodeError as exc:
+                errors.append(f"INFISICAL_BOOTSTRAP_SECRETS is not valid JSON: {exc}")
             else:
-                infisical_bootstrap_secrets = json.dumps(parsed_bootstrap_secrets, separators=(",", ":"))
-                if len(infisical_bootstrap_secrets) > 4096:
-                    infisical_bootstrap_secrets_gz_b64 = base64.b64encode(
-                        gzip.compress(infisical_bootstrap_secrets.encode("utf-8"), compresslevel=9)
-                    ).decode("utf-8")
-                    infisical_bootstrap_secrets = ""
+                if not isinstance(parsed_bootstrap_secrets, dict):
+                    errors.append("INFISICAL_BOOTSTRAP_SECRETS must be a JSON object")
+                else:
+                    infisical_bootstrap_secrets = json.dumps(
+                        parsed_bootstrap_secrets, separators=(",", ":")
+                    )
+                    if len(infisical_bootstrap_secrets) > 4096:
+                        infisical_bootstrap_secrets_gz_b64 = base64.b64encode(
+                            gzip.compress(infisical_bootstrap_secrets.encode("utf-8"), compresslevel=9)
+                        ).decode("utf-8")
+                        infisical_bootstrap_secrets = ""
+        elif infisical_bootstrap_secrets_gz_b64_raw:
+            infisical_bootstrap_secrets_gz_b64 = infisical_bootstrap_secrets_gz_b64_raw
 
     infisical_db_backup_age_public_key = require_env("INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY")
     infisical_db_backup_age_private_key = require_env("INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY")
@@ -508,7 +539,10 @@ def main() -> int:
     if infisical_site_url:
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
 
-    if infisical_bootstrap_secrets:
+    if split_bootstrap_secrets:
+        for env_name, value in sorted(split_bootstrap_secrets.items()):
+            egress_secrets[env_name] = value
+    elif infisical_bootstrap_secrets:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
     elif infisical_bootstrap_secrets_gz_b64:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS_GZ_B64"] = infisical_bootstrap_secrets_gz_b64
