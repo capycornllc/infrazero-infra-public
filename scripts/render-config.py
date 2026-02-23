@@ -571,10 +571,15 @@ def main() -> int:
     restore_requested = infisical_restore_from_s3.lower() == "true"
 
     infisical_project_name = require_env("INFISICAL_PROJECT_NAME")
+    external_sync_raw = optional_env("INFRAZERO_EXTERNAL_SECRETS_SYNC")
+    external_sync_enabled = str(external_sync_raw).strip().lower() in ("1", "true", "yes", "on")
+    external_sync_marker_key = optional_env("INFISICAL_EXTERNAL_SYNC_MARKER_KEY")
 
     infisical_bootstrap_secrets_raw = os.getenv("INFISICAL_BOOTSTRAP_SECRETS", "").strip()
     infisical_bootstrap_secrets = ""
     infisical_bootstrap_secrets_gz_b64 = ""
+    if external_sync_enabled:
+        infisical_bootstrap_secrets_raw = ""
     if infisical_bootstrap_secrets_raw:
         try:
             parsed_bootstrap_secrets = json.loads(infisical_bootstrap_secrets_raw)
@@ -634,6 +639,10 @@ def main() -> int:
     infisical_site_url = os.getenv("INFISICAL_SITE_URL", "").strip()
     if infisical_site_url:
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
+    if external_sync_enabled:
+        egress_secrets["INFRAZERO_EXTERNAL_SECRETS_SYNC"] = "true"
+        if external_sync_marker_key:
+            egress_secrets["INFISICAL_EXTERNAL_SYNC_MARKER_KEY"] = external_sync_marker_key
 
     if infisical_bootstrap_secrets:
         egress_secrets["INFISICAL_BOOTSTRAP_SECRETS"] = infisical_bootstrap_secrets
@@ -943,6 +952,10 @@ def main() -> int:
         k3s_server_secrets["INFISICAL_PROJECT_NAME"] = infisical_project_name
     if deployment_id:
         k3s_server_secrets["INFRAZERO_DEPLOYMENT_ID"] = deployment_id
+    if external_sync_enabled:
+        k3s_server_secrets["INFRAZERO_EXTERNAL_SECRETS_SYNC"] = "true"
+        if external_sync_marker_key:
+            k3s_server_secrets["INFISICAL_EXTERNAL_SYNC_MARKER_KEY"] = external_sync_marker_key
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type

@@ -296,6 +296,13 @@ for env_def in "${default_envs[@]}"; do
     "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/environments" || true
 done
 
+external_sync_enabled="${INFRAZERO_EXTERNAL_SECRETS_SYNC:-false}"
+external_sync_enabled="$(echo "$external_sync_enabled" | tr '[:upper:]' '[:lower:]')"
+if [ "$external_sync_enabled" = "true" ]; then
+  INFISICAL_BOOTSTRAP_SECRETS=""
+  INFISICAL_BOOTSTRAP_SECRETS_GZ_B64=""
+fi
+
 if [ -z "${INFISICAL_BOOTSTRAP_SECRETS:-}" ] && [ -n "${INFISICAL_BOOTSTRAP_SECRETS_GZ_B64:-}" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
     echo "[infisical-bootstrap] python3 required to decode INFISICAL_BOOTSTRAP_SECRETS_GZ_B64" >&2
@@ -445,7 +452,11 @@ if [ -n "${INFISICAL_BOOTSTRAP_SECRETS:-}" ]; then
     done
   done
 else
-  echo "[infisical-bootstrap] INFISICAL_BOOTSTRAP_SECRETS not set; skipping secrets population"
+  if [ "$external_sync_enabled" = "true" ]; then
+    echo "[infisical-bootstrap] external secrets sync enabled; skipping secrets population in bootstrap script"
+  else
+    echo "[infisical-bootstrap] INFISICAL_BOOTSTRAP_SECRETS not set; skipping secrets population"
+  fi
 fi
 
 tmpdir=$(mktemp -d /run/infisical-bootstrap.XXXX)

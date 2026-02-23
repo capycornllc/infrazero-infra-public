@@ -89,16 +89,25 @@ wait_for_url "https://${INFISICAL_FQDN}" || {
   exit 1
 }
 
-wait_for_manifest() {
+wait_for_s3_object() {
   local key="$1"
-  echo "[infisical-admin-secret] waiting for s3://${DB_BACKUP_BUCKET}/${key}"
-  for _ in {1..60}; do
+  local timeout_seconds="$2"
+  local interval_seconds="${3:-5}"
+  local elapsed=0
+  echo "[infisical-admin-secret] waiting for s3://${DB_BACKUP_BUCKET}/${key} (timeout=${timeout_seconds}s)"
+  while [ "$elapsed" -lt "$timeout_seconds" ]; do
     if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${key}" >/dev/null 2>&1; then
       return 0
     fi
-    sleep 5
+    sleep "$interval_seconds"
+    elapsed=$((elapsed + interval_seconds))
   done
   return 1
+}
+
+wait_for_manifest() {
+  local key="$1"
+  wait_for_s3_object "$key" 300 5
 }
 
 if ! command -v aws >/dev/null 2>&1; then
@@ -122,6 +131,15 @@ if [[ "$S3_ENDPOINT" != http://* && "$S3_ENDPOINT" != https://* ]]; then
 fi
 
 tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
+external_sync_enabled="${INFRAZERO_EXTERNAL_SECRETS_SYNC:-false}"
+external_sync_enabled="$(echo "$external_sync_enabled" | tr '[:upper:]' '[:lower:]')"
+external_sync_marker_key="${INFISICAL_EXTERNAL_SYNC_MARKER_KEY:-}"
+external_sync_wait_seconds_raw="${INFISICAL_EXTERNAL_SYNC_WAIT_SECONDS:-1800}"
+if [[ "$external_sync_wait_seconds_raw" =~ ^[0-9]+$ ]] && [ "$external_sync_wait_seconds_raw" -gt 0 ]; then
+  external_sync_wait_seconds="$external_sync_wait_seconds_raw"
+else
+  external_sync_wait_seconds="1800"
+fi
 
 revoke_bootstrap_admin_token_artifacts() {
   echo "[infisical-admin-secret] revoking bootstrap admin token artifacts"
@@ -1077,6 +1095,18 @@ if ! git -C "$GITOPS_DIR" diff --cached --quiet; then
 else
   echo "[infisical-admin-secret] gitops overlay already up to date"
   git_push_changes || true
+fi
+
+if [ "$external_sync_enabled" = "true" ]; then
+  if [ -z "$external_sync_marker_key" ]; then
+    echo "[infisical-admin-secret] warning: external sync is enabled but INFISICAL_EXTERNAL_SYNC_MARKER_KEY is missing; proceeding with revocation" >&2
+  else
+    if wait_for_s3_object "$external_sync_marker_key" "$external_sync_wait_seconds" 5; then
+      echo "[infisical-admin-secret] external sync marker detected; continuing"
+    else
+      echo "[infisical-admin-secret] warning: external sync marker not found within ${external_sync_wait_seconds}s; proceeding with revocation for security" >&2
+    fi
+  fi
 fi
 
 revoke_bootstrap_admin_token_artifacts
