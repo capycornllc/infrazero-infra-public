@@ -160,6 +160,11 @@ On each server, check these logs first:
 - `/var/log/cloud-init.log`
 - `/var/log/cloud-init-output.log`
 
+For Infisical/TLS ingress troubleshooting on the **egress** node, filter recent bootstrap logs:
+```bash
+sudo tail -n 200 /var/log/infrazero-bootstrap.log | egrep -i 'certbot|let.s encrypt|nginx|cloudflare|infisical'
+```
+
 ## Infisical backup (on-demand)
 On the **egress** node you can trigger an immediate Infisical backup:
 ```bash

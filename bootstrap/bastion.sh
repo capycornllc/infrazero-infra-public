@@ -400,8 +400,8 @@ rm -f /etc/ssh/sshd_config.d/infrazero.conf
 
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
-# Promtail for journald to Loki
-if [ ! -f /usr/local/bin/promtail ]; then
+# Promtail for journald to Loki (optional)
+if [ ! -x /usr/local/bin/promtail ]; then
   if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
     unzip -o /tmp/promtail.zip -d /usr/local/bin
     mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
@@ -411,6 +411,7 @@ if [ ! -f /usr/local/bin/promtail ]; then
   fi
 fi
 
+if [ -x /usr/local/bin/promtail ]; then
 mkdir -p /etc/promtail /var/lib/promtail
 cat > /etc/promtail/promtail.yml <<EOF
 server:
@@ -449,6 +450,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now promtail
+systemctl enable --now promtail || echo "[bastion] failed to start promtail; continuing"
+else
+  echo "[bastion] promtail binary unavailable; skipping service setup"
+fi
 
 echo "[bastion] $(date -Is) complete"

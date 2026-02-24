@@ -91,14 +91,21 @@ wait_for_url "https://${INFISICAL_FQDN}" || {
 
 wait_for_manifest() {
   local key="$1"
+  local attempt=0
   echo "[infisical-admin-secret] waiting for s3://${DB_BACKUP_BUCKET}/${key}"
-  for _ in {1..60}; do
+  while true; do
     if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${key}" >/dev/null 2>&1; then
+      if [ "$attempt" -gt 0 ]; then
+        echo "[infisical-admin-secret] tokens manifest found after $((attempt * 5))s"
+      fi
       return 0
+    fi
+    attempt=$((attempt + 1))
+    if [ $((attempt % 12)) -eq 0 ]; then
+      echo "[infisical-admin-secret] tokens manifest still not found; continuing to wait"
     fi
     sleep 5
   done
-  return 1
 }
 
 if ! command -v aws >/dev/null 2>&1; then
@@ -126,11 +133,7 @@ tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
 workdir=$(mktemp -d /run/infisical-admin-secret.XXXX)
 chmod 700 "$workdir"
 
-wait_for_manifest "$tokens_manifest_key" || {
-  echo "[infisical-admin-secret] latest tokens manifest not found after waiting" >&2
-  rm -rf "$workdir"
-  exit 1
-}
+wait_for_manifest "$tokens_manifest_key"
 
 echo "$INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY" > "$workdir/age.key"
 chmod 600 "$workdir/age.key"
