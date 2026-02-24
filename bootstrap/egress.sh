@@ -6,21 +6,53 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[egress] $(date -Is) start"
 
+load_env() {
+  local file="$1"
+  if [ -f "$file" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$file"
+    set +a
+  fi
+}
+
 ENV_FILE="/etc/infrazero/egress.env"
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
+load_env "$ENV_FILE"
+
+BOOTSTRAP_ENV_FILE="/etc/infrazero/egress.bootstrap.env"
+download_offloaded_bootstrap_env() {
+  local payload_url="${INFISICAL_BOOTSTRAP_SECRETS_ENV_URL:-}"
+  local payload_sha256="${INFISICAL_BOOTSTRAP_SECRETS_ENV_SHA256:-}"
+  local tmp_file
+
+  if [ -z "$payload_url" ] || [ -f "$BOOTSTRAP_ENV_FILE" ]; then
+    return 0
+  fi
+
+  tmp_file=$(mktemp)
+  if ! curl -fsSL "$payload_url" -o "$tmp_file"; then
+    rm -f "$tmp_file"
+    echo "[egress] failed to download offloaded Infisical bootstrap payload" >&2
+    exit 1
+  fi
+
+  if [ -n "$payload_sha256" ]; then
+    if ! echo "$payload_sha256  $tmp_file" | sha256sum -c - >/dev/null; then
+      rm -f "$tmp_file"
+      echo "[egress] offloaded Infisical bootstrap payload checksum mismatch" >&2
+      exit 1
+    fi
+  fi
+
+  install -D -m 0600 "$tmp_file" "$BOOTSTRAP_ENV_FILE"
+  rm -f "$tmp_file"
+}
+
+download_offloaded_bootstrap_env
+load_env "$BOOTSTRAP_ENV_FILE"
 
 NETWORK_ENV="/etc/infrazero/network.env"
-if [ -f "$NETWORK_ENV" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$NETWORK_ENV"
-  set +a
-fi
+load_env "$NETWORK_ENV"
 
 require_env() {
   local name="$1"

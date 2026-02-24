@@ -226,6 +226,11 @@ jobs:
         run: |
           python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
+      - name: Offload oversized egress bootstrap payload
+        run: |
+          chmod +x scripts/offload-egress-bootstrap-secrets.sh
+          scripts/offload-egress-bootstrap-secrets.sh tofu/tofu.tfvars.json
+
       - name: Import SSH keys if exist
         run: python scripts/import-ssh-keys.py --tofu-dir tofu
 

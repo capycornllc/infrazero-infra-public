@@ -24,6 +24,7 @@ load_env() {
 }
 
 load_env /etc/infrazero/egress.env
+load_env /etc/infrazero/egress.bootstrap.env
 load_env /etc/infrazero/node.env
 
 require_env() {
