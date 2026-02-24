@@ -119,11 +119,54 @@ export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
 
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y docker.io docker-compose awscli age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+ensure_aws_cli() {
+  if command -v aws >/dev/null 2>&1; then
+    return 0
   fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    if ! command -v unzip >/dev/null 2>&1; then
+      apt-get install -y unzip
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+      apt-get install -y curl
+    fi
+  fi
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+    echo "[egress] awscli install requires curl and unzip" >&2
+    return 1
+  fi
+
+  local tmp_dir=""
+  local archive=""
+  local attempt=0
+  tmp_dir=$(mktemp -d)
+  archive="$tmp_dir/awscliv2.zip"
+
+  for attempt in {1..20}; do
+    if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$archive"; then
+      rm -rf "$tmp_dir/aws"
+      if unzip -q "$archive" -d "$tmp_dir" \
+        && "$tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update \
+        && command -v aws >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 0
+      fi
+    fi
+    echo "[egress] awscli install attempt ${attempt}/20 failed; retrying in 3s" >&2
+    sleep 3
+  done
+
+  rm -rf "$tmp_dir"
+  return 1
+}
+
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+fi
 
 systemctl enable --now docker
 
@@ -199,13 +242,9 @@ fi
 
 ensure_dns
 
-if ! command -v aws >/dev/null 2>&1; then
-  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
-    unzip -q /tmp/awscliv2.zip -d /tmp
-    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
-  else
-    echo "[egress] awscli download failed; continuing without aws" >&2
-  fi
+if ! ensure_aws_cli; then
+  echo "[egress] unable to install awscli" >&2
+  exit 1
 fi
 
 mkdir -p /opt/infrazero/egress /opt/infrazero/infisical /opt/infrazero/infisical/backups
