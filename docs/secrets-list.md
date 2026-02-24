@@ -15,6 +15,8 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `k3s_node_server_type`
 - `k3s_control_planes_count` (`1`, `3`, or `5`)
 - `k3s_workers_count`
+- `K3S_NODE_CIDR_WILDCARDS` (optional; comma-separated wildcard IP prefixes for DB HBA expansion, e.g. `10.10.0.2*`)
+- `K3S_NODE_CIDRS_EXTRA` (optional; comma-separated extra IPv4 CIDRs/wildcards for DB HBA allowlist)
 - `k3s_join_token`
 - `load_balancer_config` (optional JSON array overriding LB services: `[{ protocol, source, destination }, ...]`)
 

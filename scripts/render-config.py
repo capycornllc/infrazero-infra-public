@@ -1,8 +1,10 @@
 import argparse
 import base64
 import gzip
+import ipaddress
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +20,71 @@ def load_yaml(path: Path):
 def load_json(path: Path):
     # utf-8-sig allows JSON files written with a UTF-8 BOM (common on Windows).
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def parse_ipv4_cidrs_and_wildcards(raw: str, label: str) -> tuple[list[str], list[str]]:
+    """Parse comma-separated IPv4 CIDRs and wildcard IPv4 last-octet prefixes.
+
+    Wildcard format:
+      - 10.10.0.2*  -> matches 10.10.0.20-10.10.0.29 (collapsed to CIDRs)
+      - 10.10.0.*   -> matches the full /24
+    """
+    out: list[str] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+
+    def add(cidr: str):
+        if cidr not in seen:
+            seen.add(cidr)
+            out.append(cidr)
+
+    tokens = [token.strip() for token in raw.split(",") if token.strip()]
+    for token in tokens:
+        if "*" in token:
+            match = re.fullmatch(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.)(\d{0,2})\*", token)
+            if not match:
+                errors.append(
+                    f"{label} entry '{token}' is invalid; expected IPv4 CIDR or wildcard like 10.10.0.2*"
+                )
+                continue
+
+            base = match.group(1)
+            decimal_prefix = match.group(2)
+            try:
+                octets = [int(part) for part in base[:-1].split(".")]
+            except ValueError:
+                errors.append(f"{label} entry '{token}' has an invalid IPv4 prefix")
+                continue
+
+            if len(octets) != 3 or any(part < 0 or part > 255 for part in octets):
+                errors.append(f"{label} entry '{token}' has an invalid IPv4 prefix")
+                continue
+
+            matched_hosts = [
+                ipaddress.ip_network(f"{base}{last_octet}/32")
+                for last_octet in range(256)
+                if str(last_octet).startswith(decimal_prefix)
+            ]
+            if not matched_hosts:
+                errors.append(f"{label} entry '{token}' does not match any IPv4 addresses")
+                continue
+
+            for network in ipaddress.collapse_addresses(matched_hosts):
+                add(network.with_prefixlen)
+            continue
+
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            errors.append(f"{label} entry '{token}' is not a valid CIDR")
+            continue
+
+        if network.version != 4:
+            errors.append(f"{label} entry '{token}' must be IPv4")
+            continue
+        add(network.with_prefixlen)
+
+    return out, errors
 
 
 def main() -> int:
@@ -288,6 +355,26 @@ def main() -> int:
         ip = str(node.get("private_ip", "")).strip()
         if ip:
             k3s_node_cidrs.append(f"{ip}/32")
+
+    k3s_node_cidrs_extra_raw = optional_env("K3S_NODE_CIDRS_EXTRA")
+    if k3s_node_cidrs_extra_raw:
+        parsed_extra_cidrs, parse_errors = parse_ipv4_cidrs_and_wildcards(
+            k3s_node_cidrs_extra_raw, "K3S_NODE_CIDRS_EXTRA"
+        )
+        errors.extend(parse_errors)
+        for cidr in parsed_extra_cidrs:
+            if cidr not in k3s_node_cidrs:
+                k3s_node_cidrs.append(cidr)
+
+    k3s_node_cidr_wildcards_raw = optional_env("K3S_NODE_CIDR_WILDCARDS")
+    if k3s_node_cidr_wildcards_raw:
+        parsed_wildcard_cidrs, parse_errors = parse_ipv4_cidrs_and_wildcards(
+            k3s_node_cidr_wildcards_raw, "K3S_NODE_CIDR_WILDCARDS"
+        )
+        errors.extend(parse_errors)
+        for cidr in parsed_wildcard_cidrs:
+            if cidr not in k3s_node_cidrs:
+                k3s_node_cidrs.append(cidr)
 
     k3s_cfg = config.get("k3s", {}) or {}
     k3s_token_name = str(k3s_cfg.get("token_name", "")).strip()

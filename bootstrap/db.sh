@@ -102,24 +102,79 @@ VOLUME_NAME="${DB_VOLUME_NAME:-}"
 VOLUME_FORMAT="${DB_VOLUME_FORMAT:-ext4}"
 DEVICE=""
 
-if [ -n "$VOLUME_NAME" ] && [ -e "/dev/disk/by-id/scsi-0HC_Volume_${VOLUME_NAME}" ]; then
-  DEVICE="/dev/disk/by-id/scsi-0HC_Volume_${VOLUME_NAME}"
-else
+find_db_volume_device() {
+  local volume_name="${1:-}"
+  local candidate=""
+
+  if [ -n "$volume_name" ] && [ -e "/dev/disk/by-id/scsi-0HC_Volume_${volume_name}" ]; then
+    echo "/dev/disk/by-id/scsi-0HC_Volume_${volume_name}"
+    return 0
+  fi
+  if [ -n "$volume_name" ] && [ -e "/dev/disk/by-id/scsi-SHC_Volume_${volume_name}" ]; then
+    echo "/dev/disk/by-id/scsi-SHC_Volume_${volume_name}"
+    return 0
+  fi
+
   candidate=$(ls -1 /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -n 1 || true)
   if [ -n "$candidate" ]; then
-    DEVICE="$candidate"
-  else
-    candidate=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
-    if [ -n "$candidate" ]; then
-      DEVICE="$candidate"
-    fi
+    echo "$candidate"
+    return 0
   fi
-fi
 
+  candidate=$(ls -1 /dev/disk/by-id/scsi-SHC_Volume_* 2>/dev/null | head -n 1 || true)
+  if [ -n "$candidate" ]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  candidate=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
+  if [ -n "$candidate" ]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+wait_for_db_volume_device() {
+  local volume_name="${1:-}"
+  local attempts="${DB_VOLUME_ATTACH_WAIT_ATTEMPTS:-45}"
+  local sleep_seconds="${DB_VOLUME_ATTACH_WAIT_SECONDS:-2}"
+  local attempt
+  local found=""
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    found=$(find_db_volume_device "$volume_name" || true)
+    if [ -n "$found" ]; then
+      if [ "$attempt" -gt 1 ]; then
+        echo "[db] detected volume device on retry ${attempt}/${attempts}: ${found}" >&2
+      fi
+      echo "$found"
+      return 0
+    fi
+
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle >/dev/null 2>&1 || true
+    fi
+
+    if [ "$attempt" -lt "$attempts" ]; then
+      sleep "$sleep_seconds"
+    fi
+  done
+
+  return 1
+}
+
+DEVICE=$(wait_for_db_volume_device "$VOLUME_NAME" || true)
 if [ -z "$DEVICE" ]; then
-  echo "[db] no attached volume device found; skipping mount" >&2
+  echo "[db] no attached volume device found after waiting for attach" >&2
+  echo "[db] expected volume name: ${VOLUME_NAME:-<unset>}" >&2
+  ls -1 /dev/disk/by-id 2>/dev/null | grep -i Volume >&2 || true
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT >&2 || true
   exit 1
 fi
+
+echo "[db] using volume device: ${DEVICE}"
 
 systemctl stop postgresql || true
 systemctl stop "postgresql@${PG_MAJOR}-main" || true

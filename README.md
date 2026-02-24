@@ -40,6 +40,8 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `db_version` (currently `14.20`)
 - `k3s_control_planes_count` (`1`, `3`, or `5`; must be <= the number of `k3s_control_planes` entries in `config/infra.yaml`)
 - `k3s_workers_count` (must be <= the number of `k3s_workers` entries in `config/infra.yaml`)
+- `K3S_NODE_CIDR_WILDCARDS` (optional; comma-separated wildcard IP prefixes for DB HBA expansion, e.g. `10.10.0.2*`)
+- `K3S_NODE_CIDRS_EXTRA` (optional; comma-separated extra IPv4 CIDRs/wildcards for DB HBA allowlist)
 - `k3s_join_token`
 - `infisical_password`
 - `infisical_project_name`
