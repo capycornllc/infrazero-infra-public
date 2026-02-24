@@ -23,29 +23,67 @@ BOOTSTRAP_ENV_FILE="/etc/infrazero/egress.bootstrap.env"
 download_offloaded_bootstrap_env() {
   local payload_url="${INFISICAL_BOOTSTRAP_SECRETS_ENV_URL:-}"
   local payload_sha256="${INFISICAL_BOOTSTRAP_SECRETS_ENV_SHA256:-}"
+  local payload_endpoint="${INFISICAL_BOOTSTRAP_SECRETS_ENV_ENDPOINT:-${S3_ENDPOINT:-}}"
+  local payload_bucket="${INFISICAL_BOOTSTRAP_SECRETS_ENV_BUCKET:-}"
+  local payload_key="${INFISICAL_BOOTSTRAP_SECRETS_ENV_KEY:-}"
   local tmp_file
+  local http_code=""
+  local -a aws_args=()
 
-  if [ -z "$payload_url" ] || [ -f "$BOOTSTRAP_ENV_FILE" ]; then
+  if [ -f "$BOOTSTRAP_ENV_FILE" ]; then
+    return 0
+  fi
+
+  if [ -z "$payload_url" ] && { [ -z "$payload_bucket" ] || [ -z "$payload_key" ]; }; then
     return 0
   fi
 
   tmp_file=$(mktemp)
-  if ! curl -fsSL "$payload_url" -o "$tmp_file"; then
-    rm -f "$tmp_file"
-    echo "[egress] failed to download offloaded Infisical bootstrap payload" >&2
-    exit 1
-  fi
+  if [ -n "$payload_url" ]; then
+    for _ in {1..20}; do
+      http_code=$(curl -sS -L -o "$tmp_file" -w "%{http_code}" --connect-timeout 5 --max-time 30 "$payload_url" || true)
+      if [ "$http_code" != "200" ]; then
+        sleep 3
+        continue
+      fi
 
-  if [ -n "$payload_sha256" ]; then
-    if ! echo "$payload_sha256  $tmp_file" | sha256sum -c - >/dev/null; then
+      if [ -n "$payload_sha256" ] && ! echo "$payload_sha256  $tmp_file" | sha256sum -c - >/dev/null; then
+        rm -f "$tmp_file"
+        echo "[egress] offloaded Infisical bootstrap payload checksum mismatch" >&2
+        return 0
+      fi
+
+      install -D -m 0600 "$tmp_file" "$BOOTSTRAP_ENV_FILE"
       rm -f "$tmp_file"
-      echo "[egress] offloaded Infisical bootstrap payload checksum mismatch" >&2
-      exit 1
-    fi
+      echo "[egress] loaded offloaded Infisical bootstrap payload (url)"
+      return 0
+    done
   fi
 
-  install -D -m 0600 "$tmp_file" "$BOOTSTRAP_ENV_FILE"
+  if command -v aws >/dev/null 2>&1 && [ -n "$payload_bucket" ] && [ -n "$payload_key" ]; then
+    if [ -n "$payload_endpoint" ]; then
+      aws_args=(--endpoint-url "$payload_endpoint")
+    fi
+    for _ in {1..20}; do
+      if aws "${aws_args[@]}" s3 cp "s3://${payload_bucket}/${payload_key}" "$tmp_file" >/dev/null 2>&1; then
+        if [ -n "$payload_sha256" ] && ! echo "$payload_sha256  $tmp_file" | sha256sum -c - >/dev/null; then
+          rm -f "$tmp_file"
+          echo "[egress] offloaded Infisical bootstrap payload checksum mismatch (s3)" >&2
+          return 0
+        fi
+
+        install -D -m 0600 "$tmp_file" "$BOOTSTRAP_ENV_FILE"
+        rm -f "$tmp_file"
+        echo "[egress] loaded offloaded Infisical bootstrap payload (s3)"
+        return 0
+      fi
+      sleep 3
+    done
+  fi
+
   rm -f "$tmp_file"
+  echo "[egress] unable to download offloaded Infisical bootstrap payload (http ${http_code:-000}); continuing" >&2
+  return 0
 }
 
 download_offloaded_bootstrap_env
@@ -84,7 +122,7 @@ export AWS_DEFAULT_REGION="$S3_REGION"
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+  apt-get install -y docker.io docker-compose awscli age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
   fi
 
 systemctl enable --now docker
