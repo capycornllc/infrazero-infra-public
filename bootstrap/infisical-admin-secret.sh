@@ -594,13 +594,15 @@ update_app_config() {
   local config_path="$1"
   local workload_name="$2"
   local spc_name="$3"
-  python3 - <<'PY' "$config_path" "$workload_name" "$spc_name"
+  local csi_enabled="${4:-true}"
+  python3 - <<'PY' "$config_path" "$workload_name" "$spc_name" "$csi_enabled"
 import sys
 import os
 
 path = sys.argv[1]
 target_name = sys.argv[2]
 spc_name = sys.argv[3]
+csi_enabled = str(sys.argv[4]).strip().lower() == "true"
 
 def update_cfg(cfg):
     spec = cfg.get("spec") if isinstance(cfg, dict) else {}
@@ -616,10 +618,19 @@ def update_cfg(cfg):
         if str(item.get("name", "")).strip() != target_name:
             continue
         csi = item.get("csi") if isinstance(item.get("csi"), dict) else {}
-        if csi.get("enabled") is not True:
-            csi["enabled"] = True
-        if csi.get("secretProviderClass") != spc_name:
-            csi["secretProviderClass"] = spc_name
+        if csi_enabled:
+            if csi.get("enabled") is not True:
+                csi["enabled"] = True
+            if csi.get("secretProviderClass") != spc_name:
+                csi["secretProviderClass"] = spc_name
+        else:
+            if csi.get("enabled") is not False:
+                csi["enabled"] = False
+            if csi.get("secretProviderClass"):
+                csi["secretProviderClass"] = ""
+            attrs = csi.get("volumeAttributes")
+            if isinstance(attrs, dict) and "secretProviderClass" in attrs:
+                attrs.pop("secretProviderClass", None)
         item["csi"] = csi
         updated = True
 
@@ -716,7 +727,7 @@ if [ -n "$spc_app_file" ]; then
       if [ "$secrets_http_code" = "200" ]; then
         secrets_json=$(cat "$secrets_response_file")
       elif [ "$secrets_http_code" = "404" ]; then
-        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); rendering empty SPC" >&2
+        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); workload CSI will be disabled" >&2
         secrets_json='{"secrets":[]}'
       else
         echo "[infisical-admin-secret] failed to fetch secrets for ${workload_name} (${secret_path}); http=${secrets_http_code:-000}" >&2
@@ -732,18 +743,30 @@ if [ -n "$spc_app_file" ]; then
       fi
 
       secret_keys=$(echo "$secrets_json" | jq -r '.secrets[]?.secretKey' | sed '/^$/d' || true)
-      secrets_block=""
       if [ -z "$secret_keys" ]; then
-        secrets_block="[]"$'\n'
-      else
-        while IFS= read -r key; do
-          key_escaped=${key//\"/\\\"}
-          path_escaped=${secret_path//\"/\\\"}
-          secrets_block+="- secretPath: \"${path_escaped}\""$'\n'
-          secrets_block+="  fileName: \"${key_escaped}\""$'\n'
-          secrets_block+="  secretKey: \"${key_escaped}\""$'\n'
-        done <<< "$secret_keys"
+        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); disabling CSI for workload" >&2
+        if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
+          changed_files=$(update_app_config "$app_config_file" "$workload_name" "" "false" || true)
+        else
+          changed_files=""
+        fi
+        if [ -n "$changed_files" ]; then
+          while IFS= read -r changed_file; do
+            [ -n "$changed_file" ] || continue
+            workload_changed_files+=("$changed_file")
+          done <<< "$changed_files"
+        fi
+        continue
       fi
+
+      secrets_block=""
+      while IFS= read -r key; do
+        key_escaped=${key//\"/\\\"}
+        path_escaped=${secret_path//\"/\\\"}
+        secrets_block+="- secretPath: \"${path_escaped}\""$'\n'
+        secrets_block+="  fileName: \"${key_escaped}\""$'\n'
+        secrets_block+="  secretKey: \"${key_escaped}\""$'\n'
+      done <<< "$secret_keys"
 
       {
         echo "apiVersion: secrets-store.csi.x-k8s.io/v1"
@@ -772,7 +795,7 @@ if [ -n "$spc_app_file" ]; then
 
       spc_files+=("$spc_file")
       if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
-        changed_files=$(update_app_config "$app_config_file" "$workload_name" "$spc_name" || true)
+        changed_files=$(update_app_config "$app_config_file" "$workload_name" "$spc_name" "true" || true)
       else
         changed_files=$(update_workload_spc "$GITOPS_DIR" "$workload_name" "$workload_type" "$spc_name" || true)
       fi
