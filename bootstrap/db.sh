@@ -1098,6 +1098,8 @@ if [ -f "$NETWORK_ENV" ]; then
   set +a
 fi
 
+cd /
+
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -1389,6 +1391,27 @@ if [ -n "$expected_sha" ]; then
   fi
 fi
 
+detect_utf16_bom() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local bom
+  bom=$(od -An -t x1 -N 2 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$bom" = "fffe" ] || [ "$bom" = "feff" ]; then
+    return 0
+  fi
+  return 1
+}
+
+if detect_utf16_bom "$src_path"; then
+  echo "[db-restore] backup begins with UTF-16 BOM (FFFE/FEFF), not a raw dump stream" >&2
+  echo "[db-restore] this usually means the file was transcoded in text mode during upload/download" >&2
+  echo "[db-restore] use a binary-safe transfer (example: aws s3 cp <local_dump> s3://bucket/key)" >&2
+  echo "[db-restore] object is likely corrupted and needs to be re-exported/re-uploaded" >&2
+  exit 1
+fi
+
 try_decrypt() {
   local key_value="$1"
   printf '%s' "$key_value" > "$age_key"
@@ -1430,6 +1453,45 @@ detect_zstd() {
   return 1
 }
 
+detect_xz() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local magic
+  magic=$(od -An -t x1 -N 6 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$magic" = "fd377a585a00" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_bzip2() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local magic
+  magic=$(od -An -t x1 -N 3 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$magic" = "425a68" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_lz4() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local magic
+  magic=$(od -An -t x1 -N 4 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$magic" = "04224d18" ]; then
+    return 0
+  fi
+  return 1
+}
+
 detect_pg_dump() {
   local path="$1"
   if head -c 5 "$path" 2>/dev/null | grep -q "PGDMP"; then
@@ -1438,15 +1500,41 @@ detect_pg_dump() {
   return 1
 }
 
-is_gzip="false"
-if detect_gzip "$src_path"; then
-  is_gzip="true"
-fi
+detect_tar() {
+  local path="$1"
+  if ! command -v od >/dev/null 2>&1; then
+    return 1
+  fi
+  local magic
+  magic=$(od -An -t x1 -j 257 -N 5 "$path" 2>/dev/null | tr -d ' \n')
+  if [ "$magic" = "7573746172" ]; then
+    return 0
+  fi
+  return 1
+}
 
-is_zstd="false"
-if detect_zstd "$src_path"; then
-  is_zstd="true"
-fi
+detect_compression_for_path() {
+  local path="$1"
+  is_gzip="false"
+  is_zstd="false"
+  is_xz="false"
+  is_bzip2="false"
+  is_lz4="false"
+
+  if detect_gzip "$path"; then
+    is_gzip="true"
+  elif detect_zstd "$path"; then
+    is_zstd="true"
+  elif detect_xz "$path"; then
+    is_xz="true"
+  elif detect_bzip2 "$path"; then
+    is_bzip2="true"
+  elif detect_lz4 "$path"; then
+    is_lz4="true"
+  fi
+}
+
+detect_compression_for_path "$src_path"
 
 if [ "$is_age_encrypted" = "true" ]; then
   if ! command -v age >/dev/null 2>&1; then
@@ -1478,49 +1566,182 @@ if [ "$is_age_encrypted" = "true" ]; then
       exit 1
     fi
   fi
-  if detect_gzip "$dump_path"; then
-    is_gzip="true"
-  fi
-  if detect_zstd "$dump_path"; then
-    is_zstd="true"
-  fi
+  detect_compression_for_path "$dump_path"
 else
   dump_path="$src_path"
 fi
 
 restore_source="$dump_path"
-if [ "$is_gzip" = "true" ] || [ "$is_zstd" = "true" ]; then
-  restore_source="$dump_path"
+
+emit_restore_stream() {
+  if [ "$is_gzip" = "true" ]; then
+    gunzip -c "$restore_source"
+  elif [ "$is_zstd" = "true" ]; then
+    zstd -d -q --stdout "$restore_source"
+  elif [ "$is_xz" = "true" ]; then
+    xz -d -c "$restore_source"
+  elif [ "$is_bzip2" = "true" ]; then
+    bzip2 -d -c "$restore_source"
+  elif [ "$is_lz4" = "true" ]; then
+    lz4 -d -c "$restore_source"
+  else
+    cat "$restore_source"
+  fi
+}
+
+if [ "$is_zstd" = "true" ] && ! command -v zstd >/dev/null 2>&1; then
+  echo "[db-restore] zstd not available for .zst backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$is_xz" = "true" ] && ! command -v xz >/dev/null 2>&1; then
+  echo "[db-restore] xz not available for .xz backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$is_bzip2" = "true" ] && ! command -v bzip2 >/dev/null 2>&1; then
+  echo "[db-restore] bzip2 not available for .bz2 backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$is_lz4" = "true" ] && ! command -v lz4 >/dev/null 2>&1; then
+  echo "[db-restore] lz4 not available for lz4-compressed backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
 fi
 
-stream_cmd=()
-if [ "$is_gzip" = "true" ]; then
-  stream_cmd=(gunzip -c "$restore_source")
-elif [ "$is_zstd" = "true" ]; then
-  if ! command -v zstd >/dev/null 2>&1; then
-    echo "[db-restore] zstd not available for .zst backup" >&2
-    rm -rf "$tmpdir"
-    exit 1
+detect_stream_gzip() {
+  local magic
+  magic=$(emit_restore_stream 2>/dev/null | od -An -t x1 -N 2 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "1f8b" ]; then
+    return 0
   fi
-  stream_cmd=(zstd -d -q --stdout "$restore_source")
-else
-  stream_cmd=(cat "$restore_source")
+  return 1
+}
+
+detect_stream_zstd() {
+  local magic
+  magic=$(emit_restore_stream 2>/dev/null | od -An -t x1 -N 4 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "28b52ffd" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_stream_xz() {
+  local magic
+  magic=$(emit_restore_stream 2>/dev/null | od -An -t x1 -N 6 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "fd377a585a00" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_stream_bzip2() {
+  local magic
+  magic=$(emit_restore_stream 2>/dev/null | od -An -t x1 -N 3 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "425a68" ]; then
+    return 0
+  fi
+  return 1
+}
+
+detect_stream_lz4() {
+  local magic
+  magic=$(emit_restore_stream 2>/dev/null | od -An -t x1 -N 4 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "04224d18" ]; then
+    return 0
+  fi
+  return 1
+}
+
+nested_compression="none"
+if detect_stream_gzip; then
+  nested_compression="gzip"
+elif detect_stream_zstd; then
+  nested_compression="zstd"
+elif detect_stream_xz; then
+  nested_compression="xz"
+elif detect_stream_bzip2; then
+  nested_compression="bzip2"
+elif detect_stream_lz4; then
+  nested_compression="lz4"
 fi
 
-is_custom="false"
-if [ "$is_gzip" = "true" ]; then
-  header=$(gunzip -c "$restore_source" 2>/dev/null | head -c 5 || true)
-  if [ "$header" = "PGDMP" ]; then
-    is_custom="true"
+if [ "$nested_compression" = "zstd" ] && ! command -v zstd >/dev/null 2>&1; then
+  echo "[db-restore] zstd not available for nested .zst backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$nested_compression" = "xz" ] && ! command -v xz >/dev/null 2>&1; then
+  echo "[db-restore] xz not available for nested .xz backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$nested_compression" = "bzip2" ] && ! command -v bzip2 >/dev/null 2>&1; then
+  echo "[db-restore] bzip2 not available for nested .bz2 backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+if [ "$nested_compression" = "lz4" ] && ! command -v lz4 >/dev/null 2>&1; then
+  echo "[db-restore] lz4 not available for nested lz4 backup" >&2
+  rm -rf "$tmpdir"
+  exit 1
+fi
+
+emit_payload_stream() {
+  case "$nested_compression" in
+    gzip)
+      emit_restore_stream | gunzip -c
+      ;;
+    zstd)
+      emit_restore_stream | zstd -d -q --stdout
+      ;;
+    xz)
+      emit_restore_stream | xz -d -c
+      ;;
+    bzip2)
+      emit_restore_stream | bzip2 -d -c
+      ;;
+    lz4)
+      emit_restore_stream | lz4 -d -c
+      ;;
+    *)
+      emit_restore_stream
+      ;;
+  esac
+}
+
+detect_stream_pg_dump() {
+  local magic
+  magic=$(emit_payload_stream 2>/dev/null | od -An -t x1 -N 5 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "5047444d50" ]; then
+    return 0
   fi
-elif [ "$is_zstd" = "true" ]; then
-  header=$(zstd -d -q --stdout "$restore_source" 2>/dev/null | head -c 5 || true)
-  if [ "$header" = "PGDMP" ]; then
-    is_custom="true"
+  return 1
+}
+
+detect_stream_tar() {
+  local magic
+  magic=$(emit_payload_stream 2>/dev/null | od -An -t x1 -j 257 -N 5 2>/dev/null | tr -d ' \n' || true)
+  if [ "$magic" = "7573746172" ]; then
+    return 0
+  fi
+  return 1
+}
+
+restore_format="plain"
+if [ "$is_gzip" = "true" ] || [ "$is_zstd" = "true" ] || [ "$is_xz" = "true" ] || [ "$is_bzip2" = "true" ] || [ "$is_lz4" = "true" ]; then
+  if detect_stream_pg_dump; then
+    restore_format="custom"
+  elif detect_stream_tar; then
+    restore_format="tar"
   fi
 else
   if detect_pg_dump "$restore_source"; then
-    is_custom="true"
+    restore_format="custom"
+  elif detect_tar "$restore_source"; then
+    restore_format="tar"
   fi
 fi
 
@@ -1573,20 +1794,191 @@ if [ -n "$role_map" ]; then
 fi
 
 echo "[db-restore] restoring database"
- if [ "$is_custom" = "true" ]; then
-   restore_args=(--no-owner -d "$TARGET_DB_NAME")
-   if [ "$skip_acl" = "true" ]; then
-     restore_args+=(--no-privileges)
-   fi
-   "${stream_cmd[@]}" | sudo -u postgres -H pg_restore "${restore_args[@]}"
- else
-   if [ "$skip_acl" = "true" ]; then
-    "${stream_cmd[@]}" | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d;/^ALTER DEFAULT PRIVILEGES /d' | \
-       sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
-   else
-     "${stream_cmd[@]}" | sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
-   fi
- fi
+declare -a pg_restore_candidates=()
+declare -a _discovered_pg_restore_candidates=()
+saw_unsupported_pg_restore_version="false"
+
+add_pg_restore_candidate() {
+  local candidate="$1"
+  local existing
+  if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+    return 0
+  fi
+  for existing in "${pg_restore_candidates[@]}"; do
+    if [ "$existing" = "$candidate" ]; then
+      return 0
+    fi
+  done
+  pg_restore_candidates+=("$candidate")
+}
+
+build_pg_restore_candidates() {
+  local cmd_path
+  local dir
+  local candidate
+  pg_restore_candidates=()
+  _discovered_pg_restore_candidates=()
+
+  if [ -n "${DB_RESTORE_PG_RESTORE_BIN:-}" ]; then
+    _discovered_pg_restore_candidates+=("$DB_RESTORE_PG_RESTORE_BIN")
+  fi
+
+  if command -v pg_restore >/dev/null 2>&1; then
+    cmd_path=$(command -v pg_restore)
+    _discovered_pg_restore_candidates+=("$cmd_path")
+  fi
+
+  while IFS= read -r candidate; do
+    _discovered_pg_restore_candidates+=("$candidate")
+  done < <(
+    for dir in /usr/lib/postgresql/*; do
+      if [ -x "$dir/bin/pg_restore" ]; then
+        echo "$dir/bin/pg_restore"
+      fi
+    done | sort -Vr
+  )
+
+  for candidate in "${_discovered_pg_restore_candidates[@]}"; do
+    add_pg_restore_candidate "$candidate"
+  done
+}
+
+install_additional_pg_restore_clients() {
+  local installed="false"
+  local candidate_major
+
+  if [ "${DB_RESTORE_AUTO_INSTALL_CLIENTS:-true}" != "true" ]; then
+    return 1
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 1
+  fi
+
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null 2>&1 || true
+
+  for candidate_major in 18 17 16 15; do
+    if [ "$candidate_major" = "$PG_MAJOR" ]; then
+      continue
+    fi
+    if [ -x "/usr/lib/postgresql/${candidate_major}/bin/pg_restore" ]; then
+      continue
+    fi
+    if ! apt-cache show "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
+      continue
+    fi
+    echo "[db-restore] installing postgresql-client-${candidate_major} for dump compatibility"
+    if apt-get install -y "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
+      installed="true"
+    fi
+  done
+
+  if [ "$installed" = "true" ]; then
+    return 0
+  fi
+  return 1
+}
+
+run_pg_restore_with_candidates() {
+  local bin
+  local err_file="$tmpdir/pg_restore.err"
+  saw_unsupported_pg_restore_version="false"
+
+  build_pg_restore_candidates
+  if [ "${#pg_restore_candidates[@]}" -eq 0 ]; then
+    echo "[db-restore] no pg_restore binary available" >&2
+    return 1
+  fi
+
+  for bin in "${pg_restore_candidates[@]}"; do
+    echo "[db-restore] trying pg_restore via ${bin}"
+    if emit_payload_stream | sudo -u postgres -H "$bin" "${restore_args[@]}" 2>"$err_file"; then
+      return 0
+    fi
+
+    cat "$err_file" >&2 || true
+    if grep -qi "unsupported version" "$err_file" 2>/dev/null; then
+      saw_unsupported_pg_restore_version="true"
+    fi
+  done
+
+  return 1
+}
+
+run_pg_restore_with_auto_install() {
+  if run_pg_restore_with_candidates; then
+    return 0
+  fi
+  if [ "${saw_unsupported_pg_restore_version:-false}" = "true" ] && install_additional_pg_restore_clients; then
+    if run_pg_restore_with_candidates; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+payload_looks_text_sql() {
+  local probe_file="$tmpdir/payload-probe.bin"
+  local total
+  local non_printable
+  emit_payload_stream 2>/dev/null | head -c 65536 > "$probe_file" || true
+  if [ ! -s "$probe_file" ]; then
+    return 1
+  fi
+  total=$(wc -c < "$probe_file" | tr -d '[:space:]')
+  non_printable=$(LC_ALL=C tr -d '\11\12\15\40-\176' < "$probe_file" | wc -c | tr -d '[:space:]')
+  if [ -z "$total" ] || [ "$total" -eq 0 ]; then
+    return 1
+  fi
+  if [ -z "$non_printable" ]; then
+    non_printable=0
+  fi
+  if [ $((non_printable * 100 / total)) -gt 5 ]; then
+    return 1
+  fi
+  return 0
+}
+
+if [ "$restore_format" = "custom" ] || [ "$restore_format" = "tar" ]; then
+  restore_args=(--no-owner -d "$TARGET_DB_NAME")
+  if [ "$restore_format" = "tar" ]; then
+    restore_args+=(--format=t)
+  fi
+  if [ "$skip_acl" = "true" ]; then
+    restore_args+=(--no-privileges)
+  fi
+
+  if ! run_pg_restore_with_auto_install; then
+    echo "[db-restore] pg_restore failed" >&2
+    exit 1
+  fi
+else
+  if payload_looks_text_sql; then
+    if [ "$skip_acl" = "true" ]; then
+      emit_payload_stream | sed -E '/^(GRANT|REVOKE) /d;/^ALTER (TABLE|SEQUENCE|FUNCTION|SCHEMA|VIEW|MATERIALIZED VIEW|DATABASE|TYPE|DOMAIN|EXTENSION) .* OWNER TO /d;/^ALTER DEFAULT PRIVILEGES /d' | \
+        sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
+    else
+      emit_payload_stream | sudo -u postgres -H psql -v ON_ERROR_STOP=1 -d "$TARGET_DB_NAME"
+    fi
+  else
+    echo "[db-restore] payload appears binary; trying pg_restore fallback"
+    restore_args=(--no-owner -d "$TARGET_DB_NAME")
+    if [ "$skip_acl" = "true" ]; then
+      restore_args+=(--no-privileges)
+    fi
+
+    if ! run_pg_restore_with_auto_install; then
+      restore_args=(--no-owner --format=t -d "$TARGET_DB_NAME")
+      if [ "$skip_acl" = "true" ]; then
+        restore_args+=(--no-privileges)
+      fi
+      if ! run_pg_restore_with_auto_install; then
+        echo "[db-restore] restore payload is binary and no pg_restore format succeeded; verify backup file format/key" >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
 
 if [ "${#mapped_old[@]}" -gt 0 ]; then
   idx=0
