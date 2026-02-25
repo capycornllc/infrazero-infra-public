@@ -459,12 +459,15 @@ for item in workloads:
         continue
     secrets_folder = str(item.get("secretsFolder", "") or "").strip()
     workload_type = str(item.get("type", "") or "").strip()
+    csi_cfg = item.get("csi") if isinstance(item.get("csi"), dict) else {}
+    csi_enabled = csi_cfg.get("enabled") is True
     namespace = get_namespace(item) or default_ns
     items.append(
         {
             "name": name,
             "type": workload_type,
             "secretsFolder": secrets_folder,
+            "csiEnabled": csi_enabled,
             "namespace": namespace,
         }
     )
@@ -551,7 +554,8 @@ def update_doc(doc):
         csi = vol.get("csi")
         if not isinstance(csi, dict):
             continue
-        if csi.get("driver") != "secrets-store.csi.x-k8s.io":
+        driver = str(csi.get("driver", "") or "")
+        if driver not in ("secrets-store.csi.k8s.io", "secrets-store.csi.x-k8s.io", ""):
             continue
         attrs = csi.setdefault("volumeAttributes", {})
         if attrs.get("secretProviderClass") != spc_name:
@@ -677,8 +681,13 @@ if [ -n "$spc_app_file" ]; then
       workload_name=$(echo "$workload" | jq -r '.name')
       workload_type=$(echo "$workload" | jq -r '.type // empty')
       secrets_folder=$(echo "$workload" | jq -r '.secretsFolder // empty')
+      csi_enabled=$(echo "$workload" | jq -r '.csiEnabled // false')
       workload_namespace=$(echo "$workload" | jq -r '.namespace // "default"')
       if [ -z "$secrets_folder" ] || [ "$secrets_folder" = "null" ]; then
+        if [ "$csi_enabled" = "true" ]; then
+          echo "[infisical-admin-secret] workload ${workload_name} has csi.enabled=true but secretsFolder is empty" >&2
+          exit 1
+        fi
         continue
       fi
       norm_name=$(normalize_name "$workload_name")
@@ -689,33 +698,52 @@ if [ -n "$spc_app_file" ]; then
       spc_file="spc-${norm_name}.yaml"
       secret_path="/${secrets_folder#/}"
 
-      curl_args=(-fsSL -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Accept: application/json")
+      curl_args=(-sSL -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Accept: application/json")
       if [ -n "$ca_cert" ]; then
         ca_file="${workdir}/infisical-ca.pem"
         printf '%s' "$ca_cert" > "$ca_file"
         curl_args+=(--cacert "$ca_file")
       fi
 
-      secrets_json=$(curl "${curl_args[@]}" --get \
+      secrets_response_file=$(mktemp "${workdir}/infisical-secrets.XXXX")
+      secrets_http_code=$(curl "${curl_args[@]}" -o "$secrets_response_file" -w "%{http_code}" --get \
         --data-urlencode "projectId=${PROJECT_ID}" \
         --data-urlencode "environment=${INFISICAL_ENV_SLUG}" \
         --data-urlencode "secretPath=${secret_path}" \
         --data-urlencode "viewSecretValue=false" \
         "$infisical_api" || true)
-      secret_keys=$(echo "$secrets_json" | jq -r '.secrets[]?.secretKey' | sed '/^$/d' || true)
-      if [ -z "$secret_keys" ]; then
-        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); skipping SPC" >&2
-        continue
+
+      if [ "$secrets_http_code" = "200" ]; then
+        secrets_json=$(cat "$secrets_response_file")
+      elif [ "$secrets_http_code" = "404" ]; then
+        echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); rendering empty SPC" >&2
+        secrets_json='{"secrets":[]}'
+      else
+        echo "[infisical-admin-secret] failed to fetch secrets for ${workload_name} (${secret_path}); http=${secrets_http_code:-000}" >&2
+        cat "$secrets_response_file" >&2 || true
+        rm -f "$secrets_response_file"
+        exit 1
+      fi
+      rm -f "$secrets_response_file"
+
+      if ! echo "$secrets_json" | jq -e . >/dev/null 2>&1; then
+        echo "[infisical-admin-secret] invalid JSON while fetching ${workload_name} (${secret_path})" >&2
+        exit 1
       fi
 
+      secret_keys=$(echo "$secrets_json" | jq -r '.secrets[]?.secretKey' | sed '/^$/d' || true)
       secrets_block=""
-      while IFS= read -r key; do
-        key_escaped=${key//\"/\\\"}
-        path_escaped=${secret_path//\"/\\\"}
-        secrets_block+="- secretPath: \"${path_escaped}\""$'\n'
-        secrets_block+="  fileName: \"${key_escaped}\""$'\n'
-        secrets_block+="  secretKey: \"${key_escaped}\""$'\n'
-      done <<< "$secret_keys"
+      if [ -z "$secret_keys" ]; then
+        secrets_block="[]"$'\n'
+      else
+        while IFS= read -r key; do
+          key_escaped=${key//\"/\\\"}
+          path_escaped=${secret_path//\"/\\\"}
+          secrets_block+="- secretPath: \"${path_escaped}\""$'\n'
+          secrets_block+="  fileName: \"${key_escaped}\""$'\n'
+          secrets_block+="  secretKey: \"${key_escaped}\""$'\n'
+        done <<< "$secret_keys"
+      fi
 
       {
         echo "apiVersion: secrets-store.csi.x-k8s.io/v1"
