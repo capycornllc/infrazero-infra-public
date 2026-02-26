@@ -394,13 +394,16 @@ else
   spc_namespace_target="$spc_namespace_base"
 fi
 
-spc_app_file=""
+spc_app_files=()
 if [ -d "$cluster_root" ]; then
-  spc_app_file=$(find "$cluster_root" -type f -path "*/applications/*" \( -name "*infisical*secretproviderclass*.y*ml" -o -name "*secretproviderclass*.y*ml" \) 2>/dev/null | head -n1 || true)
-  if [ -n "$spc_app_file" ] && ! grep -qE '^kind:\s*Application' "$spc_app_file"; then
-    spc_app_file=""
-  fi
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if grep -qE '^kind:\s*Application' "$candidate"; then
+      spc_app_files+=("$candidate")
+    fi
+  done < <(find "$cluster_root" -type f -path "*/applications/*" \( -name "*infisical*secretproviderclass*.y*ml" -o -name "*secretproviderclass*.y*ml" \) 2>/dev/null | sort)
 fi
+spc_app_file="${spc_app_files[0]:-}"
 
 app_config_file=""
 use_app_config="false"
@@ -408,6 +411,16 @@ if [ -f "${GITOPS_DIR}/config/app-config.yaml" ]; then
   app_config_file="${GITOPS_DIR}/config/app-config.yaml"
 else
   app_config_file=$(find "$GITOPS_DIR" -type f -path "*/config/app-config.yaml" 2>/dev/null | head -n1 || true)
+fi
+app_config_targets=()
+if [ -n "$app_config_file" ] && [ -f "$app_config_file" ]; then
+  app_config_targets+=("$app_config_file")
+fi
+if [ -d "${GITOPS_DIR}/config/apps" ]; then
+  while IFS= read -r app_values_file; do
+    [ -n "$app_values_file" ] || continue
+    app_config_targets+=("$app_values_file")
+  done < <(find "${GITOPS_DIR}/config/apps" -maxdepth 1 -type f -name "*.y*ml" 2>/dev/null | sort)
 fi
 
 workloads_json=""
@@ -481,6 +494,30 @@ PY
     echo "[infisical-admin-secret] python3-yaml is required to parse ${app_config_file}" >&2
   fi
 fi
+
+update_all_app_configs() {
+  local workload_name="$1"
+  local spc_name="$2"
+  local csi_enabled="$3"
+  local target
+  local changed
+  local merged=""
+  local current
+  for target in "${app_config_targets[@]}"; do
+    [ -f "$target" ] || continue
+    changed=$(update_app_config "$target" "$workload_name" "$spc_name" "$csi_enabled" || true)
+    if [ -n "$changed" ]; then
+      merged+="${changed}"$'\n'
+    fi
+  done
+  if [ -z "$merged" ]; then
+    return 0
+  fi
+  while IFS= read -r current; do
+    [ -n "$current" ] || continue
+    echo "$current"
+  done < <(printf '%s' "$merged" | awk 'NF && !seen[$0]++')
+}
 
 ca_cert=""
 if [ -n "${INFISICAL_CA_CERT_B64:-}" ]; then
@@ -755,8 +792,8 @@ if [ -n "$spc_app_file" ]; then
       secret_keys=$(echo "$secrets_json" | jq -r '.secrets[]?.secretKey' | sed '/^$/d' || true)
       if [ -z "$secret_keys" ]; then
         echo "[infisical-admin-secret] no secrets found for ${workload_name} (${secret_path}); disabling CSI for workload" >&2
-        if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
-          changed_files=$(update_app_config "$app_config_file" "$workload_name" "" "false" || true)
+        if [ "$use_app_config" = "true" ] && [ "${#app_config_targets[@]}" -gt 0 ]; then
+          changed_files=$(update_all_app_configs "$workload_name" "" "false" || true)
         else
           changed_files=""
         fi
@@ -804,8 +841,8 @@ if [ -n "$spc_app_file" ]; then
       } > "${spc_render_dir}/${spc_file}"
 
       append_unique_spc_file "$spc_file"
-      if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
-        changed_files=$(update_app_config "$app_config_file" "$workload_name" "$spc_name" "true" || true)
+      if [ "$use_app_config" = "true" ] && [ "${#app_config_targets[@]}" -gt 0 ]; then
+        changed_files=$(update_all_app_configs "$workload_name" "$spc_name" "true" || true)
       else
         changed_files=$(update_workload_spc "$GITOPS_DIR" "$workload_name" "$workload_type" "$spc_name" || true)
       fi
@@ -848,7 +885,8 @@ if [ -n "$spc_app_file" ]; then
     done
   fi
 
-  python3 - <<'PY' "$spc_app_file" "$ENV"
+  for spc_app_target in "${spc_app_files[@]}"; do
+  python3 - <<'PY' "$spc_app_target" "$ENV"
 import re
 import sys
 
@@ -869,6 +907,7 @@ if changed:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
 PY
+  done
 else
 cat > "$cluster_patch_file" <<EOF
 apiVersion: secrets-store.csi.x-k8s.io/v1
@@ -1109,7 +1148,11 @@ if [ -n "$spc_app_file" ]; then
     git -C "$GITOPS_DIR" add "$spc_render_dir"
   fi
   git -C "$GITOPS_DIR" add -A "$cluster_patch_file" 2>/dev/null || true
-  git -C "$GITOPS_DIR" add "$spc_app_file"
+  if [ "${#spc_app_files[@]}" -gt 0 ]; then
+    for spc_app_target in "${spc_app_files[@]}"; do
+      git -C "$GITOPS_DIR" add "$spc_app_target"
+    done
+  fi
   if [ "${#workload_changed_files[@]}" -gt 0 ]; then
     for changed_file in "${workload_changed_files[@]}"; do
       git -C "$GITOPS_DIR" add "$changed_file"
