@@ -570,6 +570,10 @@ ensure_databases() {
     fi
 
     psql_as_postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"${db_ident}\" TO \"${user_ident}\";"
+
+    # Keep existing databases aligned with configured owner/grants as well.
+    # This is critical on reused volumes where bootstrap restore may be skipped.
+    normalize_db_ownership_and_privileges "$db_name" "$db_user"
   done < <(echo "$DATABASES_JSON_EFFECTIVE" | jq -cr '.[] | @base64')
 }
 
@@ -1753,10 +1757,14 @@ db_lit=$(sql_literal "$TARGET_DB_NAME")
 db_ident=$(sql_ident "$TARGET_DB_NAME")
 role_ident=$(sql_ident "$TARGET_DB_USER")
 
-echo "[db-restore] wiping database ${TARGET_DB_NAME}"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
-sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${db_ident}\" OWNER \"${role_ident}\";"
+wipe_target_database() {
+  echo "[db-restore] wiping database ${TARGET_DB_NAME}"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db_lit}';"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${db_ident}\";"
+  sudo -u postgres -H psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${db_ident}\" OWNER \"${role_ident}\";"
+}
+
+wipe_target_database
 
 role_map="${DB_RESTORE_ROLE_MAP:-}"
 skip_acl="${DB_RESTORE_SKIP_ACL:-}"
@@ -1846,6 +1854,7 @@ build_pg_restore_candidates() {
 install_additional_pg_restore_clients() {
   local installed="false"
   local candidate_major
+  local found_newer_pkg="false"
 
   if [ "${DB_RESTORE_AUTO_INSTALL_CLIENTS:-true}" != "true" ]; then
     return 1
@@ -1856,6 +1865,27 @@ install_additional_pg_restore_clients() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >/dev/null 2>&1 || true
+
+  for candidate_major in 18 17 16; do
+    if apt-cache show "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
+      found_newer_pkg="true"
+      break
+    fi
+  done
+
+  # Some base images only have distro PostgreSQL repos configured and therefore
+  # cannot install newer pg_restore clients needed for newer dump formats.
+  if [ "$found_newer_pkg" != "true" ] && command -v curl >/dev/null 2>&1 && command -v gpg >/dev/null 2>&1 && command -v lsb_release >/dev/null 2>&1; then
+    if [ ! -f /etc/apt/sources.list.d/pgdg.list ]; then
+      codename="$(lsb_release -cs 2>/dev/null || true)"
+      if [ -n "$codename" ]; then
+        echo "[db-restore] enabling PGDG repo for newer pg_restore clients"
+        curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg || true
+        echo "deb http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+        apt-get update -y >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
 
   for candidate_major in 18 17 16 15; do
     if [ "$candidate_major" = "$PG_MAJOR" ]; then
@@ -1891,6 +1921,9 @@ run_pg_restore_with_candidates() {
   fi
 
   for bin in "${pg_restore_candidates[@]}"; do
+    # Each retry must start from a clean DB; otherwise partial restores from
+    # previous attempts cause cascaded "already exists" failures.
+    wipe_target_database
     echo "[db-restore] trying pg_restore via ${bin}"
     if emit_payload_stream | sudo -u postgres -H "$bin" "${restore_args[@]}" 2>"$err_file"; then
       return 0
@@ -1940,7 +1973,7 @@ payload_looks_text_sql() {
 }
 
 if [ "$restore_format" = "custom" ] || [ "$restore_format" = "tar" ]; then
-  restore_args=(--no-owner -d "$TARGET_DB_NAME")
+  restore_args=(--clean --if-exists --no-owner -d "$TARGET_DB_NAME")
   if [ "$restore_format" = "tar" ]; then
     restore_args+=(--format=t)
   fi
@@ -1962,13 +1995,13 @@ else
     fi
   else
     echo "[db-restore] payload appears binary; trying pg_restore fallback"
-    restore_args=(--no-owner -d "$TARGET_DB_NAME")
+    restore_args=(--clean --if-exists --no-owner -d "$TARGET_DB_NAME")
     if [ "$skip_acl" = "true" ]; then
       restore_args+=(--no-privileges)
     fi
 
     if ! run_pg_restore_with_auto_install; then
-      restore_args=(--no-owner --format=t -d "$TARGET_DB_NAME")
+      restore_args=(--clean --if-exists --no-owner --format=t -d "$TARGET_DB_NAME")
       if [ "$skip_acl" = "true" ]; then
         restore_args+=(--no-privileges)
       fi
@@ -1997,13 +2030,9 @@ fi
 
 force_owner="${DB_RESTORE_FORCE_TARGET_OWNER:-}"
 if [ -z "$force_owner" ]; then
-  # If we're skipping ACLs or doing role mapping, normalize ownership so the
-  # restored DB works even when dumps were taken from a different role.
-  if [ "$skip_acl" = "true" ] || [ -n "$role_map" ]; then
-    force_owner="true"
-  else
-    force_owner="false"
-  fi
+  # Default to normalized ownership so restored objects match TARGET_DB_USER
+  # even when dump ACLs/owners are preserved.
+  force_owner="true"
 fi
 
 if [ "$force_owner" = "true" ]; then

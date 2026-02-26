@@ -682,6 +682,16 @@ if [ -n "$spc_app_file" ]; then
   mkdir -p "$spc_render_dir"
   spc_files=()
   workload_changed_files=()
+  append_unique_spc_file() {
+    local candidate="$1"
+    local existing
+    for existing in "${spc_files[@]}"; do
+      if [ "$existing" = "$candidate" ]; then
+        return 0
+      fi
+    done
+    spc_files+=("$candidate")
+  }
   if [ -f "$cluster_patch_file" ]; then
     rm -f "$cluster_patch_file"
   fi
@@ -701,7 +711,7 @@ if [ -n "$spc_app_file" ]; then
         fi
         continue
       fi
-      norm_name=$(normalize_name "$workload_name")
+      norm_name=$(normalize_name "$secrets_folder")
       if [ -z "$norm_name" ]; then
         continue
       fi
@@ -793,7 +803,7 @@ if [ -n "$spc_app_file" ]; then
         printf '%s' "$secrets_block" | sed 's/^/      /'
       } > "${spc_render_dir}/${spc_file}"
 
-      spc_files+=("$spc_file")
+      append_unique_spc_file "$spc_file"
       if [ "$use_app_config" = "true" ] && [ -n "$app_config_file" ]; then
         changed_files=$(update_app_config "$app_config_file" "$workload_name" "$spc_name" "true" || true)
       else
