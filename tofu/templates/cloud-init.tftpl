@@ -6,7 +6,6 @@ packages:
   - ca-certificates
   - zstd
   - tar
-  - awscli
 
 write_files:
   - path: /opt/infrazero/bootstrap/run.sh
@@ -185,56 +184,12 @@ write_files:
         return 1
       }
 
-      load_optional_env_file() {
-        local env_file="$1"
-        if [ -f "$env_file" ]; then
-          # shellcheck disable=SC1090
-          . "$env_file"
-        fi
-      }
-
-      load_bootstrap_env_context() {
-        load_optional_env_file "/etc/infrazero/node.env"
-        load_optional_env_file "/etc/infrazero/${ROLE}.env"
-        load_optional_env_file "/etc/infrazero/bastion.env"
-        load_optional_env_file "/etc/infrazero/egress.env"
-        load_optional_env_file "/etc/infrazero/db.env"
-      }
-
-      download_bootstrap_artifact() {
-        local artifact_file="$ROLE.tar.zst"
-        if curl -fsSL "$URL" -o "$artifact_file"; then
-          return 0
-        fi
-
-        local curl_rc=$?
-        echo "[bootstrap] presigned bootstrap download failed (rc=${curl_rc}); trying S3 API fallback"
-        load_bootstrap_env_context
-
-        if [ -z "$${S3_ACCESS_KEY_ID:-}" ] || [ -z "$${S3_SECRET_ACCESS_KEY:-}" ] || [ -z "$${S3_REGION:-}" ] || [ -z "$${S3_ENDPOINT:-}" ] || [ -z "$${INFRA_STATE_BUCKET:-}" ]; then
-          echo "[bootstrap] S3 fallback missing required env (S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_REGION/S3_ENDPOINT/INFRA_STATE_BUCKET)" >&2
-          return "$curl_rc"
-        fi
-
-        local endpoint="$S3_ENDPOINT"
-        if [[ "$endpoint" != http://* && "$endpoint" != https://* ]]; then
-          endpoint="https://${endpoint}"
-        fi
-
-        export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
-        export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
-        export AWS_DEFAULT_REGION="$S3_REGION"
-
-        local s3_object="s3://${INFRA_STATE_BUCKET}/bootstrap/${ROLE}.tar.zst"
-        aws --endpoint-url "$endpoint" s3 cp "$s3_object" "$artifact_file"
-      }
-
       ensure_private_default_route
       ensure_private_dns
       wait_for_bootstrap_url "$URL"
 
       echo "[bootstrap] downloading $ROLE artifact"
-      download_bootstrap_artifact
+      curl -fsSL "$URL" -o "$ROLE.tar.zst"
       echo "$SHA  $ROLE.tar.zst" | sha256sum -c -
 
       echo "[bootstrap] extracting $ROLE artifact"
