@@ -110,4 +110,4 @@ s3_backend:
   state_prefix: infrazero/dev
 
 bootstrap:
-  presign_expiry_seconds: 3600
+  presign_expiry_seconds: 14400
