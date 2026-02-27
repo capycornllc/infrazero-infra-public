@@ -84,10 +84,10 @@ def resolve_internal_fqdns():
 
 
 def resolve_deployed_app_fqdns():
-    fqdns: list[str] = []
+    records: list[dict[str, object]] = []
     deployed_apps_json = parse_json_env("DEPLOYED_APPS_JSON")
     if deployed_apps_json is None:
-        return fqdns
+        return records
     if not isinstance(deployed_apps_json, list):
         raise ValueError("DEPLOYED_APPS_JSON must be a JSON array")
     for idx, app in enumerate(deployed_apps_json):
@@ -100,7 +100,11 @@ def resolve_deployed_app_fqdns():
             fqdn = str(app.get("fqdn", "")).strip()
             if not fqdn:
                 raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required for legacy entries without workloads")
-            fqdns.append(fqdn)
+            proxied = to_bool(
+                app.get("cloudflare_proxied", app.get("cloudflareProxied")),
+                default=False,
+            )
+            records.append({"name": fqdn, "proxied": proxied})
             continue
 
         if not isinstance(workloads, list):
@@ -121,10 +125,13 @@ def resolve_deployed_app_fqdns():
                     f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}].fqdn is required when expose=true"
                 )
             if expose and fqdn:
-                fqdns.append(fqdn)
+                proxied = to_bool(
+                    workload.get("cloudflare_proxied", workload.get("cloudflareProxied")),
+                    default=False,
+                )
+                records.append({"name": fqdn, "proxied": proxied})
 
-    # Preserve first-seen order while removing duplicates.
-    return list(dict.fromkeys(fqdns))
+    return records
 
 
 def resolve_additional_hostnames():
@@ -266,7 +273,7 @@ def main() -> int:
 
     try:
         internal_fqdns = resolve_internal_fqdns()
-        deployed_app_fqdns = resolve_deployed_app_fqdns()
+        deployed_app_records = resolve_deployed_app_fqdns()
         additional_hostnames = resolve_additional_hostnames()
     except ValueError as exc:
         print(f"Invalid DNS inputs: {exc}", file=sys.stderr)
@@ -296,13 +303,16 @@ def main() -> int:
             if ip:
                 records.append({"name": fqdn, "content": ip, "proxied": False})
 
-    if deployed_app_fqdns and not args.lb_ip.strip():
+    if deployed_app_records and not args.lb_ip.strip():
         print("lb-ip is required when deployed_apps_json is provided.", file=sys.stderr)
         return 1
 
-    for fqdn in deployed_app_fqdns:
-        # Deployed app domains should be DNS-only (Cloudflare proxy disabled).
-        records.append({"name": fqdn, "content": args.lb_ip, "proxied": False})
+    for deployed_app_record in deployed_app_records:
+        fqdn = str(deployed_app_record.get("name", "")).strip()
+        if not fqdn:
+            continue
+        proxied = bool(deployed_app_record.get("proxied", False))
+        records.append({"name": fqdn, "content": args.lb_ip, "proxied": proxied})
 
     for entry in additional_hostnames:
         hostname = str(entry.get("hostname", "")).strip()

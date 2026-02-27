@@ -61,7 +61,7 @@ This list reflects the Epic-1 web UI inputs and generated values that will be st
 - `additional_hostnames` (optional JSON array of `{ id, hostname, ip }` to create extra Cloudflare A records)
 - `cloudflare_api_token`
 
-Note: Deployed app FQDNs (`deployed_apps_json`) are created as **DNS-only** records (Cloudflare proxy off / `proxied=false`).
+Note: Deployed app FQDNs (`deployed_apps_json`) are **DNS-only by default**. Set `workloads[].cloudflare_proxied=true` to enable Cloudflare proxy (`proxied=true`) for selected workloads.
 
 ## 5) Object Storage / S3
 - `s3_access_key_id`
