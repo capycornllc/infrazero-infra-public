@@ -96,7 +96,7 @@ fi
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl ca-certificates jq unzip apache2-utils
+  apt-get install -y curl ca-certificates jq unzip apache2-utils openssl
 fi
 
 if ! command -v argocd >/dev/null 2>&1; then
@@ -217,9 +217,14 @@ for dep in argocd-server argocd-repo-server argocd-application-controller argocd
   kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s || true
 done
 
+if [ -n "${ARGOCD_FQDN:-}" ]; then
+  argocd_url_patch=$(jq -n --arg url "https://${ARGOCD_FQDN}" '{data:{"url":$url}}')
+  kubectl -n argocd patch configmap argocd-cm --type merge -p "$argocd_url_patch" || true
+fi
+
 if [ -n "${ARGOCD_ADMIN_PASSWORD:-}" ]; then
   if command -v htpasswd >/dev/null 2>&1; then
-    admin_hash=$(htpasswd -nbBC 10 "" "$ARGOCD_ADMIN_PASSWORD" | tr -d ':\n')
+    admin_hash=$(printf '%s\n' "$ARGOCD_ADMIN_PASSWORD" | htpasswd -niBC 10 "" | tr -d ':\n')
     admin_mtime=$(date -Iseconds)
     patch_payload=$(jq -n --arg hash "$admin_hash" --arg mtime "$admin_mtime" '{stringData: {"admin.password": $hash, "admin.passwordMtime": $mtime}}')
     kubectl -n argocd patch secret argocd-secret --type merge -p "$patch_payload" || true
@@ -241,48 +246,106 @@ configure_argocd_local_users_from_platform_admins() {
     return 0
   fi
 
-  local entries_tmp
+  local entries_tmp rbac_tmp dex_secret_tmp
   entries_tmp=$(mktemp)
+  rbac_tmp=$(mktemp)
+  dex_secret_tmp=$(mktemp)
   chmod 600 "$entries_tmp"
+  chmod 600 "$rbac_tmp"
+  chmod 600 "$dex_secret_tmp"
 
   echo "$PLATFORM_ADMINS_JSON" | jq -c '.[]?' | while read -r admin; do
-    local email password read_only hash user_id group
+    local email password read_only hash user_id role hash_secret_key hash_ref
     email=$(echo "$admin" | jq -r '.email // empty')
     password=$(echo "$admin" | jq -r '.argocd_password // empty')
     read_only=$(echo "$admin" | jq -r '.argocd_read_only // false')
     if [ -z "$email" ] || [ -z "$password" ]; then
       continue
     fi
-    hash=$(htpasswd -nbBC 10 "" "$password" | tr -d ':\n')
-    user_id=$(printf '%s' "$email" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-32)
-    group="infrazero:argocd-admin"
+    hash=$(printf '%s\n' "$password" | htpasswd -niBC 10 "" | tr -d ':\n')
+    # Dex expects bcrypt hashes with $2a$/$2b$ prefix; apache htpasswd emits $2y$.
+    hash="${hash/\$2y\$/\$2a\$}"
+    user_id=$(printf '%s' "$email" | sha1sum | awk '{print $1}' | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/\1-\2-\3-\4-\5/')
+    hash_secret_key="dex.local.users.${user_id}.hash"
+    hash_ref="\$${hash_secret_key}"
+    role="role:admin"
     if [ "${read_only,,}" = "true" ]; then
-      group="infrazero:argocd-readonly"
+      role="role:readonly"
     fi
     jq -nc \
       --arg email "$email" \
-      --arg hash "$hash" \
+      --arg hash "$hash_ref" \
+      --arg username "$email" \
       --arg user_id "$user_id" \
-      --arg group "$group" \
-      '{email:$email, hash:$hash, username:$email, userID:$user_id, groups:[$group]}' \
+      '{email:$email, hash:$hash, username:$username, userID:$user_id}' \
       >> "$entries_tmp"
+    jq -nc --arg k "$hash_secret_key" --arg v "$hash" '{($k):$v}' >> "$dex_secret_tmp"
+    printf 'g, %s, %s\n' "$user_id" "$role" >> "$rbac_tmp"
   done
 
   if [ ! -s "$entries_tmp" ]; then
     echo "[node1] PLATFORM_ADMINS_JSON set but no valid Argo CD admin entries found; skipping"
     rm -f "$entries_tmp"
+    rm -f "$rbac_tmp"
+    rm -f "$dex_secret_tmp"
     return 0
   fi
 
-  local static_passwords dex_config cm_patch rbac_csv rbac_patch
+  local static_passwords dex_config oidc_config cm_patch rbac_csv rbac_patch dex_secret_data dex_secret_patch
+  local server_secret_b64 current_dex_oauth2_b64 current_dex_oauth2_client_secret dex_oauth2_client_secret dex_oauth2_patch
   static_passwords=$(jq -cs '.' "$entries_tmp")
+  dex_secret_data=$(jq -sc 'reduce .[] as $item ({}; . * $item)' "$dex_secret_tmp")
+  dex_secret_patch=$(jq -n --argjson data "$dex_secret_data" '{stringData:$data}')
+  kubectl -n argocd patch secret argocd-secret --type merge -p "$dex_secret_patch" || true
+  server_secret_b64=$(kubectl -n argocd get secret argocd-secret -o json | jq -r '.data["server.secretkey"] // empty' || true)
+  if [ -n "$server_secret_b64" ]; then
+    dex_oauth2_client_secret=$(
+      printf '%s' "$server_secret_b64" \
+      | base64 -d \
+      | openssl dgst -sha256 -binary \
+      | openssl base64 -A \
+      | tr '+/' '-_' \
+      | cut -c1-40
+    )
+    current_dex_oauth2_b64=$(kubectl -n argocd get secret argocd-secret -o json | jq -r '.data["dex.oauth2.clientSecret"] // empty' || true)
+    current_dex_oauth2_client_secret=""
+    if [ -n "$current_dex_oauth2_b64" ]; then
+      current_dex_oauth2_client_secret=$(printf '%s' "$current_dex_oauth2_b64" | base64 -d 2>/dev/null || true)
+    fi
+    if [ "$current_dex_oauth2_client_secret" != "$dex_oauth2_client_secret" ]; then
+      dex_oauth2_patch=$(jq -n --arg v "$dex_oauth2_client_secret" '{stringData:{"dex.oauth2.clientSecret":$v}}')
+      kubectl -n argocd patch secret argocd-secret --type merge -p "$dex_oauth2_patch" || true
+    fi
+  fi
   dex_config=$(jq -cn \
     --argjson static_passwords "$static_passwords" \
-    '{connectors:[{type:"local",id:"local",name:"Local",config:{}}],enablePasswordDB:true,staticPasswords:$static_passwords}')
-  cm_patch=$(jq -n --arg dex_config "$dex_config" '{data:{"dex.config":$dex_config}}')
+    '{connectors:[],enablePasswordDB:true,staticPasswords:$static_passwords}')
+  if [ -n "${ARGOCD_FQDN:-}" ]; then
+    oidc_config=$(cat <<EOF
+name: Local
+issuer: https://${ARGOCD_FQDN}/api/dex
+clientID: argo-cd
+clientSecret: \$dex.oauth2.clientSecret
+requestedScopes:
+  - openid
+  - profile
+  - email
+  - groups
+EOF
+)
+    cm_patch=$(jq -n \
+      --arg dex_config "$dex_config" \
+      --arg oidc_config "$oidc_config" \
+      '{data:{"dex.config":$dex_config,"oidc.config":$oidc_config,"admin.enabled":"true"}}')
+  else
+    cm_patch=$(jq -n --arg dex_config "$dex_config" '{data:{"dex.config":$dex_config,"admin.enabled":"true"}}')
+  fi
   kubectl -n argocd patch configmap argocd-cm --type merge -p "$cm_patch" || true
 
-  rbac_csv=$'g, admin, role:admin\ng, infrazero:argocd-admin, role:admin\ng, infrazero:argocd-readonly, role:readonly'
+  rbac_csv=$'g, admin, role:admin'
+  if [ -s "$rbac_tmp" ]; then
+    rbac_csv="${rbac_csv}"$'\n'"$(sort -u "$rbac_tmp")"
+  fi
   rbac_patch=$(jq -n \
     --arg policy_csv "$rbac_csv" \
     '{data:{"policy.csv":$policy_csv,"policy.default":"role:readonly","scopes":"[groups]"}}')
@@ -293,6 +356,8 @@ configure_argocd_local_users_from_platform_admins() {
   kubectl -n argocd rollout status deployment/argocd-dex-server --timeout=300s || true
   kubectl -n argocd rollout status deployment/argocd-server --timeout=300s || true
   rm -f "$entries_tmp"
+  rm -f "$rbac_tmp"
+  rm -f "$dex_secret_tmp"
 }
 
 configure_argocd_local_users_from_platform_admins
