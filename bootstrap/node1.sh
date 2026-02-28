@@ -246,17 +246,55 @@ configure_argocd_local_users_from_platform_admins() {
     return 0
   fi
 
-  local entries_tmp rbac_tmp dex_secret_tmp
+  local entries_tmp rbac_tmp dex_secret_tmp readonly_policy_tmp
   entries_tmp=$(mktemp)
   rbac_tmp=$(mktemp)
   dex_secret_tmp=$(mktemp)
+  readonly_policy_tmp=$(mktemp)
   chmod 600 "$entries_tmp"
   chmod 600 "$rbac_tmp"
   chmod 600 "$dex_secret_tmp"
+  chmod 600 "$readonly_policy_tmp"
+
+  append_readonly_denies() {
+    local subject="$1"
+    cat >> "$readonly_policy_tmp" <<EOF
+p, ${subject}, applications, create, */*, deny
+p, ${subject}, applications, update, */*, deny
+p, ${subject}, applications, update/*, */*, deny
+p, ${subject}, applications, delete, */*, deny
+p, ${subject}, applications, delete/*, */*, deny
+p, ${subject}, applications, sync, */*, deny
+p, ${subject}, applications, override, */*, deny
+p, ${subject}, applications, action/*, */*, deny
+p, ${subject}, applicationsets, create, */*, deny
+p, ${subject}, applicationsets, update, */*, deny
+p, ${subject}, applicationsets, delete, */*, deny
+p, ${subject}, clusters, create, *, deny
+p, ${subject}, clusters, update, *, deny
+p, ${subject}, clusters, delete, *, deny
+p, ${subject}, repositories, create, *, deny
+p, ${subject}, repositories, update, *, deny
+p, ${subject}, repositories, delete, *, deny
+p, ${subject}, write-repositories, create, *, deny
+p, ${subject}, write-repositories, update, *, deny
+p, ${subject}, write-repositories, delete, *, deny
+p, ${subject}, projects, create, *, deny
+p, ${subject}, projects, update, *, deny
+p, ${subject}, projects, delete, *, deny
+p, ${subject}, accounts, update, *, deny
+p, ${subject}, certificates, create, *, deny
+p, ${subject}, certificates, update, *, deny
+p, ${subject}, certificates, delete, *, deny
+p, ${subject}, gpgkeys, create, *, deny
+p, ${subject}, gpgkeys, delete, *, deny
+p, ${subject}, exec, create, */*, deny
+EOF
+  }
 
   echo "$PLATFORM_ADMINS_JSON" | jq -c '.[]?' | while read -r admin; do
     local email password read_only hash user_id role hash_secret_key hash_ref
-    email=$(echo "$admin" | jq -r '.email // empty')
+    email=$(echo "$admin" | jq -r '.email // empty' | tr '[:upper:]' '[:lower:]')
     password=$(echo "$admin" | jq -r '.argocd_password // empty')
     read_only=$(echo "$admin" | jq -r '.argocd_read_only // false')
     if [ -z "$email" ] || [ -z "$password" ]; then
@@ -271,6 +309,8 @@ configure_argocd_local_users_from_platform_admins() {
     role="role:admin"
     if [ "${read_only,,}" = "true" ]; then
       role="role:readonly"
+      append_readonly_denies "$user_id"
+      append_readonly_denies "$email"
     fi
     jq -nc \
       --arg email "$email" \
@@ -281,6 +321,7 @@ configure_argocd_local_users_from_platform_admins() {
       >> "$entries_tmp"
     jq -nc --arg k "$hash_secret_key" --arg v "$hash" '{($k):$v}' >> "$dex_secret_tmp"
     printf 'g, %s, %s\n' "$user_id" "$role" >> "$rbac_tmp"
+    printf 'g, %s, %s\n' "$email" "$role" >> "$rbac_tmp"
   done
 
   if [ ! -s "$entries_tmp" ]; then
@@ -288,6 +329,7 @@ configure_argocd_local_users_from_platform_admins() {
     rm -f "$entries_tmp"
     rm -f "$rbac_tmp"
     rm -f "$dex_secret_tmp"
+    rm -f "$readonly_policy_tmp"
     return 0
   fi
 
@@ -346,6 +388,9 @@ EOF
   if [ -s "$rbac_tmp" ]; then
     rbac_csv="${rbac_csv}"$'\n'"$(sort -u "$rbac_tmp")"
   fi
+  if [ -s "$readonly_policy_tmp" ]; then
+    rbac_csv="${rbac_csv}"$'\n'"$(sort -u "$readonly_policy_tmp")"
+  fi
   rbac_patch=$(jq -n \
     --arg policy_csv "$rbac_csv" \
     '{data:{"policy.csv":$policy_csv,"policy.default":"role:readonly","scopes":"[groups]"}}')
@@ -358,6 +403,7 @@ EOF
   rm -f "$entries_tmp"
   rm -f "$rbac_tmp"
   rm -f "$dex_secret_tmp"
+  rm -f "$readonly_policy_tmp"
 }
 
 configure_argocd_local_users_from_platform_admins
