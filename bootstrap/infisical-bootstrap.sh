@@ -401,6 +401,7 @@ SEED_USER_ACCESS_TOKEN=""
 
 login_seed_user() {
   local login_payload login_tmp login_code
+  local select_payload select_tmp select_code selected_token
 
   login_payload=$(jq -n \
     --arg email "$INFISICAL_EMAIL" \
@@ -426,6 +427,37 @@ login_seed_user() {
     echo "[infisical-bootstrap] /api/v3/auth/login response missing accessToken" >&2
     return 1
   fi
+
+  if [ -z "${ORGANIZATION_ID:-}" ]; then
+    echo "[infisical-bootstrap] organization id is missing; cannot scope seed token to organization" >&2
+    return 1
+  fi
+
+  select_payload=$(jq -n \
+    --arg organization_id "$ORGANIZATION_ID" \
+    '{"organizationId":$organization_id,"userAgent":"cli"}')
+  select_tmp=$(mktemp)
+  select_code=$(curl -sS -o "$select_tmp" -w "%{http_code}" \
+    -H "Authorization: Bearer ${SEED_USER_ACCESS_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "User-Agent: infrazero-bootstrap/1.0" \
+    -d "$select_payload" \
+    "${INFISICAL_SITE_URL}/api/v3/auth/select-organization" || true)
+
+  if [[ "$select_code" != 2* ]]; then
+    echo "[infisical-bootstrap] failed to select organization for seed admin (http ${select_code})" >&2
+    log_infisical_response "seed select organization" "$select_tmp"
+    rm -f "$select_tmp"
+    return 1
+  fi
+
+  selected_token=$(jq -r '.token // empty' "$select_tmp")
+  rm -f "$select_tmp"
+  if [ -z "$selected_token" ]; then
+    echo "[infisical-bootstrap] /api/v3/auth/select-organization response missing token" >&2
+    return 1
+  fi
+  SEED_USER_ACCESS_TOKEN="$selected_token"
   return 0
 }
 
