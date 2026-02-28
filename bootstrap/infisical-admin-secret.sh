@@ -405,16 +405,16 @@ if [ -d "$cluster_root" ]; then
 fi
 spc_app_file="${spc_app_files[0]:-}"
 
-app_config_file=""
+legacy_app_config_file=""
 use_app_config="false"
 if [ -f "${GITOPS_DIR}/config/app-config.yaml" ]; then
-  app_config_file="${GITOPS_DIR}/config/app-config.yaml"
+  legacy_app_config_file="${GITOPS_DIR}/config/app-config.yaml"
 else
-  app_config_file=$(find "$GITOPS_DIR" -type f -path "*/config/app-config.yaml" 2>/dev/null | head -n1 || true)
+  legacy_app_config_file=$(find "$GITOPS_DIR" -type f -path "*/config/app-config.yaml" 2>/dev/null | head -n1 || true)
 fi
 app_config_targets=()
-if [ -n "$app_config_file" ] && [ -f "$app_config_file" ]; then
-  app_config_targets+=("$app_config_file")
+if [ -n "$legacy_app_config_file" ] && [ -f "$legacy_app_config_file" ]; then
+  app_config_targets+=("$legacy_app_config_file")
 fi
 if [ -d "${GITOPS_DIR}/config/apps" ]; then
   while IFS= read -r app_values_file; do
@@ -424,8 +424,8 @@ if [ -d "${GITOPS_DIR}/config/apps" ]; then
 fi
 
 workloads_json=""
-if [ -n "$app_config_file" ] && [ -f "$app_config_file" ]; then
-  if python3 - <<'PY' "$app_config_file" >/tmp/infisical-workloads.json
+if [ "${#app_config_targets[@]}" -gt 0 ]; then
+  if python3 - <<'PY' "${app_config_targets[@]}" >/tmp/infisical-workloads.json
 import json
 import sys
 
@@ -434,15 +434,7 @@ try:
 except Exception as exc:
     raise SystemExit(1)
 
-path = sys.argv[1]
-cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
-spec = cfg.get("spec") if isinstance(cfg, dict) else {}
-if not isinstance(spec, dict):
-    spec = {}
-workloads = spec.get("workloads") or cfg.get("workloads") or []
-global_cfg = spec.get("global") if isinstance(spec, dict) else {}
-if not isinstance(global_cfg, dict):
-    global_cfg = {}
+paths = [value for value in sys.argv[1:] if str(value).strip()]
 
 def get_namespace(obj):
     for key in ("namespace",):
@@ -456,34 +448,49 @@ def get_namespace(obj):
             return value.strip()
     return ""
 
-default_ns = (
-    get_namespace(global_cfg)
-    or get_namespace(spec)
-    or get_namespace(cfg)
-    or "default"
-)
-
 items = []
-for item in workloads:
-    if not isinstance(item, dict):
-        continue
-    name = str(item.get("name", "")).strip()
-    if not name:
-        continue
-    secrets_folder = str(item.get("secretsFolder", "") or "").strip()
-    workload_type = str(item.get("type", "") or "").strip()
-    csi_cfg = item.get("csi") if isinstance(item.get("csi"), dict) else {}
-    csi_enabled = csi_cfg.get("enabled") is True
-    namespace = get_namespace(item) or default_ns
-    items.append(
-        {
-            "name": name,
-            "type": workload_type,
-            "secretsFolder": secrets_folder,
-            "csiEnabled": csi_enabled,
-            "namespace": namespace,
-        }
+seen = set()
+for path in paths:
+    cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
+    spec = cfg.get("spec") if isinstance(cfg, dict) else {}
+    if not isinstance(spec, dict):
+        spec = {}
+    workloads = spec.get("workloads") or cfg.get("workloads") or []
+    global_cfg = spec.get("global") if isinstance(spec, dict) else {}
+    if not isinstance(global_cfg, dict):
+        global_cfg = {}
+
+    default_ns = (
+        get_namespace(global_cfg)
+        or get_namespace(spec)
+        or get_namespace(cfg)
+        or "default"
     )
+
+    for item in workloads:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        secrets_folder = str(item.get("secretsFolder", "") or "").strip()
+        workload_type = str(item.get("type", "") or "").strip()
+        csi_cfg = item.get("csi") if isinstance(item.get("csi"), dict) else {}
+        csi_enabled = csi_cfg.get("enabled") is True
+        namespace = get_namespace(item) or default_ns
+        dedupe_key = (name, workload_type, secrets_folder, namespace)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        items.append(
+            {
+                "name": name,
+                "type": workload_type,
+                "secretsFolder": secrets_folder,
+                "csiEnabled": csi_enabled,
+                "namespace": namespace,
+            }
+        )
 
 print(json.dumps(items))
 PY
@@ -491,7 +498,7 @@ PY
     workloads_json="$(cat /tmp/infisical-workloads.json)"
     use_app_config="true"
   else
-    echo "[infisical-admin-secret] python3-yaml is required to parse ${app_config_file}" >&2
+    echo "[infisical-admin-secret] python3-yaml is required to parse app config values files" >&2
   fi
 fi
 
@@ -854,7 +861,7 @@ if [ -n "$spc_app_file" ]; then
       fi
     done < <(echo "$workloads_json" | jq -c '.[]')
   else
-    echo "[infisical-admin-secret] no workloads with secretsFolder found in app config; skipping SPC generation" >&2
+    echo "[infisical-admin-secret] no workloads with secretsFolder found in app config values; skipping SPC generation" >&2
   fi
 
   if [ "${#spc_files[@]}" -gt 0 ]; then
