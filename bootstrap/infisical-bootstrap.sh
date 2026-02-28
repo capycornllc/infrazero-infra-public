@@ -471,29 +471,88 @@ derive_first_name() {
   echo "$candidate"
 }
 
-parse_signup_token_from_link() {
+parse_query_param_from_link() {
   local link="$1"
-  local token=""
+  local key="$2"
+  local value=""
   if command -v python3 >/dev/null 2>&1; then
-    token=$(python3 - "$link" <<'PY'
+    value=$(python3 - "$link" "$key" <<'PY'
 import sys
 from urllib.parse import urlparse, parse_qs, unquote
 
 link = sys.argv[1] if len(sys.argv) > 1 else ""
+key = sys.argv[2] if len(sys.argv) > 2 else ""
 parsed = urlparse(link)
 qs = parse_qs(parsed.query, keep_blank_values=True)
-token = (qs.get("token") or [""])[0]
-print(unquote(token))
+value = (qs.get(key) or [""])[0]
+print(unquote(value))
 PY
     ) || true
   fi
 
-  if [ -z "$token" ]; then
-    token=$(echo "$link" | sed -n 's/.*[?&]token=\([^&]*\).*/\1/p')
+  if [ -z "$value" ]; then
+    case "$key" in
+      token)
+        value=$(echo "$link" | sed -n 's/.*[?&]token=\([^&]*\).*/\1/p')
+        ;;
+      to)
+        value=$(echo "$link" | sed -n 's/.*[?&]to=\([^&]*\).*/\1/p')
+        ;;
+      organization_id)
+        value=$(echo "$link" | sed -n 's/.*[?&]organization_id=\([^&]*\).*/\1/p')
+        ;;
+    esac
   fi
 
-  token=$(printf '%s' "$token" | tr -d '\r\n')
-  echo "$token"
+  value=$(printf '%s' "$value" | tr -d '\r\n')
+  echo "$value"
+}
+
+parse_signup_code_from_link() {
+  parse_query_param_from_link "$1" "token"
+}
+
+parse_invite_email_from_link() {
+  parse_query_param_from_link "$1" "to"
+}
+
+parse_invite_org_from_link() {
+  parse_query_param_from_link "$1" "organization_id"
+}
+
+exchange_invite_code_for_signup_token() {
+  local email="$1"
+  local organization_id="$2"
+  local invite_code="$3"
+  local verify_payload verify_tmp verify_code signup_token
+
+  verify_payload=$(jq -n \
+    --arg email "$email" \
+    --arg organization_id "$organization_id" \
+    --arg code "$invite_code" \
+    '{email:$email, organizationId:$organization_id, code:$code}')
+  verify_tmp=$(mktemp)
+  verify_code=$(curl -sS -o "$verify_tmp" -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -H "User-Agent: infrazero-bootstrap/1.0" \
+    -d "$verify_payload" \
+    "${INFISICAL_API_BASE}/v1/invite-org/verify" || true)
+
+  if [[ "$verify_code" != 2* ]]; then
+    echo "[infisical-bootstrap] failed to verify invite code for ${email} (http ${verify_code})" >&2
+    log_infisical_response "verify invite ${email}" "$verify_tmp"
+    rm -f "$verify_tmp"
+    return 1
+  fi
+
+  signup_token=$(jq -r '.token // empty' "$verify_tmp" 2>/dev/null || true)
+  rm -f "$verify_tmp"
+  if [ -z "$signup_token" ]; then
+    echo "[infisical-bootstrap] invite verify response missing signup token for ${email}" >&2
+    return 1
+  fi
+  printf '%s' "$signup_token"
+  return 0
 }
 
 complete_invited_user_signup() {
@@ -569,7 +628,8 @@ provision_platform_admin_local_users() {
   fi
 
   while read -r admin; do
-    local email password invite_payload invite_tmp invite_code invite_link signup_token message
+    local email password invite_payload invite_tmp invite_code invite_link signup_code signup_token message
+    local invite_email invite_org_id token_dot_count
     email=$(echo "$admin" | jq -r '.email // empty' | tr '[:upper:]' '[:lower:]')
     password=$(echo "$admin" | jq -r '.infisical_password // empty')
 
@@ -612,10 +672,24 @@ provision_platform_admin_local_users() {
       continue
     fi
 
-    signup_token=$(parse_signup_token_from_link "$invite_link")
-    if [ -z "$signup_token" ]; then
+    signup_code=$(parse_signup_code_from_link "$invite_link")
+    if [ -z "$signup_code" ]; then
       echo "[infisical-bootstrap] unable to extract signup token for ${email}" >&2
       return 1
+    fi
+    signup_token="$signup_code"
+    token_dot_count=$(printf '%s' "$signup_token" | awk -F'.' '{print NF-1}')
+    if [ "$token_dot_count" -ne 2 ]; then
+      invite_email=$(parse_invite_email_from_link "$invite_link")
+      invite_org_id=$(parse_invite_org_from_link "$invite_link")
+      if [ -z "$invite_email" ]; then
+        invite_email="$email"
+      fi
+      invite_email=$(printf '%s' "$invite_email" | tr '[:upper:]' '[:lower:]')
+      if [ -z "$invite_org_id" ]; then
+        invite_org_id="$ORGANIZATION_ID"
+      fi
+      signup_token=$(exchange_invite_code_for_signup_token "$invite_email" "$invite_org_id" "$signup_code") || return 1
     fi
 
     complete_invited_user_signup "$email" "$password" "$signup_token" || return 1
