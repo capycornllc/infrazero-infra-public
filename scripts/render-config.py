@@ -345,7 +345,7 @@ def main() -> int:
             if not email:
                 errors.append(f"PLATFORM_ADMINS_JSON[{idx}].email is required")
                 continue
-            if not re.match(r"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", email):
+            if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
                 errors.append(f"PLATFORM_ADMINS_JSON[{idx}].email must be a valid email")
                 continue
             email_key = email.lower()
