@@ -228,6 +228,75 @@ if [ -n "${ARGOCD_ADMIN_PASSWORD:-}" ]; then
   fi
 fi
 
+configure_argocd_local_users_from_platform_admins() {
+  if [ -z "${PLATFORM_ADMINS_JSON:-}" ]; then
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[node1] jq not available; skipping Argo CD per-admin bootstrap" >&2
+    return 0
+  fi
+  if ! command -v htpasswd >/dev/null 2>&1; then
+    echo "[node1] htpasswd not available; skipping Argo CD per-admin bootstrap" >&2
+    return 0
+  fi
+
+  local entries_tmp
+  entries_tmp=$(mktemp)
+  chmod 600 "$entries_tmp"
+
+  echo "$PLATFORM_ADMINS_JSON" | jq -c '.[]?' | while read -r admin; do
+    local email password read_only hash user_id group
+    email=$(echo "$admin" | jq -r '.email // empty')
+    password=$(echo "$admin" | jq -r '.argocd_password // empty')
+    read_only=$(echo "$admin" | jq -r '.argocd_read_only // false')
+    if [ -z "$email" ] || [ -z "$password" ]; then
+      continue
+    fi
+    hash=$(htpasswd -nbBC 10 "" "$password" | tr -d ':\n')
+    user_id=$(printf '%s' "$email" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-32)
+    group="infrazero:argocd-admin"
+    if [ "${read_only,,}" = "true" ]; then
+      group="infrazero:argocd-readonly"
+    fi
+    jq -nc \
+      --arg email "$email" \
+      --arg hash "$hash" \
+      --arg user_id "$user_id" \
+      --arg group "$group" \
+      '{email:$email, hash:$hash, username:$email, userID:$user_id, groups:[$group]}' \
+      >> "$entries_tmp"
+  done
+
+  if [ ! -s "$entries_tmp" ]; then
+    echo "[node1] PLATFORM_ADMINS_JSON set but no valid Argo CD admin entries found; skipping"
+    rm -f "$entries_tmp"
+    return 0
+  fi
+
+  local static_passwords dex_config cm_patch rbac_csv rbac_patch
+  static_passwords=$(jq -cs '.' "$entries_tmp")
+  dex_config=$(jq -cn \
+    --argjson static_passwords "$static_passwords" \
+    '{connectors:[{type:"local",id:"local",name:"Local",config:{}}],enablePasswordDB:true,staticPasswords:$static_passwords}')
+  cm_patch=$(jq -n --arg dex_config "$dex_config" '{data:{"dex.config":$dex_config}}')
+  kubectl -n argocd patch configmap argocd-cm --type merge -p "$cm_patch" || true
+
+  rbac_csv=$'g, admin, role:admin\ng, infrazero:argocd-admin, role:admin\ng, infrazero:argocd-readonly, role:readonly'
+  rbac_patch=$(jq -n \
+    --arg policy_csv "$rbac_csv" \
+    '{data:{"policy.csv":$policy_csv,"policy.default":"role:readonly","scopes":"[groups]"}}')
+  kubectl -n argocd patch configmap argocd-rbac-cm --type merge -p "$rbac_patch" || true
+
+  kubectl -n argocd rollout restart deployment/argocd-dex-server || true
+  kubectl -n argocd rollout restart deployment/argocd-server || true
+  kubectl -n argocd rollout status deployment/argocd-dex-server --timeout=300s || true
+  kubectl -n argocd rollout status deployment/argocd-server --timeout=300s || true
+  rm -f "$entries_tmp"
+}
+
+configure_argocd_local_users_from_platform_admins
+
 kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}' || true
 kubectl -n argocd rollout restart deployment/argocd-server || true
 

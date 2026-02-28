@@ -303,6 +303,7 @@ if [[ "$bootstrap_code" != 2* ]]; then
 fi
 
 ADMIN_TOKEN=$(jq -r '.identity.credentials.token // empty' "$bootstrap_tmp")
+ORGANIZATION_ID=$(jq -r '.organization.id // .organization._id // empty' "$bootstrap_tmp")
 
 if [ -z "$ADMIN_TOKEN" ]; then
   echo "[infisical-bootstrap] bootstrap response missing required fields" >&2
@@ -396,27 +397,220 @@ if [ -z "$admin_role_slug" ]; then
   admin_role_slug="member"
 fi
 
-membership_payload=$(jq -n \
-  --arg email "$INFISICAL_EMAIL" \
-  --arg role "$admin_role_slug" \
-  '{emails:[$email], roleSlugs:[$role]}')
-membership_tmp=$(mktemp)
-membership_code=$(curl -sS -o "$membership_tmp" -w "%{http_code}" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "$membership_payload" \
-  "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/memberships" || true)
-if [[ "$membership_code" != 2* ]]; then
-  message=$(jq -r '.message // empty' "$membership_tmp" 2>/dev/null || true)
-  if echo "$message" | grep -qi "already"; then
-    echo "[infisical-bootstrap] admin already added to project; continuing"
-  else
-    echo "[infisical-bootstrap] failed to add admin to project (http ${membership_code})" >&2
-    log_infisical_response "project membership" "$membership_tmp"
-    exit 1
+SEED_USER_ACCESS_TOKEN=""
+
+login_seed_user() {
+  local login_payload login_tmp login_code
+
+  login_payload=$(jq -n \
+    --arg email "$INFISICAL_EMAIL" \
+    --arg password "$INFISICAL_PASSWORD" \
+    '{email:$email, password:$password}')
+  login_tmp=$(mktemp)
+  login_code=$(curl -sS -o "$login_tmp" -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -H "User-Agent: infrazero-bootstrap/1.0" \
+    -d "$login_payload" \
+    "${INFISICAL_SITE_URL}/api/v3/auth/login" || true)
+
+  if [[ "$login_code" != 2* ]]; then
+    echo "[infisical-bootstrap] failed to log in seed admin via /api/v3/auth/login (http ${login_code})" >&2
+    log_infisical_response "seed login" "$login_tmp"
+    rm -f "$login_tmp"
+    return 1
   fi
+
+  SEED_USER_ACCESS_TOKEN=$(jq -r '.accessToken // empty' "$login_tmp")
+  rm -f "$login_tmp"
+  if [ -z "$SEED_USER_ACCESS_TOKEN" ]; then
+    echo "[infisical-bootstrap] /api/v3/auth/login response missing accessToken" >&2
+    return 1
+  fi
+  return 0
+}
+
+derive_first_name() {
+  local email="$1" local_part candidate
+  local_part="${email%@*}"
+  candidate=$(echo "$local_part" | sed -E 's/[^A-Za-z0-9]+/ /g' | awk '{print $1}')
+  if [ -z "$candidate" ]; then
+    candidate="Admin"
+  fi
+  echo "$candidate"
+}
+
+parse_signup_token_from_link() {
+  local link="$1"
+  echo "$link" | sed -n 's/.*[?&]token=\([^&]*\).*/\1/p'
+}
+
+complete_invited_user_signup() {
+  local email="$1"
+  local password="$2"
+  local signup_token="$3"
+  local first_name complete_payload complete_tmp complete_code message
+
+  first_name=$(derive_first_name "$email")
+  complete_payload=$(jq -n \
+    --arg email "$email" \
+    --arg password "$password" \
+    --arg first_name "$first_name" \
+    '{email:$email, password:$password, firstName:$first_name}')
+  complete_tmp=$(mktemp)
+  complete_code=$(curl -sS -o "$complete_tmp" -w "%{http_code}" \
+    -H "Authorization: Bearer ${signup_token}" \
+    -H "Content-Type: application/json" \
+    -H "User-Agent: infrazero-bootstrap/1.0" \
+    -d "$complete_payload" \
+    "${INFISICAL_SITE_URL}/api/v3/signup/complete-account/invite" || true)
+
+  if [[ "$complete_code" != 2* ]]; then
+    message=$(jq -r '.message // empty' "$complete_tmp" 2>/dev/null || true)
+    if echo "$message" | grep -Eqi "already|accepted|complete"; then
+      echo "[infisical-bootstrap] ${email} already has a completed account; continuing"
+      rm -f "$complete_tmp"
+      return 0
+    fi
+    echo "[infisical-bootstrap] failed to complete invited signup for ${email} (http ${complete_code})" >&2
+    log_infisical_response "complete invited signup ${email}" "$complete_tmp"
+    rm -f "$complete_tmp"
+    return 1
+  fi
+
+  rm -f "$complete_tmp"
+  return 0
+}
+
+provision_platform_admin_local_users() {
+  local extra_admin_count
+
+  if [ -z "${PLATFORM_ADMINS_JSON:-}" ]; then
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[infisical-bootstrap] jq is required to process PLATFORM_ADMINS_JSON" >&2
+    return 1
+  fi
+  if [ -z "$ORGANIZATION_ID" ]; then
+    echo "[infisical-bootstrap] organization id is missing from bootstrap response; cannot provision local users" >&2
+    return 1
+  fi
+
+  extra_admin_count=$(echo "$PLATFORM_ADMINS_JSON" | jq --arg seed "${INFISICAL_EMAIL,,}" '[.[]? | select((.email // "" | ascii_downcase) != $seed and (.email // "") != "" and (.infisical_password // "") != "")] | length' 2>/dev/null || echo "0")
+  if [ "$extra_admin_count" = "0" ]; then
+    return 0
+  fi
+
+  if ! login_seed_user; then
+    return 1
+  fi
+
+  while read -r admin; do
+    local email password invite_payload invite_tmp invite_code invite_link signup_token message
+    email=$(echo "$admin" | jq -r '.email // empty' | tr '[:upper:]' '[:lower:]')
+    password=$(echo "$admin" | jq -r '.infisical_password // empty')
+
+    if [ -z "$email" ] || [ -z "$password" ]; then
+      continue
+    fi
+    if [ "$email" = "${INFISICAL_EMAIL,,}" ]; then
+      continue
+    fi
+
+    invite_payload=$(jq -n \
+      --arg email "$email" \
+      --arg org "$ORGANIZATION_ID" \
+      '{inviteeEmails:[$email], organizationId:$org, organizationRoleSlug:"admin"}')
+    invite_tmp=$(mktemp)
+    invite_code=$(curl -sS -o "$invite_tmp" -w "%{http_code}" \
+      -H "Authorization: Bearer ${SEED_USER_ACCESS_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$invite_payload" \
+      "${INFISICAL_API_BASE}/v1/invite-org/signup" || true)
+
+    if [[ "$invite_code" != 2* ]]; then
+      message=$(jq -r '.message // empty' "$invite_tmp" 2>/dev/null || true)
+      if echo "$message" | grep -Eqi "already|exists|accepted|member"; then
+        echo "[infisical-bootstrap] invite skipped for ${email}; membership already exists"
+        rm -f "$invite_tmp"
+        continue
+      fi
+      echo "[infisical-bootstrap] failed to create invite for ${email} (http ${invite_code})" >&2
+      log_infisical_response "invite ${email}" "$invite_tmp"
+      rm -f "$invite_tmp"
+      return 1
+    fi
+
+    invite_link=$(jq -r '.completeInviteLinks[0].link // empty' "$invite_tmp" 2>/dev/null || true)
+    rm -f "$invite_tmp"
+
+    if [ -z "$invite_link" ]; then
+      echo "[infisical-bootstrap] no completeInviteLinks token returned for ${email}; skipping password provisioning"
+      continue
+    fi
+
+    signup_token=$(parse_signup_token_from_link "$invite_link")
+    if [ -z "$signup_token" ]; then
+      echo "[infisical-bootstrap] unable to extract signup token for ${email}" >&2
+      return 1
+    fi
+
+    complete_invited_user_signup "$email" "$password" "$signup_token" || return 1
+  done < <(echo "$PLATFORM_ADMINS_JSON" | jq -c '.[]?' 2>/dev/null || true)
+
+  return 0
+}
+
+provision_platform_admin_local_users
+
+ensure_project_membership() {
+  local email="$1"
+  local membership_payload membership_tmp membership_code message
+
+  if [ -z "$email" ]; then
+    return 0
+  fi
+
+  membership_payload=$(jq -n \
+    --arg email "$email" \
+    --arg role "$admin_role_slug" \
+    '{emails:[$email], roleSlugs:[$role]}')
+  membership_tmp=$(mktemp)
+  membership_code=$(curl -sS -o "$membership_tmp" -w "%{http_code}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$membership_payload" \
+    "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/memberships" || true)
+  if [[ "$membership_code" != 2* ]]; then
+    message=$(jq -r '.message // empty' "$membership_tmp" 2>/dev/null || true)
+    if echo "$message" | grep -qi "already"; then
+      echo "[infisical-bootstrap] ${email} already added to project; continuing"
+    else
+      echo "[infisical-bootstrap] failed to add ${email} to project (http ${membership_code})" >&2
+      log_infisical_response "project membership ${email}" "$membership_tmp"
+      rm -f "$membership_tmp"
+      return 1
+    fi
+  fi
+  rm -f "$membership_tmp"
+  return 0
+}
+
+declare -A membership_emails_seen
+membership_emails_seen["${INFISICAL_EMAIL,,}"]=1
+ensure_project_membership "$INFISICAL_EMAIL"
+
+if [ -n "${PLATFORM_ADMINS_JSON:-}" ] && command -v jq >/dev/null 2>&1; then
+  while IFS= read -r platform_email; do
+    [ -z "$platform_email" ] && continue
+    key="${platform_email,,}"
+    if [ -n "${membership_emails_seen[$key]:-}" ]; then
+      continue
+    fi
+    membership_emails_seen["$key"]=1
+    ensure_project_membership "$platform_email"
+  done < <(echo "$PLATFORM_ADMINS_JSON" | jq -r '.[]?.email // empty' 2>/dev/null || true)
 fi
-rm -f "$membership_tmp"
 
 existing_envs=$(jq -r '.environments[]?.slug' "$project_tmp" 2>/dev/null | tr '\n' ' ')
 

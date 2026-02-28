@@ -114,6 +114,7 @@ require_env "INFISICAL_POSTGRES_USER"
 require_env "INFISICAL_POSTGRES_PASSWORD"
 require_env "INFISICAL_ENCRYPTION_KEY"
 require_env "INFISICAL_AUTH_SECRET"
+require_env "GRAFANA_ADMIN_PASSWORD"
 
 export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
@@ -293,12 +294,21 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - /opt/infrazero/egress/grafana-data:/var/lib/grafana
       - /opt/infrazero/egress/grafana-provisioning:/etc/grafana/provisioning:ro
 EOF
 
-mkdir -p /opt/infrazero/egress/loki-data /opt/infrazero/egress/grafana-data /opt/infrazero/egress/grafana-provisioning/datasources
+mkdir -p \
+  /opt/infrazero/egress/loki-data \
+  /opt/infrazero/egress/grafana-data \
+  /opt/infrazero/egress/grafana-provisioning/datasources \
+  /opt/infrazero/egress/grafana-provisioning/dashboards \
+  /opt/infrazero/egress/grafana-dashboards
 chown -R 10001:10001 /opt/infrazero/egress/loki-data
 chown -R 472:472 /opt/infrazero/egress/grafana-data
 
@@ -307,11 +317,232 @@ apiVersion: 1
 
 datasources:
   - name: Loki
+    uid: infrazero-loki
     type: loki
     access: proxy
     url: http://loki:3100
     isDefault: true
     editable: false
+EOF
+
+cat > /opt/infrazero/egress/grafana-provisioning/dashboards/infrazero.yml <<'EOF'
+apiVersion: 1
+
+providers:
+  - name: infrazero
+    orgId: 1
+    folder: Infrazero / Operations
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /opt/infrazero/egress/grafana-dashboards
+EOF
+
+cat > /opt/infrazero/egress/grafana-dashboards/infrazero-platform-health.json <<'EOF'
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "sum by (cluster) (count_over_time({cluster=~\".+\"}[5m]))", "legendFormat": "{{cluster}}", "refId": "A"}
+      ],
+      "title": "Log Throughput by Cluster",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "sum by (namespace) (count_over_time({namespace=~\".+\"}[5m]))", "legendFormat": "{{namespace}}", "refId": "A"}
+      ],
+      "title": "Namespace Log Volume",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 8},
+      "id": 3,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "showLabels": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [{"expr": "{job=~\".+\"} |= \"error\" or {job=~\".+\"} |= \"panic\" or {job=~\".+\"} |= \"fatal\"", "refId": "A"}],
+      "title": "Recent Error Logs",
+      "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["infrazero", "platform", "health"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Infrazero Platform Health",
+  "uid": "infrazero-platform-health",
+  "version": 1
+}
+EOF
+
+cat > /opt/infrazero/egress/grafana-dashboards/infrazero-app-logs.json <<'EOF'
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "sum by (namespace, app) (count_over_time({namespace=~\"$namespace\", app=~\"$app\"}[5m]))", "legendFormat": "{{namespace}} / {{app}}", "refId": "A"}
+      ],
+      "title": "App Log Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "id": 2,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "showLabels": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [
+        {"expr": "{namespace=~\"$namespace\", app=~\"$app\", pod=~\"$pod\"} |~ \"$query\"", "refId": "A"}
+      ],
+      "title": "Application Logs",
+      "type": "logs"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["infrazero", "apps", "logs"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": ".*", "value": ".*"},
+        "datasource": {"type": "loki", "uid": "infrazero-loki"},
+        "definition": "label_values({namespace=~\".+\"}, namespace)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "namespace",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": "label_values({namespace=~\".+\"}, namespace)",
+        "refresh": 2,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": ".*", "value": ".*"},
+        "datasource": {"type": "loki", "uid": "infrazero-loki"},
+        "definition": "label_values({namespace=~\"$namespace\", app=~\".+\"}, app)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "app",
+        "multi": false,
+        "name": "app",
+        "options": [],
+        "query": "label_values({namespace=~\"$namespace\", app=~\".+\"}, app)",
+        "refresh": 2,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": ".*", "value": ".*"},
+        "datasource": {"type": "loki", "uid": "infrazero-loki"},
+        "definition": "label_values({namespace=~\"$namespace\", app=~\"$app\", pod=~\".+\"}, pod)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "pod",
+        "multi": false,
+        "name": "pod",
+        "options": [],
+        "query": "label_values({namespace=~\"$namespace\", app=~\"$app\", pod=~\".+\"}, pod)",
+        "refresh": 2,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": ".*", "value": ".*"},
+        "hide": 0,
+        "label": "search",
+        "name": "query",
+        "options": [],
+        "query": ".*",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Infrazero App Logs",
+  "uid": "infrazero-app-logs",
+  "version": 1
+}
+EOF
+
+cat > /opt/infrazero/egress/grafana-dashboards/infrazero-bootstrap-and-security.json <<'EOF'
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "sum by (host, unit) (count_over_time({unit=~\"infrazero-bootstrap|cloud-init.*|k3s.*|docker.*\"}[5m]))", "legendFormat": "{{host}} / {{unit}}", "refId": "A"}
+      ],
+      "title": "Bootstrap and Runtime Service Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "sum by (host) (count_over_time({job=\"systemd-journal\"} |= \"Failed password\" [5m])) + sum by (host) (count_over_time({job=\"systemd-journal\"} |= \"authentication failure\" [5m]))", "legendFormat": "{{host}}", "refId": "A"}
+      ],
+      "title": "Auth Failure Signal",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "infrazero-loki"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 8},
+      "id": 3,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "showLabels": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [
+        {"expr": "{job=\"systemd-journal\"} |= \"infisical-bootstrap\" or {job=\"systemd-journal\"} |= \"[node1]\" or {job=\"systemd-journal\"} |= \"[egress]\" or {job=\"systemd-journal\"} |= \"Failed password\" or {job=\"systemd-journal\"} |= \"authentication failure\"", "refId": "A"}
+      ],
+      "title": "Bootstrap + Security Audit Trail",
+      "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["infrazero", "bootstrap", "security", "audit"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "title": "Infrazero Bootstrap and Security",
+  "uid": "infrazero-bootstrap-security",
+  "version": 1
+}
 EOF
 
 compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
@@ -728,6 +959,110 @@ compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
 
 setup_k3s_haproxy || true
 setup_service_tls || true
+
+cat > /opt/infrazero/egress/grafana-bootstrap.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+load_env() {
+  local file="$1"
+  if [ -f "$file" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$file"
+    set +a
+  fi
+}
+
+load_env /etc/infrazero/egress.env
+load_env /etc/infrazero/egress.bootstrap.env
+
+if [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+  echo "[grafana-bootstrap] GRAFANA_ADMIN_PASSWORD is required" >&2
+  exit 1
+fi
+
+if [ -z "${PLATFORM_ADMINS_JSON:-}" ]; then
+  echo "[grafana-bootstrap] PLATFORM_ADMINS_JSON not set; skipping per-admin Grafana users"
+  exit 0
+fi
+
+for i in {1..60}; do
+  if curl -fsS -u "admin:${GRAFANA_ADMIN_PASSWORD}" http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+lookup_tmp=$(mktemp)
+create_tmp=$(mktemp)
+org_tmp=$(mktemp)
+cleanup() {
+  rm -f "$lookup_tmp" "$create_tmp" "$org_tmp"
+}
+trap cleanup EXIT
+
+echo "$PLATFORM_ADMINS_JSON" | jq -c '.[]?' | while read -r admin; do
+  email=$(echo "$admin" | jq -r '.email // empty')
+  password=$(echo "$admin" | jq -r '.grafana_password // empty')
+  if [ -z "$email" ] || [ -z "$password" ]; then
+    continue
+  fi
+
+  lookup_email_uri=$(printf '%s' "$email" | jq -sRr @uri)
+  lookup_code=$(curl -sS -u "admin:${GRAFANA_ADMIN_PASSWORD}" -o "$lookup_tmp" -w "%{http_code}" \
+    "http://127.0.0.1:3000/api/users/lookup?loginOrEmail=${lookup_email_uri}" || true)
+
+  user_id=""
+  if [ "$lookup_code" = "200" ]; then
+    user_id=$(jq -r '.id // empty' "$lookup_tmp")
+  elif [ "$lookup_code" = "404" ]; then
+    create_payload=$(jq -n --arg email "$email" --arg password "$password" \
+      '{name:$email,email:$email,login:$email,password:$password}')
+    create_code=$(curl -sS -u "admin:${GRAFANA_ADMIN_PASSWORD}" -o "$create_tmp" -w "%{http_code}" \
+      -H "Content-Type: application/json" \
+      -d "$create_payload" \
+      "http://127.0.0.1:3000/api/admin/users" || true)
+    if [[ "$create_code" != 2* ]]; then
+      echo "[grafana-bootstrap] failed to create user ${email} (http ${create_code})" >&2
+      continue
+    fi
+    user_id=$(jq -r '.id // empty' "$create_tmp")
+  else
+    echo "[grafana-bootstrap] failed to lookup user ${email} (http ${lookup_code})" >&2
+    continue
+  fi
+
+  if [ -z "$user_id" ]; then
+    echo "[grafana-bootstrap] unable to resolve user id for ${email}" >&2
+    continue
+  fi
+
+  password_payload=$(jq -n --arg password "$password" '{password:$password}')
+  curl -sS -u "admin:${GRAFANA_ADMIN_PASSWORD}" -o /dev/null \
+    -H "Content-Type: application/json" \
+    -d "$password_payload" \
+    "http://127.0.0.1:3000/api/admin/users/${user_id}/password" || true
+
+  org_code=$(curl -sS -u "admin:${GRAFANA_ADMIN_PASSWORD}" -o "$org_tmp" -w "%{http_code}" \
+    "http://127.0.0.1:3000/api/org/users" || true)
+  if [ "$org_code" = "200" ]; then
+    org_user_id=$(jq -r --arg email "$email" '.[] | select((.email // "") == $email or (.login // "") == $email) | .userId' "$org_tmp" | head -n 1)
+    if [ -n "$org_user_id" ]; then
+      role_payload='{"role":"Admin"}'
+      curl -sS -u "admin:${GRAFANA_ADMIN_PASSWORD}" -o /dev/null \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "$role_payload" \
+        "http://127.0.0.1:3000/api/org/users/${org_user_id}" || true
+    fi
+  fi
+done
+
+echo "[grafana-bootstrap] complete"
+EOF
+chmod +x /opt/infrazero/egress/grafana-bootstrap.sh
+/opt/infrazero/egress/grafana-bootstrap.sh || true
 
 if [ -n "$INFISICAL_FQDN" ]; then
   echo "[egress] infisical https enabled at https://${INFISICAL_FQDN}"

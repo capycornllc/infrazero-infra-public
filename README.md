@@ -55,6 +55,8 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `infisical_db_backup_age_public_key`
 - `infisical_db_backup_age_private_key`
 - `infisical_restore_from_s3` (optional; `true` to restore from S3 before bootstrap)
+- `platform_admins_json` (optional per-admin credentials JSON: email + Argo CD/Infisical/Grafana passwords + Argo read-only flag)
+- `grafana_admin_password` (optional bootstrap admin password override for Grafana local API setup)
 - `INFISICAL_BOOTSTRAP_SECRETS__*` (optional split JSON payloads for Infisical bootstrap; one secret per folder)
 - Legacy fallback: `infisical_bootstrap_secrets` or `INFISICAL_BOOTSTRAP_SECRETS` (single JSON payload)
 - `argocd_admin_password`

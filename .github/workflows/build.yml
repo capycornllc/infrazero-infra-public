@@ -66,6 +66,8 @@ jobs:
       K3S_JOIN_TOKEN: ${{ secrets.k3s_join_token }}
       LOAD_BALANCER_CONFIG: ${{ secrets.load_balancer_config }}
       ARGOCD_ADMIN_PASSWORD: ${{ secrets.argocd_admin_password }}
+      PLATFORM_ADMINS_JSON: ${{ secrets.platform_admins_json || secrets.PLATFORM_ADMINS_JSON }}
+      GRAFANA_ADMIN_PASSWORD: ${{ secrets.grafana_admin_password || secrets.GRAFANA_ADMIN_PASSWORD }}
       ARGOCD_FQDN: ${{ secrets.argocd_fqdn }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.cloudflare_api_token }}
       WG_SERVER_PRIVATE_KEY: ${{ secrets.wg_server_private_key }}

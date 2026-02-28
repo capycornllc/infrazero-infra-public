@@ -316,6 +316,69 @@ def main() -> int:
                 return False
         return bool(value)
 
+    def parse_platform_admins(raw: str) -> tuple[list[dict], str]:
+        if not raw:
+            return [], ""
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            errors.append(f"PLATFORM_ADMINS_JSON is not valid JSON: {exc}")
+            return [], ""
+
+        if not isinstance(parsed, list):
+            errors.append("PLATFORM_ADMINS_JSON must be a JSON array")
+            return [], ""
+
+        admins: list[dict] = []
+        seen_emails: set[str] = set()
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}] must be an object")
+                continue
+
+            email = str(item.get("email", "")).strip()
+            argocd_password = str(item.get("argocd_password", "")).strip()
+            infisical_password = str(item.get("infisical_password", "")).strip()
+            grafana_password = str(item.get("grafana_password", "")).strip()
+            argocd_read_only = parse_bool(item.get("argocd_read_only"), default=False)
+
+            if not email:
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}].email is required")
+                continue
+            if not re.match(r"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", email):
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}].email must be a valid email")
+                continue
+            email_key = email.lower()
+            if email_key in seen_emails:
+                errors.append(f"PLATFORM_ADMINS_JSON contains duplicate email: {email}")
+                continue
+            seen_emails.add(email_key)
+
+            if not argocd_password:
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}].argocd_password is required")
+                continue
+            if not infisical_password:
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}].infisical_password is required")
+                continue
+            if not grafana_password:
+                errors.append(f"PLATFORM_ADMINS_JSON[{idx}].grafana_password is required")
+                continue
+
+            admins.append(
+                {
+                    "email": email,
+                    "argocd_password": argocd_password,
+                    "argocd_read_only": bool(argocd_read_only),
+                    "infisical_password": infisical_password,
+                    "grafana_password": grafana_password,
+                }
+            )
+
+        if not admins:
+            return [], ""
+
+        return admins, json.dumps(admins, separators=(",", ":"))
+
     servers_cfg = config.get("servers", {})
     k3s_control_planes = config.get("k3s_control_planes")
     k3s_workers = config.get("k3s_workers")
@@ -547,7 +610,27 @@ def main() -> int:
         infisical_restore_from_s3 = "false"
     restore_requested = infisical_restore_from_s3.lower() == "true"
 
+    platform_admins_raw = optional_env("PLATFORM_ADMINS_JSON")
+    if not platform_admins_raw:
+        platform_admins_raw = optional_env("platform_admins_json")
+    platform_admins, platform_admins_json = parse_platform_admins(platform_admins_raw)
+    primary_platform_admin = platform_admins[0] if platform_admins else None
+
     infisical_project_name = require_env("INFISICAL_PROJECT_NAME")
+    infisical_seed_email = require_env("INFISICAL_EMAIL")
+    infisical_seed_password = require_env("INFISICAL_PASSWORD")
+    if primary_platform_admin:
+        infisical_seed_email = primary_platform_admin.get("email", infisical_seed_email)
+        infisical_seed_password = primary_platform_admin.get(
+            "infisical_password", infisical_seed_password
+        )
+
+    grafana_admin_password = optional_env("GRAFANA_ADMIN_PASSWORD")
+    if not grafana_admin_password and primary_platform_admin:
+        grafana_admin_password = primary_platform_admin.get("grafana_password", "")
+    if not grafana_admin_password:
+        # Deterministic secure fallback to avoid default admin/admin.
+        grafana_admin_password = require_env("INFISICAL_AUTH_SECRET")
 
     split_bootstrap_secrets = {}
     merged_split_bootstrap_payload = {}
@@ -635,8 +718,8 @@ def main() -> int:
         "DB_BACKUP_BUCKET": require_env("DB_BACKUP_BUCKET"),
         "INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY": infisical_db_backup_age_public_key,
         "INFISICAL_RESTORE_FROM_S3": infisical_restore_from_s3.lower(),
-        "INFISICAL_PASSWORD": require_env("INFISICAL_PASSWORD"),
-        "INFISICAL_EMAIL": require_env("INFISICAL_EMAIL"),
+        "INFISICAL_PASSWORD": infisical_seed_password,
+        "INFISICAL_EMAIL": infisical_seed_email,
         "INFISICAL_ORGANIZATION": require_env("INFISICAL_ORGANIZATION"),
         "INFISICAL_PROJECT_NAME": infisical_project_name,
         "INFISICAL_POSTGRES_DB": require_env("INFISICAL_POSTGRES_DB"),
@@ -644,7 +727,11 @@ def main() -> int:
         "INFISICAL_POSTGRES_PASSWORD": require_env("INFISICAL_POSTGRES_PASSWORD"),
         "INFISICAL_ENCRYPTION_KEY": require_env("INFISICAL_ENCRYPTION_KEY"),
         "INFISICAL_AUTH_SECRET": require_env("INFISICAL_AUTH_SECRET"),
+        "GRAFANA_ADMIN_PASSWORD": grafana_admin_password,
     }
+
+    if platform_admins_json:
+        egress_secrets["PLATFORM_ADMINS_JSON"] = platform_admins_json
 
     db_secrets = {
         "DB_TYPE": db_type,
@@ -879,6 +966,8 @@ def main() -> int:
         errors.append("argocd.repo_path is required when GH_GITOPS_REPO is set")
 
     argocd_admin_password = optional_env("ARGOCD_ADMIN_PASSWORD")
+    if not argocd_admin_password and primary_platform_admin:
+        argocd_admin_password = primary_platform_admin.get("argocd_password", "")
     if argocd_enabled and not argocd_admin_password:
         missing_env.append("ARGOCD_ADMIN_PASSWORD")
     if argocd_enabled and not gh_token:
@@ -906,6 +995,8 @@ def main() -> int:
 
     if argocd_admin_password:
         k3s_server_secrets["ARGOCD_ADMIN_PASSWORD"] = argocd_admin_password
+    if platform_admins_json:
+        k3s_server_secrets["PLATFORM_ADMINS_JSON"] = platform_admins_json
     if gh_token:
         k3s_server_secrets["GH_TOKEN"] = gh_token
     if gh_owner:
