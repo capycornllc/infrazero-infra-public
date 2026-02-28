@@ -473,14 +473,45 @@ derive_first_name() {
 
 parse_signup_token_from_link() {
   local link="$1"
-  echo "$link" | sed -n 's/.*[?&]token=\([^&]*\).*/\1/p'
+  local token=""
+  if command -v python3 >/dev/null 2>&1; then
+    token=$(python3 - "$link" <<'PY'
+import sys
+from urllib.parse import urlparse, parse_qs, unquote
+
+link = sys.argv[1] if len(sys.argv) > 1 else ""
+parsed = urlparse(link)
+qs = parse_qs(parsed.query, keep_blank_values=True)
+token = (qs.get("token") or [""])[0]
+print(unquote(token))
+PY
+    ) || true
+  fi
+
+  if [ -z "$token" ]; then
+    token=$(echo "$link" | sed -n 's/.*[?&]token=\([^&]*\).*/\1/p')
+  fi
+
+  token=$(printf '%s' "$token" | tr -d '\r\n')
+  echo "$token"
 }
 
 complete_invited_user_signup() {
   local email="$1"
   local password="$2"
   local signup_token="$3"
-  local first_name complete_payload complete_tmp complete_code message
+  local first_name complete_payload complete_tmp complete_code message token_dot_count
+
+  # Some Infisical responses include "Bearer <jwt>" in token fields.
+  # This endpoint expects the raw JWT in the bearer header value.
+  signup_token="${signup_token#Bearer }"
+  signup_token="${signup_token#bearer }"
+
+  token_dot_count=$(printf '%s' "$signup_token" | awk -F'.' '{print NF-1}')
+  if [ "$token_dot_count" -ne 2 ]; then
+    echo "[infisical-bootstrap] extracted signup token for ${email} is not a JWT (segments=$((token_dot_count+1)))" >&2
+    return 1
+  fi
 
   first_name=$(derive_first_name "$email")
   complete_payload=$(jq -n \
@@ -573,7 +604,7 @@ provision_platform_admin_local_users() {
       return 1
     fi
 
-    invite_link=$(jq -r '.completeInviteLinks[0].link // empty' "$invite_tmp" 2>/dev/null || true)
+    invite_link=$(jq -r '.completeInviteLinks[0].link // .signUpTokens[0].link // empty' "$invite_tmp" 2>/dev/null || true)
     rm -f "$invite_tmp"
 
     if [ -z "$invite_link" ]; then
