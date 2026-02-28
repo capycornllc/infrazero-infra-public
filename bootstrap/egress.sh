@@ -301,6 +301,7 @@ services:
     volumes:
       - /opt/infrazero/egress/grafana-data:/var/lib/grafana
       - /opt/infrazero/egress/grafana-provisioning:/etc/grafana/provisioning:ro
+      - /opt/infrazero/egress/grafana-dashboards:/var/lib/grafana/dashboards:ro
 EOF
 
 mkdir -p \
@@ -337,7 +338,7 @@ providers:
     editable: true
     updateIntervalSeconds: 30
     options:
-      path: /opt/infrazero/egress/grafana-dashboards
+      path: /var/lib/grafana/dashboards
 EOF
 
 cat > /opt/infrazero/egress/grafana-dashboards/infrazero-platform-health.json <<'EOF'
