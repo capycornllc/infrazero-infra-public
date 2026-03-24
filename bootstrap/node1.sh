@@ -202,7 +202,19 @@ fi
 if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-admin-secret.sh" ]; then
     chmod +x ./infisical-admin-secret.sh
-    ./infisical-admin-secret.sh
+    infisical_ok=false
+    for infisical_attempt in 1 2 3; do
+      echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/3"
+      if ./infisical-admin-secret.sh; then
+        infisical_ok=true
+        break
+      fi
+      echo "[node1] infisical-admin-secret.sh failed (attempt ${infisical_attempt}/3); retrying in 60s" >&2
+      sleep 60
+    done
+    if [ "$infisical_ok" != "true" ]; then
+      echo "[node1] WARNING: infisical-admin-secret.sh failed after 3 attempts; continuing without it" >&2
+    fi
   else
     echo "[node1] infisical-admin-secret.sh missing; skipping infisical admin secret sync" >&2
   fi
@@ -216,6 +228,10 @@ retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f https://ra
 for dep in argocd-server argocd-repo-server argocd-application-controller argocd-dex-server; do
   kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s || true
 done
+
+# Expose ArgoCD server via NodePort so egress nginx can proxy to it
+kubectl -n argocd patch svc argocd-server --type=merge -p '{"spec":{"type":"NodePort"}}' || true
+echo "[node1] ArgoCD server exposed via NodePort"
 
 if [ -n "${ARGOCD_FQDN:-}" ]; then
   argocd_url_patch=$(jq -n --arg url "https://${ARGOCD_FQDN}" '{data:{"url":$url}}')
@@ -498,5 +514,112 @@ systemctl enable --now promtail || echo "[node1] failed to start promtail; conti
 else
   echo "[node1] promtail binary unavailable; skipping service setup"
 fi
+
+# ── Certificate validation ──────────────────────────────────────────
+# Wait for cert-manager to issue certificates after ArgoCD sync.
+# If rate limit is hit, log a clear error so it's visible in Loki/monitoring.
+echo "[node1] $(date -Is) starting certificate validation"
+
+cert_check() {
+  local max_wait=300
+  local interval=15
+  local elapsed=0
+
+  # Wait for cert-manager CRD to appear (ArgoCD may still be syncing)
+  echo "[node1] waiting for cert-manager CRDs..."
+  while [ "$elapsed" -lt 120 ]; do
+    if kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+      echo "[node1] cert-manager CRDs found"
+      break
+    fi
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+    echo "[node1] WARNING: cert-manager CRDs not found after 120s — certificate validation skipped"
+    return 0
+  fi
+
+  # Wait for certificates to appear
+  elapsed=0
+  while [ "$elapsed" -lt 60 ]; do
+    local count
+    count=$(kubectl get certificates --all-namespaces --no-headers 2>/dev/null | wc -l || echo "0")
+    if [ "$count" -gt 0 ]; then
+      break
+    fi
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  # Poll certificates until all ready or timeout
+  elapsed=0
+  while [ "$elapsed" -lt "$max_wait" ]; do
+    local all_ready=true
+    local has_rate_limit=false
+    local cert_summary=""
+
+    while IFS= read -r line; do
+      local ns name ready message domain
+      ns=$(echo "$line" | jq -r '.metadata.namespace')
+      name=$(echo "$line" | jq -r '.metadata.name')
+      ready=$(echo "$line" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status' 2>/dev/null || echo "")
+      message=$(echo "$line" | jq -r '.status.conditions[]? | select(.type=="Ready") | .message' 2>/dev/null || echo "")
+      domain=$(echo "$line" | jq -r '.spec.dnsNames[0] // "unknown"')
+
+      if [ "$ready" = "True" ]; then
+        cert_summary="${cert_summary}  ✓ ${domain} (${ns}/${name})\n"
+      else
+        all_ready=false
+        cert_summary="${cert_summary}  ✗ ${domain} (${ns}/${name}): ${message}\n"
+        if echo "$message" | grep -qiE "rate limit|too many certificates|too many requests"; then
+          has_rate_limit=true
+        fi
+      fi
+    done < <(kubectl get certificates --all-namespaces -o json 2>/dev/null | jq -c '.items[]')
+
+    if [ "$has_rate_limit" = "true" ]; then
+      echo "[node1] =========================================="
+      echo "[node1] CERTIFICATE ERROR: Let's Encrypt rate limit reached"
+      echo -e "[node1] Certificate status:\n${cert_summary}"
+      echo "[node1] Sites without certificates will show 'connection not secure' warnings."
+      echo "[node1] Wait at least 1 hour before retrying. See: https://letsencrypt.org/docs/rate-limits/"
+      echo "[node1] =========================================="
+      return 0
+    fi
+
+    if [ "$all_ready" = "true" ]; then
+      echo "[node1] All certificates are ready:"
+      echo -e "$cert_summary"
+      return 0
+    fi
+
+    echo "[node1] Waiting for certificates... (${elapsed}s/${max_wait}s)"
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  echo "[node1] =========================================="
+  echo "[node1] CERTIFICATE WARNING: Not all certificates ready after ${max_wait}s"
+  local cert_summary=""
+  while IFS= read -r line; do
+    local ns name ready message domain
+    ns=$(echo "$line" | jq -r '.metadata.namespace')
+    name=$(echo "$line" | jq -r '.metadata.name')
+    ready=$(echo "$line" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status' 2>/dev/null || echo "")
+    message=$(echo "$line" | jq -r '.status.conditions[]? | select(.type=="Ready") | .message' 2>/dev/null || echo "")
+    domain=$(echo "$line" | jq -r '.spec.dnsNames[0] // "unknown"')
+    if [ "$ready" = "True" ]; then
+      echo "[node1]   ✓ ${domain} (${ns}/${name})"
+    else
+      echo "[node1]   ✗ ${domain} (${ns}/${name}): ${message}"
+    fi
+  done < <(kubectl get certificates --all-namespaces -o json 2>/dev/null | jq -c '.items[]')
+  echo "[node1] Sites without valid certificates will show 'connection not secure' warnings."
+  echo "[node1] =========================================="
+}
+
+cert_check || echo "[node1] certificate validation encountered an error; continuing"
 
 echo "[node1] $(date -Is) complete"

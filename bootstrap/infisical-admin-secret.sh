@@ -133,36 +133,95 @@ tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
 workdir=$(mktemp -d /run/infisical-admin-secret.XXXX)
 chmod 700 "$workdir"
 
-wait_for_manifest "$tokens_manifest_key"
-
 echo "$INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY" > "$workdir/age.key"
 chmod 600 "$workdir/age.key"
 
-if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" "$workdir/latest-tokens.json" >/dev/null 2>&1; then
-  echo "[infisical-admin-secret] latest tokens manifest not found" >&2
-  rm -f "$workdir/age.key"
-  rm -rf "$workdir"
-  exit 1
-fi
+# Fetch and validate admin token from S3.
+# During a fresh deploy, egress may not have finished bootstrap yet, so the
+# manifest in S3 can point to a stale token from a previous deployment.
+# We download the manifest, decrypt the token, and verify it against the
+# Infisical API.  If the token is invalid (401) we delete the local copy and
+# wait for egress to upload a fresh manifest.
+MAX_TOKEN_ATTEMPTS=60
+TOKEN_RETRY_INTERVAL=10
+ADMIN_TOKEN=""
 
-admin_key=$(jq -r '.admin_token_key // empty' "$workdir/latest-tokens.json")
-admin_sha=$(jq -r '.admin_token_sha256 // empty' "$workdir/latest-tokens.json")
-if [ -z "$admin_key" ] || [ "$admin_key" = "null" ]; then
-  echo "[infisical-admin-secret] tokens manifest missing admin_token_key" >&2
-  rm -f "$workdir/age.key"
-  rm -rf "$workdir"
-  exit 1
-fi
+for _token_attempt in $(seq 1 "$MAX_TOKEN_ATTEMPTS"); do
+  # 1. Wait for manifest to appear in S3
+  wait_for_manifest "$tokens_manifest_key"
 
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${admin_key}" "$workdir/admin.token.age"
-if [ -n "$admin_sha" ] && [ "$admin_sha" != "null" ]; then
-  echo "$admin_sha  $workdir/admin.token.age" | sha256sum -c -
-fi
+  # 2. Download manifest
+  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" "$workdir/latest-tokens.json" >/dev/null 2>&1; then
+    echo "[infisical-admin-secret] latest tokens manifest download failed; retrying in ${TOKEN_RETRY_INTERVAL}s"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
 
-age -d -i "$workdir/age.key" -o "$workdir/admin.token" "$workdir/admin.token.age"
-ADMIN_TOKEN=$(cat "$workdir/admin.token")
+  admin_key=$(jq -r '.admin_token_key // empty' "$workdir/latest-tokens.json")
+  admin_sha=$(jq -r '.admin_token_sha256 // empty' "$workdir/latest-tokens.json")
+  manifest_created=$(jq -r '.created_at // empty' "$workdir/latest-tokens.json")
+  if [ -z "$admin_key" ] || [ "$admin_key" = "null" ]; then
+    echo "[infisical-admin-secret] tokens manifest missing admin_token_key; retrying in ${TOKEN_RETRY_INTERVAL}s"
+    rm -f "$workdir/latest-tokens.json"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
+
+  # 3. Download and decrypt admin token
+  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${DB_BACKUP_BUCKET}/${admin_key}" "$workdir/admin.token.age" >/dev/null 2>&1; then
+    echo "[infisical-admin-secret] admin token download failed; retrying in ${TOKEN_RETRY_INTERVAL}s"
+    rm -f "$workdir/latest-tokens.json"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
+
+  if [ -n "$admin_sha" ] && [ "$admin_sha" != "null" ]; then
+    if ! echo "$admin_sha  $workdir/admin.token.age" | sha256sum -c - >/dev/null 2>&1; then
+      echo "[infisical-admin-secret] admin token checksum mismatch; retrying in ${TOKEN_RETRY_INTERVAL}s"
+      rm -f "$workdir/latest-tokens.json" "$workdir/admin.token.age"
+      sleep "$TOKEN_RETRY_INTERVAL"
+      continue
+    fi
+  fi
+
+  if ! age -d -i "$workdir/age.key" -o "$workdir/admin.token" "$workdir/admin.token.age" 2>/dev/null; then
+    echo "[infisical-admin-secret] admin token decryption failed; retrying in ${TOKEN_RETRY_INTERVAL}s"
+    rm -f "$workdir/latest-tokens.json" "$workdir/admin.token.age" "$workdir/admin.token"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
+
+  candidate_token=$(cat "$workdir/admin.token")
+  if [ -z "$candidate_token" ]; then
+    echo "[infisical-admin-secret] decrypted admin token is empty; retrying in ${TOKEN_RETRY_INTERVAL}s"
+    rm -f "$workdir/latest-tokens.json" "$workdir/admin.token.age" "$workdir/admin.token"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
+
+  # 4. Validate token against Infisical API
+  validate_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+    --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer ${candidate_token}" \
+    "${INFISICAL_SITE_URL}/api/v1/projects" 2>/dev/null || true)
+
+  if [ "$validate_code" = "401" ] || [ "$validate_code" = "403" ]; then
+    echo "[infisical-admin-secret] admin token is stale (HTTP ${validate_code}, manifest created_at=${manifest_created:-unknown}); waiting for fresh token (attempt ${_token_attempt}/${MAX_TOKEN_ATTEMPTS})"
+    rm -f "$workdir/latest-tokens.json" "$workdir/admin.token.age" "$workdir/admin.token"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
+
+  # Token is valid (or Infisical returned a non-auth error which is fine)
+  ADMIN_TOKEN="$candidate_token"
+  echo "[infisical-admin-secret] admin token validated (HTTP ${validate_code}, created_at=${manifest_created:-unknown})"
+  break
+done
+
+rm -f "$workdir/admin.token.age" "$workdir/admin.token"
+
 if [ -z "$ADMIN_TOKEN" ]; then
-  echo "[infisical-admin-secret] decrypted admin token is empty" >&2
+  echo "[infisical-admin-secret] failed to obtain a valid admin token after ${MAX_TOKEN_ATTEMPTS} attempts" >&2
   rm -f "$workdir/age.key"
   rm -rf "$workdir"
   exit 1

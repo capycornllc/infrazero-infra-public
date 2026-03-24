@@ -257,3 +257,75 @@ jobs:
           BASTION_IP=$(tofu -chdir=tofu output -no-color -raw bastion_public_ipv4)
           EGRESS_IP=$(tofu -chdir=tofu output -no-color -raw egress_public_ipv4)
           python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP" --egress-public-ip "$EGRESS_IP"
+
+      - name: Validate DNS records
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          LB_IP=$(tofu -chdir=tofu output -no-color -raw load_balancer_public_ipv4)
+
+          # Collect all domains from config
+          DOMAINS=$(python - <<'PY'
+          import yaml, json, os
+          cfg = yaml.safe_load(open("config/infra.yaml")) or {}
+          domains = set()
+          for key in ["bastion_fqdn","grafana_fqdn","loki_fqdn","infisical_fqdn","kubernetes_fqdn","argocd_fqdn","db_fqdn"]:
+            v = cfg.get(key) or os.getenv(key.upper(),"")
+            if v: domains.add(v)
+          for svc in (cfg.get("internal_services_domains") or []):
+            if isinstance(svc, dict) and svc.get("fqdn"): domains.add(svc["fqdn"])
+          apps = cfg.get("deployed_apps") or []
+          if isinstance(apps, str):
+            try: apps = json.loads(apps)
+            except: apps = []
+          for app in apps:
+            for w in (app.get("workloads") or []):
+              ing = w.get("ingress") or {}
+              for h in (ing.get("hosts") or []):
+                if h.get("host"): domains.add(h["host"])
+          for ah in (cfg.get("additional_hostnames") or []):
+            if isinstance(ah, dict) and ah.get("fqdn"): domains.add(ah["fqdn"])
+          print(" ".join(sorted(domains)))
+          PY
+          )
+
+          if [ -z "$DOMAINS" ]; then
+            echo "No domains found to validate. Skipping."
+            exit 0
+          fi
+
+          echo "Validating DNS for domains: $DOMAINS"
+          FAILED=""
+          MAX_WAIT=60
+          INTERVAL=10
+
+          for domain in $DOMAINS; do
+            elapsed=0
+            resolved=""
+            while [ "$elapsed" -lt "$MAX_WAIT" ]; do
+              resolved=$(dig +short "$domain" 2>/dev/null | head -1 || true)
+              if [ -n "$resolved" ]; then
+                break
+              fi
+              echo "  Waiting for DNS propagation: $domain (${elapsed}s/${MAX_WAIT}s)"
+              sleep "$INTERVAL"
+              elapsed=$((elapsed + INTERVAL))
+            done
+
+            if [ -z "$resolved" ]; then
+              echo "✗ FAILED: $domain does not resolve after ${MAX_WAIT}s"
+              FAILED="$FAILED $domain"
+            else
+              echo "✓ $domain → $resolved"
+            fi
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo ""
+            echo "=== DNS VALIDATION FAILED ==="
+            echo "The following domains did not resolve:$FAILED"
+            echo "Certificate issuance will fail for these domains."
+            echo "Check Cloudflare DNS settings and retry."
+            exit 1
+          fi
+          echo "=== All DNS records validated ==="
