@@ -1,0 +1,241 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - ca-certificates
+  - zstd
+  - tar
+
+write_files:
+  - path: /opt/infrazero/bootstrap/run.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      ROLE="${bootstrap_role}"
+      URL="${bootstrap_url}"
+      SHA="${bootstrap_sha256}"
+      export DB_VOLUME_NAME="${db_volume_name}"
+      export DB_VOLUME_FORMAT="${db_volume_format}"
+      export PRIVATE_CIDR="${private_cidr}"
+      export INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY="${infisical_db_backup_age_private_key}"
+      export DATABASES_JSON_PRIVATE_B64="${databases_json_private_b64}"
+      export ADMIN_USERS_JSON_B64="${admin_users_json_b64}"
+      export DEBUG_ROOT_PASSWORD='${debug_root_password}'
+      export BOOTSTRAP_ROLE="${bootstrap_role}"
+      export BASTION_PRIVATE_IP="${bastion_private_ip}"
+      export WG_SERVER_ADDRESS="${wg_server_address}"
+      export WG_CIDR="${wg_cidr}"
+
+      WORKDIR="/opt/infrazero/bootstrap"
+      mkdir -p "$WORKDIR"
+      cd "$WORKDIR"
+
+      ensure_private_default_route() {
+        local has_default="false"
+        if ip route show default | grep -q "^default"; then
+          has_default="true"
+        fi
+
+        local private_gw=""
+        if command -v python3 >/dev/null 2>&1; then
+          private_gw=$(python3 - <<'PY'
+      import ipaddress
+      import os
+      cidr = os.environ.get("PRIVATE_CIDR", "")
+      try:
+          net = ipaddress.ip_network(cidr, strict=False)
+      except Exception:
+          raise SystemExit(1)
+      if net.num_addresses > 1:
+          gw = net.network_address + 1
+      else:
+          gw = net.network_address
+      print(str(gw))
+      PY
+          ) || true
+        fi
+
+        if [ -z "$private_gw" ]; then
+          echo "[bootstrap] unable to compute private gateway; skipping default route" >&2
+          return 0
+        fi
+
+        local priv_if=""
+        if command -v python3 >/dev/null 2>&1; then
+          priv_if=$(python3 - <<'PY'
+      import ipaddress
+      import os
+      import subprocess
+      cidr = os.environ.get("PRIVATE_CIDR", "")
+      try:
+          net = ipaddress.ip_network(cidr, strict=False)
+      except Exception:
+          raise SystemExit(1)
+      output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+      for line in output.splitlines():
+          parts = line.split()
+          if len(parts) < 4:
+              continue
+          ifname = parts[1]
+          addr = parts[3].split("/")[0]
+          try:
+              if ipaddress.ip_address(addr) in net:
+                  print(ifname)
+                  raise SystemExit(0)
+          except Exception:
+              continue
+      raise SystemExit(1)
+      PY
+          ) || true
+        fi
+
+        if [ -z "$priv_if" ]; then
+          echo "[bootstrap] unable to determine private interface; skipping default route" >&2
+          return 0
+        fi
+
+        PRIVATE_GW="$private_gw"
+        PRIVATE_IF="$priv_if"
+
+        ip link set dev "$priv_if" up || true
+        ip route replace "$private_gw/32" dev "$priv_if" scope link || true
+
+        local prefix_len=""
+        prefix_len=$(ip -4 -o addr show "$priv_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
+        if [ "$prefix_len" = "32" ]; then
+          ip route del "$PRIVATE_CIDR" dev "$priv_if" 2>/dev/null || true
+          ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+        fi
+
+        if [ "$has_default" != "true" ]; then
+          ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
+          echo "[bootstrap] default route set via $private_gw on $priv_if"
+        fi
+      }
+
+      ensure_private_dns() {
+        local priv_if="$${PRIVATE_IF:-}"
+        local private_gw="$${PRIVATE_GW:-}"
+
+        if [ -z "$priv_if" ] && [ -n "$private_gw" ]; then
+          priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+        fi
+
+        if [ -z "$priv_if" ] && command -v python3 >/dev/null 2>&1; then
+          priv_if=$(python3 - <<'PY'
+      import ipaddress
+      import os
+      import subprocess
+      cidr = os.environ.get("PRIVATE_CIDR", "")
+      try:
+          net = ipaddress.ip_network(cidr, strict=False)
+      except Exception:
+          raise SystemExit(1)
+      output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+      for line in output.splitlines():
+          parts = line.split()
+          if len(parts) < 4:
+              continue
+          ifname = parts[1]
+          addr = parts[3].split("/")[0]
+          try:
+              if ipaddress.ip_address(addr) in net:
+                  print(ifname)
+                  raise SystemExit(0)
+          except Exception:
+              continue
+      raise SystemExit(1)
+      PY
+          ) || true
+        fi
+
+        if [ -z "$priv_if" ]; then
+          echo "[bootstrap] unable to determine private interface; skipping DNS setup" >&2
+          return 0
+        fi
+
+        if command -v resolvectl >/dev/null 2>&1; then
+          resolvectl dns "$priv_if" 1.1.1.1 1.0.0.1 8.8.8.8 || true
+          resolvectl domain "$priv_if" "~." || true
+        fi
+
+        if [ -f /etc/systemd/resolved.conf ]; then
+          sed -i 's/^#\?FallbackDNS=.*/FallbackDNS=1.1.1.1 1.0.0.1 8.8.8.8/' /etc/systemd/resolved.conf || true
+          systemctl restart systemd-resolved || true
+        fi
+      }
+
+      wait_for_bootstrap_url() {
+        local url="$1"
+        echo "[bootstrap] waiting for bootstrap URL to be reachable"
+        for i in {1..60}; do
+          local code
+          code=$(curl -s -o /dev/null -w "%%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+          if [ -n "$code" ] && [ "$code" != "000" ]; then
+            echo "[bootstrap] bootstrap URL reachable (http $${code})"
+            return 0
+          fi
+          sleep 5
+        done
+        echo "[bootstrap] bootstrap URL not reachable after retries" >&2
+        return 1
+      }
+
+      ensure_private_default_route
+      ensure_private_dns
+      wait_for_bootstrap_url "$URL"
+
+      echo "[bootstrap] downloading $ROLE artifact"
+      curl -fsSL "$URL" -o "$ROLE.tar.zst"
+      echo "$SHA  $ROLE.tar.zst" | sha256sum -c -
+
+      echo "[bootstrap] extracting $ROLE artifact"
+      tar --zstd -xf "$ROLE.tar.zst"
+      chmod +x common.sh "$ROLE.sh"
+      sed -i 's/\r$//' common.sh "$ROLE.sh" || true
+
+      echo "[bootstrap] running common + role scripts"
+      ./common.sh
+      "./$ROLE.sh"
+
+%{ if length(egress_env) > 0 ~}
+  - path: /etc/infrazero/egress.env
+    permissions: "0600"
+    content: |
+%{ for line in egress_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(bastion_env) > 0 ~}
+  - path: /etc/infrazero/bastion.env
+    permissions: "0600"
+    content: |
+%{ for line in bastion_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(node_env) > 0 ~}
+  - path: /etc/infrazero/node.env
+    permissions: "0600"
+    content: |
+%{ for line in node_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(node_role_env) > 0 ~}
+  - path: /etc/infrazero/${bootstrap_role}.env
+    permissions: "0600"
+    content: |
+%{ for line in node_role_env ~}
+      ${line}
+%{ endfor ~}
+%{ endif ~}
+
+runcmd:
+  - ["/opt/infrazero/bootstrap/run.sh"]
