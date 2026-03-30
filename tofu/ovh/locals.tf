@@ -70,4 +70,11 @@ locals {
     for key, value in var.k3s_agent_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
+
+  db_replicas_map  = { for idx, replica in var.db_replicas : tostring(idx) => replica }
+  db_replica_cidrs = [for replica in var.db_replicas : "${replica.private_ip}/32"]
+  db_replica_env_lines = [
+    for key, value in var.db_replica_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
 }

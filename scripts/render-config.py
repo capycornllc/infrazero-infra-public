@@ -878,10 +878,77 @@ def main() -> int:
     if egress_secrets.get("INFISICAL_EMAIL"):
         db_secrets["INFISICAL_EMAIL"] = egress_secrets.get("INFISICAL_EMAIL", "")
 
+    # DB Replication
+    db_replica_enabled = parse_bool(optional_env("DB_REPLICA_ENABLED"), default=False)
+    db_replica_count = 0
+    if db_replica_enabled:
+        db_replica_count_raw = optional_env("DB_REPLICA_COUNT")
+        if db_replica_count_raw:
+            try:
+                db_replica_count = int(db_replica_count_raw)
+            except ValueError:
+                errors.append("DB_REPLICA_COUNT must be an integer")
+            if db_replica_count < 1 or db_replica_count > 3:
+                errors.append("DB_REPLICA_COUNT must be between 1 and 3")
+                db_replica_count = 0
+
+    db_replicas_cfg = config.get("db_replicas", [])
+    if not isinstance(db_replicas_cfg, list):
+        db_replicas_cfg = []
+
+    # Auto-generate replica IPs if not defined in config
+    db_primary_ip = str(servers_cfg.get("db", {}).get("private_ip", "")).strip()
+    if db_replica_enabled and db_replica_count > 0 and len(db_replicas_cfg) < db_replica_count:
+        if db_primary_ip:
+            try:
+                primary_addr = ipaddress.ip_address(db_primary_ip)
+                for i in range(len(db_replicas_cfg), db_replica_count):
+                    replica_ip = str(primary_addr + 1 + i)
+                    db_replicas_cfg.append({
+                        "private_ip": replica_ip,
+                        "public_ipv4": False,
+                        "public_ipv6": False,
+                    })
+            except (ValueError, TypeError):
+                errors.append("Cannot auto-generate replica IPs from db.private_ip")
+
+    config["db_replicas"] = db_replicas_cfg[:db_replica_count] if db_replica_enabled else []
+
+    db_replica_cidrs = [f"{r['private_ip']}/32" for r in config["db_replicas"] if r.get("private_ip")]
+    if db_replica_enabled:
+        db_secrets["DB_REPLICA_ENABLED"] = "true"
+        db_secrets["DB_REPLICA_COUNT"] = str(db_replica_count)
+        if db_replica_cidrs:
+            db_secrets["DB_REPLICA_CIDRS"] = ",".join(db_replica_cidrs)
+
+        # Generate a replication password deterministically from existing secrets
+        # so it's stable across runs without needing a new GitHub secret.
+        import hashlib
+        repl_seed = (s3_secret_key or "") + (db_primary_ip or "") + "replicator"
+        repl_password = hashlib.sha256(repl_seed.encode("utf-8")).hexdigest()[:32]
+        db_secrets["DB_REPLICATION_USER"] = "replicator"
+        db_secrets["DB_REPLICATION_PASSWORD"] = repl_password
+
+    config["db_replica_secrets"] = {}
+    if db_replica_enabled and db_replica_count > 0:
+        config["db_replica_secrets"] = {
+            "DB_REPLICATION_USER": "replicator",
+            "DB_REPLICATION_PASSWORD": db_secrets.get("DB_REPLICATION_PASSWORD", ""),
+            "DB_TYPE": db_type,
+            "DB_VERSION": db_version,
+            "K3S_NODE_CIDRS": ",".join(k3s_node_cidrs),
+        }
+
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
     if runtime_environment:
         egress_secrets["ENVIRONMENT"] = runtime_environment
+
+    # Expose replica hosts so Infisical bootstrap can write DATABASE_READ_HOST
+    if db_replica_enabled and config["db_replicas"]:
+        replica_ips = [r["private_ip"] for r in config["db_replicas"] if r.get("private_ip")]
+        if replica_ips:
+            egress_secrets["DB_REPLICA_HOSTS"] = ",".join(replica_ips)
 
     wg_server_address = require_env("WG_SERVER_ADDRESS")
 
@@ -1082,7 +1149,10 @@ def main() -> int:
 
     if args.bootstrap_artifacts:
         artifacts = load_json(Path(args.bootstrap_artifacts))
-        missing = [role for role in REQUIRED_ROLES if role not in artifacts]
+        required_roles = list(REQUIRED_ROLES)
+        if db_replica_enabled and db_replica_count > 0:
+            required_roles.append("db-replica")
+        missing = [role for role in required_roles if role not in artifacts]
         if missing:
             print(f"Missing bootstrap artifacts for roles: {', '.join(missing)}", file=sys.stderr)
             return 1

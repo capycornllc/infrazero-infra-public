@@ -2288,4 +2288,82 @@ chmod 0644 /etc/cron.d/infrazero-db-backup
 
 restore_databases_from_s3
 
+# ------------------------------------------------------------------ #
+#  Streaming Replication (primary side)                                #
+# ------------------------------------------------------------------ #
+
+setup_replication_primary() {
+  local replica_enabled="${DB_REPLICA_ENABLED:-false}"
+  if [ "$replica_enabled" != "true" ]; then
+    echo "[db] replication not enabled; skipping primary replication setup"
+    return 0
+  fi
+
+  local replica_count="${DB_REPLICA_COUNT:-0}"
+  if [ "$replica_count" -lt 1 ] 2>/dev/null; then
+    echo "[db] DB_REPLICA_COUNT < 1; skipping replication setup"
+    return 0
+  fi
+
+  echo "[db] configuring primary for streaming replication (${replica_count} replicas)"
+
+  # WAL settings for replication
+  set_conf "wal_level" "replica"
+  set_conf "max_wal_senders" "$((replica_count + 2))"
+  set_conf "wal_keep_size" "'512MB'"
+  set_conf "hot_standby" "on"
+
+  # Create replication user if not exists
+  local repl_user="replicator"
+  local repl_password="${DB_REPLICATION_PASSWORD:-$(openssl rand -hex 16)}"
+  local repl_user_lit
+  repl_user_lit=$(sql_escape "$repl_user")
+  local repl_pw_lit
+  repl_pw_lit=$(sql_escape "$repl_password")
+
+  local user_exists
+  user_exists=$(psql_as_postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${repl_user_lit}'" || true)
+  if [ "$user_exists" != "1" ]; then
+    psql_as_postgres -c "CREATE ROLE \"${repl_user}\" WITH REPLICATION LOGIN PASSWORD '${repl_pw_lit}';"
+    echo "[db] created replication role: ${repl_user}"
+  else
+    psql_as_postgres -c "ALTER ROLE \"${repl_user}\" WITH REPLICATION PASSWORD '${repl_pw_lit}';"
+    echo "[db] updated replication role: ${repl_user}"
+  fi
+
+  # Add replication entries to pg_hba.conf for replica CIDRs
+  local replica_cidrs="${DB_REPLICA_CIDRS:-}"
+  if [ -n "$replica_cidrs" ]; then
+    local HBA_REPL_BEGIN="# BEGIN INFRAZERO REPLICATION"
+    local HBA_REPL_END="# END INFRAZERO REPLICATION"
+
+    # Remove existing replication block
+    if [ -f "$HBA_CONF" ]; then
+      awk -v begin="$HBA_REPL_BEGIN" -v end="$HBA_REPL_END" '
+        $0==begin {skip=1; next}
+        $0==end {skip=0; next}
+        skip==1 {next}
+        {print}
+      ' "$HBA_CONF" > "${HBA_CONF}.tmp" && mv "${HBA_CONF}.tmp" "$HBA_CONF"
+    fi
+
+    {
+      echo "$HBA_REPL_BEGIN"
+      IFS=',' read -r -a cidrs_arr <<< "$replica_cidrs"
+      for cidr in "${cidrs_arr[@]}"; do
+        cidr=$(echo "$cidr" | xargs)
+        if [ -n "$cidr" ]; then
+          echo "host replication ${repl_user} ${cidr} scram-sha-256"
+        fi
+      done
+      echo "$HBA_REPL_END"
+    } >> "$HBA_CONF"
+  fi
+
+  systemctl reload postgresql || systemctl restart postgresql
+  echo "[db] primary replication setup complete"
+}
+
+setup_replication_primary
+
 echo "[db] $(date -Is) complete"

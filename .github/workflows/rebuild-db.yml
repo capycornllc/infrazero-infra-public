@@ -77,6 +77,16 @@ jobs:
       WG_PRESHARED_KEYS_JSON: ${{ secrets.WG_PRESHARED_KEYS_JSON }}
       HCLOUD_TOKEN: ${{ secrets.hetzner_cloud_token }}
       TF_VAR_hcloud_token: ${{ secrets.hetzner_cloud_token }}
+      CLOUD_PROVIDER: ${{ secrets.cloud_provider }}
+      OVH_APPLICATION_KEY: ${{ secrets.ovh_application_key }}
+      OVH_APPLICATION_SECRET: ${{ secrets.ovh_application_secret }}
+      OVH_CONSUMER_KEY: ${{ secrets.ovh_consumer_key }}
+      OVH_CLOUD_PROJECT_ID: ${{ secrets.ovh_cloud_project_id }}
+      OPENSTACK_USER_NAME: ${{ secrets.openstack_user_name }}
+      OPENSTACK_PASSWORD: ${{ secrets.openstack_password }}
+      OPENSTACK_TENANT_ID: ${{ secrets.openstack_tenant_id }}
+      DB_REPLICA_ENABLED: ${{ secrets.db_replica_enabled }}
+      DB_REPLICA_COUNT: ${{ secrets.db_replica_count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,17 +192,36 @@ jobs:
       - name: Validate config
         run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
 
+      - name: Determine cloud provider
+        run: |
+          PROVIDER="${CLOUD_PROVIDER:-hetzner}"
+          PROVIDER=$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')
+          if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
+            echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
+            echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
+            echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
+            echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
+            echo "TF_VAR_ovh_cloud_project_id=${OVH_CLOUD_PROJECT_ID}" >> "$GITHUB_ENV"
+            echo "TF_VAR_openstack_user_name=${OPENSTACK_USER_NAME}" >> "$GITHUB_ENV"
+            echo "TF_VAR_openstack_password=${OPENSTACK_PASSWORD}" >> "$GITHUB_ENV"
+            echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
+          else
+            echo "TOFU_DIR=tofu" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
+          fi
+
       - name: Render backend
-        run: python scripts/render-backend.py --config config/infra.yaml --output tofu/backend.hcl
+        run: python scripts/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
 
       - name: Init OpenTofu
-        run: tofu -chdir=tofu init -no-color -backend-config=backend.hcl
+        run: tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
 
       - name: Read existing bootstrap artifacts (from state)
         run: |
           set -euo pipefail
           mkdir -p build
-          if tofu -chdir=tofu output -no-color -json bootstrap_artifacts > build/bootstrap_artifacts_existing.json; then
+          if tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json bootstrap_artifacts > build/bootstrap_artifacts_existing.json; then
             echo "HAS_EXISTING_BOOTSTRAP_ARTIFACTS=1" >> "$GITHUB_ENV"
           else
             echo "WARN: missing OpenTofu output 'bootstrap_artifacts' in state; seeding by regenerating all bootstrap artifacts." >&2
@@ -239,30 +268,35 @@ jobs:
 
       - name: Render tfvars
         run: |
-          python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
+          python scripts/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
       - name: Offload oversized egress bootstrap payload
         run: |
           chmod +x scripts/offload-egress-bootstrap-secrets.sh
-          scripts/offload-egress-bootstrap-secrets.sh tofu/tofu.tfvars.json
+          scripts/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
 
       - name: Import DB volume if exists
         run: |
           chmod +x scripts/*.sh
-          pushd tofu
+          pushd ${{ env.TOFU_DIR }}
           DB_VOLUME_NAME="$DB_VOLUME_NAME" ../scripts/import-volume.sh
           popd
 
       - name: Import SSH keys if exist
-        run: python scripts/import-ssh-keys.py --tofu-dir tofu
+        run: python scripts/import-ssh-keys.py --tofu-dir ${{ env.TOFU_DIR }}
 
       - name: Replace db server
-        run: bash scripts/tofu-retry.sh tofu -chdir=tofu apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=hcloud_server.db -target=hcloud_volume_attachment.db -replace=hcloud_server.db
+        run: |
+          if [ "$CLOUD_PROVIDER_RESOLVED" = "ovhcloud" ]; then
+            bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=openstack_compute_instance_v2.db -target=openstack_compute_volume_attach_v2.db -replace=openstack_compute_instance_v2.db
+          else
+            bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=hcloud_server.db -target=hcloud_volume_attachment.db -replace=hcloud_server.db
+          fi
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: |
-          LB_IP=$(tofu -chdir=tofu output -no-color -raw load_balancer_public_ipv4)
-          BASTION_IP=$(tofu -chdir=tofu output -no-color -raw bastion_public_ipv4)
-          EGRESS_IP=$(tofu -chdir=tofu output -no-color -raw egress_public_ipv4)
+          LB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw load_balancer_public_ipv4)
+          BASTION_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw bastion_public_ipv4)
+          EGRESS_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw egress_public_ipv4)
           python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP" --egress-public-ip "$EGRESS_IP"

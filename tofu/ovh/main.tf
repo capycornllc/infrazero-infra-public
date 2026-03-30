@@ -228,7 +228,7 @@ resource "openstack_networking_secgroup_v2" "db" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "db_postgres" {
-  for_each          = toset(local.k3s_node_cidrs)
+  for_each          = toset(concat(local.k3s_node_cidrs, local.db_replica_cidrs))
   security_group_id = openstack_networking_secgroup_v2.db.id
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -381,6 +381,67 @@ resource "openstack_blockstorage_volume_v3" "db" {
 resource "openstack_compute_volume_attach_v2" "db" {
   instance_id = openstack_compute_instance_v2.db.id
   volume_id   = openstack_blockstorage_volume_v3.db.id
+}
+
+# ------------------------------------------------------------------ #
+#  DB Replica Security Group + Instances                               #
+# ------------------------------------------------------------------ #
+
+resource "openstack_networking_secgroup_v2" "db_replica" {
+  count       = length(var.db_replicas) > 0 ? 1 : 0
+  name        = "${var.name_prefix}-db-replica-sg"
+  description = "Database replica security group"
+}
+
+resource "openstack_networking_secgroup_rule_v2" "db_replica_postgres" {
+  for_each          = length(var.db_replicas) > 0 ? toset(concat(local.k3s_node_cidrs, [local.db_cidr])) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.db_replica[0].id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 5432
+  port_range_max    = 5432
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_networking_secgroup_rule_v2" "db_replica_ssh" {
+  for_each          = length(var.db_replicas) > 0 ? toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.db_replica[0].id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_compute_instance_v2" "db_replica" {
+  for_each = local.db_replicas_map
+
+  name            = "${var.name_prefix}-db-replica-${tonumber(each.key) + 1}"
+  image_id        = data.openstack_images_image_v2.ubuntu.id
+  flavor_name     = var.db_server_type
+  key_pair        = openstack_compute_keypair_v2.ops["0"].name
+  security_groups = [openstack_networking_secgroup_v2.db_replica[0].name]
+  user_data       = local.cloud_init_rendered_db_replica
+
+  network {
+    uuid        = openstack_networking_network_v2.main.id
+    fixed_ip_v4 = each.value.private_ip
+  }
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
+  metadata = {
+    project     = var.project
+    environment = var.environment
+    role        = "db-replica"
+    replica_idx = each.key
+  }
+
+  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 }
 
 # ------------------------------------------------------------------ #

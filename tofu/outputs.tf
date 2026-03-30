@@ -26,3 +26,7 @@ output "private_ips" {
 output "db_volume_id" {
   value = hcloud_volume.db.id
 }
+
+output "db_replica_private_ips" {
+  value = [for key, replica in local.db_replicas_map : replica.private_ip]
+}

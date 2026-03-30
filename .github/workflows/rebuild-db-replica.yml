@@ -1,10 +1,10 @@
-name: build
+name: rebuild-db-replica
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  rebuild:
     runs-on: ubuntu-latest
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.s3_access_key_id }}
@@ -54,7 +54,6 @@ jobs:
       GH_OWNER: ${{ secrets.gh_owner }}
       GH_INFRA_REPO: ${{ secrets.gh_infra_repo }}
       GH_GITOPS_REPO: ${{ secrets.gh_gitops_repo }}
-      GHCR_TOKEN: ${{ secrets.ghcr_token }}
       BASTION_SERVER_TYPE: ${{ secrets.bastion_server_type }}
       EGRESS_SERVER_TYPE: ${{ secrets.egress_server_type }}
       DB_SERVER_TYPE: ${{ secrets.db_server_type }}
@@ -124,31 +123,13 @@ jobs:
 
           cfg = yaml.safe_load(Path("config/infra.yaml").read_text()) or {}
           bootstrap = cfg.get("bootstrap", {})
-          s3_backend = cfg.get("s3_backend", {})
-          db_volume = cfg.get("db_volume", {})
-
-          project_slug = (os.getenv("PROJECT_SLUG") or "").strip()
-          cfg_project = str(cfg.get("project", "") or "").strip()
-          base_slug = project_slug or cfg_project
-          env_override = (os.getenv("ENVIRONMENT") or "").strip() or (os.getenv("ENV") or "").strip()
-          config_env = str(cfg.get("environment", "") or "").strip()
-          runtime_env = env_override or config_env
-
-          state_prefix = s3_backend.get("state_prefix", "")
-          db_volume_name = db_volume.get("name", "")
-          if base_slug and runtime_env:
-              state_prefix = f"{base_slug}/{runtime_env}"
-              db_volume_name = f"{base_slug}-{runtime_env}-db"
 
           env_lines = [
               f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 3600)}",
-              f"STATE_PREFIX={state_prefix}",
-              f"DB_VOLUME_NAME={db_volume_name}",
           ]
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(env_lines) + "\n")
           PY
-
 
       - name: Normalize S3 endpoint
         run: |
@@ -159,7 +140,6 @@ jobs:
           if [[ "${S3_ENDPOINT}" != http://* && "${S3_ENDPOINT}" != https://* ]]; then
             echo "S3_ENDPOINT=https://${S3_ENDPOINT}" >> "$GITHUB_ENV"
           fi
-
 
       - name: Normalize S3 region
         run: |
@@ -174,26 +154,6 @@ jobs:
             echo "AWS_DEFAULT_REGION=${S3_REGION}" >> "$GITHUB_ENV"
           fi
 
-
-      - name: Display S3 settings
-        run: |
-          mask() {
-            local value="$1"
-            local length=${#value}
-            if [ $length -le 4 ]; then
-              printf '%s' "$value"
-              return
-            fi
-            local prefix=${value:0:2}
-            local suffix=${value: -2}
-            printf '%s****%s' "$prefix" "$suffix"
-          }
-
-          region_display="${S3_REGION:-${CLOUD_REGION:-}}"
-          echo "S3_REGION=${region_display}"
-          echo "AWS_ACCESS_KEY_ID=$(mask "${AWS_ACCESS_KEY_ID:-}")"
-          echo "AWS_SECRET_ACCESS_KEY=$(mask "${AWS_SECRET_ACCESS_KEY:-}")"
-
       - name: Validate config
         run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
 
@@ -204,7 +164,6 @@ jobs:
           if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
             echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
             echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
-            # Set TF_VAR_ for OVH provider credentials
             echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
@@ -217,12 +176,35 @@ jobs:
             echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
           fi
 
+      - name: Render backend
+        run: python scripts/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
+
+      - name: Init OpenTofu
+        run: tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
+
+      - name: Read existing bootstrap artifacts (from state)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          if tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json bootstrap_artifacts > build/bootstrap_artifacts_existing.json; then
+            echo "HAS_EXISTING_BOOTSTRAP_ARTIFACTS=1" >> "$GITHUB_ENV"
+          else
+            echo "WARN: missing OpenTofu output 'bootstrap_artifacts' in state; seeding by regenerating all bootstrap artifacts." >&2
+            echo "{}" > build/bootstrap_artifacts_existing.json
+            echo "HAS_EXISTING_BOOTSTRAP_ARTIFACTS=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Package and upload bootstraps
         run: |
           set -euo pipefail
           mkdir -p build/bootstrap
           chmod +x bootstrap/*.sh
-          for role in bastion egress node1 nodecp node2 db db-replica; do
+          roles=(db-replica)
+          if [ "${HAS_EXISTING_BOOTSTRAP_ARTIFACTS:-0}" != "1" ]; then
+            roles=(bastion egress node1 nodecp node2 db db-replica)
+          fi
+
+          for role in "${roles[@]}"; do
             extra_files=()
             if [ "$role" = "egress" ]; then
               extra_files+=(infisical-bootstrap.sh)
@@ -240,16 +222,17 @@ jobs:
           done
 
           manifest='{}'
-          for role in bastion egress node1 nodecp node2 db db-replica; do
+          for role in "${roles[@]}"; do
             sha=$(cat "build/bootstrap/${role}.sha256")
             url=$(cat "build/bootstrap/${role}.url")
             manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")
           done
-          echo "$manifest" | jq '.' > build/bootstrap_artifacts.json
+          echo "$manifest" | jq '.' > build/bootstrap_artifacts_new.json
 
-      - name: Render backend + tfvars
+          jq -s '.[0] * .[1]' build/bootstrap_artifacts_existing.json build/bootstrap_artifacts_new.json > build/bootstrap_artifacts.json
+
+      - name: Render tfvars
         run: |
-          python scripts/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
           python scripts/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
       - name: Offload oversized egress bootstrap payload
@@ -257,105 +240,33 @@ jobs:
           chmod +x scripts/offload-egress-bootstrap-secrets.sh
           scripts/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
 
-      - name: Init OpenTofu
-        run: tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
-
-      - name: Destroy stack (keep volume)
-        run: |
-          chmod +x scripts/*.sh
-          pushd ${{ env.TOFU_DIR }}
-          ../scripts/destroy-without-volume.sh
-          popd
-
-      - name: Import DB volume if exists
-        run: |
-          chmod +x scripts/*.sh
-          pushd ${{ env.TOFU_DIR }}
-          DB_VOLUME_NAME="$DB_VOLUME_NAME" ../scripts/import-volume.sh
-          popd
-
       - name: Import SSH keys if exist
         run: python scripts/import-ssh-keys.py --tofu-dir ${{ env.TOFU_DIR }}
 
-      - name: Apply OpenTofu
-        run: bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
-
-      - name: Sync Cloudflare DNS
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        run: |
-          LB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw load_balancer_public_ipv4)
-          BASTION_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw bastion_public_ipv4)
-          EGRESS_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw egress_public_ipv4)
-          python scripts/sync-cloudflare-dns.py --config config/infra.yaml --lb-ip "$LB_IP" --bastion-public-ip "$BASTION_IP" --egress-public-ip "$EGRESS_IP"
-
-      - name: Validate DNS records
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Replace db replicas
         run: |
           set -euo pipefail
-          LB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw load_balancer_public_ipv4)
-
-          # Collect all domains from config
-          DOMAINS=$(python - <<'PY'
-          import yaml, json, os
-          cfg = yaml.safe_load(open("config/infra.yaml")) or {}
-          domains = set()
-          for key in ["bastion_fqdn","grafana_fqdn","loki_fqdn","infisical_fqdn","kubernetes_fqdn","argocd_fqdn","db_fqdn"]:
-            v = cfg.get(key) or os.getenv(key.upper(),"")
-            if v: domains.add(v)
-          for svc in (cfg.get("internal_services_domains") or []):
-            if isinstance(svc, dict) and svc.get("fqdn"): domains.add(svc["fqdn"])
-          apps = cfg.get("deployed_apps") or []
-          if isinstance(apps, str):
-            try: apps = json.loads(apps)
-            except: apps = []
-          for app in apps:
-            for w in (app.get("workloads") or []):
-              ing = w.get("ingress") or {}
-              for h in (ing.get("hosts") or []):
-                if h.get("host"): domains.add(h["host"])
-          for ah in (cfg.get("additional_hostnames") or []):
-            if isinstance(ah, dict) and ah.get("fqdn"): domains.add(ah["fqdn"])
-          print(" ".join(sorted(domains)))
+          count=$(python - <<'PY'
+          import json, os
+          tofu_dir = os.getenv("TOFU_DIR", "tofu")
+          with open(f"{tofu_dir}/tofu.tfvars.json", "r", encoding="utf-8") as fh:
+              data = json.load(fh)
+          print(len(data.get("db_replicas", [])))
           PY
           )
-
-          if [ -z "$DOMAINS" ]; then
-            echo "No domains found to validate. Skipping."
+          if [ "$count" -lt 1 ]; then
+            echo "No db_replicas configured; nothing to rebuild" >&2
             exit 0
           fi
-
-          echo "Validating DNS for domains: $DOMAINS"
-          FAILED=""
-          MAX_WAIT=60
-          INTERVAL=10
-
-          for domain in $DOMAINS; do
-            elapsed=0
-            resolved=""
-            while [ "$elapsed" -lt "$MAX_WAIT" ]; do
-              resolved=$(dig +short "$domain" 2>/dev/null | head -1 || true)
-              if [ -n "$resolved" ]; then
-                break
-              fi
-              echo "  Waiting for DNS propagation: $domain (${elapsed}s/${MAX_WAIT}s)"
-              sleep "$INTERVAL"
-              elapsed=$((elapsed + INTERVAL))
-            done
-
-            if [ -z "$resolved" ]; then
-              echo "✗ FAILED: $domain does not resolve after ${MAX_WAIT}s"
-              FAILED="$FAILED $domain"
-            else
-              echo "✓ $domain → $resolved"
-            fi
-          done
-
-          if [ -n "$FAILED" ]; then
-            echo ""
-            echo "=== DNS VALIDATION FAILED ==="
-            echo "The following domains did not resolve:$FAILED"
-            echo "Certificate issuance will fail for these domains."
-            echo "Check Cloudflare DNS settings and retry."
-            exit 1
+          if [ "$CLOUD_PROVIDER_RESOLVED" = "ovhcloud" ]; then
+            SERVER_RES="openstack_compute_instance_v2.db_replica"
+          else
+            SERVER_RES="hcloud_server.db_replica"
           fi
-          echo "=== All DNS records validated ==="
+          replace_args=()
+          for i in $(seq 0 $((count - 1))); do
+            replace_args+=("-replace=${SERVER_RES}[\"${i}\"]")
+          done
+          bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
+            -target="$SERVER_RES" \
+            "${replace_args[@]}"

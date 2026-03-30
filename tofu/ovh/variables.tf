@@ -257,6 +257,21 @@ variable "databases_json_private_b64" {
   sensitive = true
 }
 
+variable "db_replicas" {
+  type = list(object({
+    private_ip  = string
+    public_ipv4 = bool
+    public_ipv6 = bool
+  }))
+  default = []
+}
+
+variable "db_replica_secrets" {
+  type      = map(string)
+  default   = {}
+  sensitive = true
+}
+
 # --- OVH-specific credentials ---
 
 variable "ovh_application_key" {

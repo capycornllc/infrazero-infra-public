@@ -288,7 +288,36 @@ resource "hcloud_firewall" "db" {
     direction  = "in"
     protocol   = "tcp"
     port       = "5432"
-    source_ips = local.k3s_node_cidrs
+    source_ips = concat(local.k3s_node_cidrs, local.db_replica_cidrs)
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "22"
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
+  }
+}
+
+resource "hcloud_firewall" "db_replica" {
+  count = length(var.db_replicas) > 0 ? 1 : 0
+  name  = "${var.name_prefix}-db-replica-fw"
+
+  apply_to {
+    label_selector = format("project=%s,environment=%s,role=db-replica", var.project, var.environment)
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "5432"
+    source_ips = concat(local.k3s_node_cidrs, [local.db_cidr])
   }
 
   rule {
@@ -438,6 +467,42 @@ resource "hcloud_server" "db" {
     project     = var.project
     environment = var.environment
     role        = "db"
+  }
+
+  depends_on = [hcloud_network_subnet.main]
+}
+
+resource "hcloud_server" "db_replica" {
+  for_each = local.db_replicas_map
+
+  name        = "${var.name_prefix}-db-replica-${tonumber(each.key) + 1}"
+  image       = var.server_image
+  server_type = var.db_server_type
+  location    = var.location
+
+  public_net {
+    ipv4_enabled = each.value.public_ipv4
+    ipv6_enabled = each.value.public_ipv6
+  }
+
+  network {
+    network_id = hcloud_network.main.id
+    ip         = each.value.private_ip
+  }
+
+  ssh_keys           = local.ssh_key_ids
+  placement_group_id = local.pg_main_id
+  user_data          = local.cloud_init_rendered_db_replica
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
+  labels = {
+    project     = var.project
+    environment = var.environment
+    role        = "db-replica"
+    replica_idx = each.key
   }
 
   depends_on = [hcloud_network_subnet.main]
