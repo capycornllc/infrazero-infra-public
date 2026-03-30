@@ -77,12 +77,23 @@ systemctl stop "postgresql@${PG_MAJOR}-main" || true
 DEFAULT_DATA_DIR="/var/lib/postgresql/${PG_MAJOR}/main"
 PG_CONF="/etc/postgresql/${PG_MAJOR}/main/postgresql.conf"
 
-# Drop the default cluster created by apt — we'll replace it with pg_basebackup
-if command -v pg_dropcluster >/dev/null 2>&1; then
-  pg_dropcluster --stop "$PG_MAJOR" main >/dev/null 2>&1 || true
+# Ensure a cluster config exists in /etc/postgresql — pg_createcluster creates
+# both the config and a fresh data dir. We then wipe the data dir and replace
+# it with pg_basebackup output. This avoids the "move_conffile" error that
+# occurs when pg_createcluster --no-initdb can't find postgresql.conf in the
+# data directory (Debian/Ubuntu keeps configs in /etc, not the data dir).
+if [ ! -f "$PG_CONF" ]; then
+  # Remove stale data so pg_createcluster can initialise cleanly
+  rm -rf "$DEFAULT_DATA_DIR"
+  mkdir -p "$DEFAULT_DATA_DIR"
+  chown postgres:postgres "$DEFAULT_DATA_DIR"
+  chmod 700 "$DEFAULT_DATA_DIR"
+  pg_createcluster "$PG_MAJOR" main -d "$DEFAULT_DATA_DIR"
+  pg_ctlcluster "$PG_MAJOR" main stop 2>/dev/null || true
 fi
-rm -rf "$DEFAULT_DATA_DIR"
-mkdir -p "$DEFAULT_DATA_DIR"
+
+# Wipe data dir contents (keep the directory itself and /etc config intact)
+rm -rf "${DEFAULT_DATA_DIR:?}"/*
 chown postgres:postgres "$DEFAULT_DATA_DIR"
 chmod 700 "$DEFAULT_DATA_DIR"
 
@@ -109,16 +120,12 @@ done
 
 echo "[db-replica] running pg_basebackup from ${DB_PRIMARY_HOST}"
 
-export PGPASSWORD="$DB_REPLICATION_PASSWORD"
-
-sudo -u postgres pg_basebackup \
+sudo -u postgres PGPASSWORD="$DB_REPLICATION_PASSWORD" pg_basebackup \
   -h "$DB_PRIMARY_HOST" \
   -p 5432 \
   -U "$DB_REPLICATION_USER" \
   -D "$DEFAULT_DATA_DIR" \
   -Fp -Xs -P -R
-
-unset PGPASSWORD
 
 echo "[db-replica] pg_basebackup complete"
 
@@ -136,17 +143,6 @@ if ! grep -q "primary_conninfo" "$DEFAULT_DATA_DIR/postgresql.auto.conf" 2>/dev/
 primary_conninfo = 'host=${DB_PRIMARY_HOST} port=5432 user=${DB_REPLICATION_USER} password=${DB_REPLICATION_PASSWORD} sslmode=prefer'
 EOF
   chown postgres:postgres "$DEFAULT_DATA_DIR/postgresql.auto.conf"
-fi
-
-# ------------------------------------------------------------------ #
-#  Create cluster config (Debian/Ubuntu pg_createcluster style)        #
-# ------------------------------------------------------------------ #
-
-# pg_basebackup populated the data dir; now create the cluster config
-# pointing at the existing data directory.
-if command -v pg_createcluster >/dev/null 2>&1; then
-  # pg_createcluster --datadir with existing data just creates the config
-  pg_createcluster "$PG_MAJOR" main -d "$DEFAULT_DATA_DIR" -- --no-initdb 2>/dev/null || true
 fi
 
 # ------------------------------------------------------------------ #

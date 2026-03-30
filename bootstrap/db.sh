@@ -2354,6 +2354,7 @@ setup_replication_primary() {
         cidr=$(echo "$cidr" | xargs)
         if [ -n "$cidr" ]; then
           echo "host replication ${repl_user} ${cidr} scram-sha-256"
+          echo "host all ${repl_user} ${cidr} scram-sha-256"
         fi
       done
       echo "$HBA_REPL_END"
