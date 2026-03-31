@@ -282,7 +282,11 @@ jobs:
           if bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json; then
             echo "[build] Apply succeeded on first pass."
           else
-            echo "[build] First apply failed (likely for_each on unknown resources). Running second apply..."
+            echo "[build] First apply failed. Retrying with -exclude for LB targets..."
+            bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
+              -exclude=hcloud_load_balancer_target.k3s \
+              -exclude=hcloud_load_balancer_target.k3s_api
+            echo "[build] Servers created. Running final apply for LB targets..."
             bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
           fi
 
