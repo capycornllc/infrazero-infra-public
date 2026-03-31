@@ -40,7 +40,7 @@ for i in $(seq 1 "$attempts"); do
     exit 0
   fi
 
-  if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate limit|exceeded retry limit' "$tmp"; then
+  if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate limit|exceeded retry limit|for_each.*known only after apply|will be known only after apply' "$tmp"; then
     echo "[tofu-retry] retryable failure (attempt ${i}/${attempts}); sleeping ${delay}s" >&2
     rm -f "$tmp"
     sleep "$delay"
