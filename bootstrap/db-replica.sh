@@ -120,12 +120,29 @@ done
 
 echo "[db-replica] running pg_basebackup from ${DB_PRIMARY_HOST}"
 
-sudo -u postgres PGPASSWORD="$DB_REPLICATION_PASSWORD" pg_basebackup \
-  -h "$DB_PRIMARY_HOST" \
-  -p 5432 \
-  -U "$DB_REPLICATION_USER" \
-  -D "$DEFAULT_DATA_DIR" \
-  -Fp -Xs -P -R
+# Retry pg_basebackup — primary may still be configuring replication
+# (race condition: replica boots faster than primary finishes db.sh)
+basebackup_ok=false
+for basebackup_attempt in $(seq 1 30); do
+  if sudo -u postgres PGPASSWORD="$DB_REPLICATION_PASSWORD" pg_basebackup \
+    -h "$DB_PRIMARY_HOST" \
+    -p 5432 \
+    -U "$DB_REPLICATION_USER" \
+    -D "$DEFAULT_DATA_DIR" \
+    -Fp -Xs -P -R 2>&1; then
+    basebackup_ok=true
+    break
+  fi
+  echo "[db-replica] pg_basebackup failed (attempt ${basebackup_attempt}/30), retrying in 15s..."
+  # Clean up partial data from failed attempt
+  rm -rf "${DEFAULT_DATA_DIR:?}"/*
+  sleep 15
+done
+
+if [ "$basebackup_ok" != "true" ]; then
+  echo "[db-replica] pg_basebackup failed after 30 attempts" >&2
+  exit 1
+fi
 
 echo "[db-replica] pg_basebackup complete"
 
