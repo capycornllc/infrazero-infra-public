@@ -246,8 +246,9 @@ def main(argv: List[str]) -> int:
         )
         print(out, end="" if out.endswith("\n") else "\n")
         if rc != 0:
-            _eprint(f"Import failed for {addr} (id={remote_id})")
-            return rc
+            _eprint(f"Import failed for {addr} (id={remote_id}); will retry during apply")
+            missing += 1
+            continue
 
         imported += 1
 
