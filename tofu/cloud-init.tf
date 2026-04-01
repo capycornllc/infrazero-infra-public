@@ -198,13 +198,13 @@ locals {
       format("DB_REPLICA_HOSTS='%s'", join(",", [for r in var.db_replicas : r.private_ip])),
     ])
   }) : ""
-  cloud_init_base_pgbouncer = local.pgbouncer_enabled ? yamldecode(local.cloud_init_template_pgbouncer) : {}
+  cloud_init_base_pgbouncer = local.pgbouncer_enabled ? yamldecode(local.cloud_init_template_pgbouncer) : null
 
-  cloud_init_merged_pgbouncer = local.pgbouncer_enabled ? merge(local.cloud_init_base_pgbouncer, local.cloud_init_extra_pgbouncer, {
+  cloud_init_merged_pgbouncer = local.pgbouncer_enabled && local.cloud_init_base_pgbouncer != null ? merge(local.cloud_init_base_pgbouncer, local.cloud_init_extra_pgbouncer, {
     packages    = distinct(concat(try(local.cloud_init_base_pgbouncer.packages, []), try(local.cloud_init_extra_pgbouncer.packages, [])))
     write_files = concat(try(local.cloud_init_base_pgbouncer.write_files, []), try(local.cloud_init_extra_pgbouncer.write_files, []))
     runcmd      = concat(try(local.cloud_init_base_pgbouncer.runcmd, []), try(local.cloud_init_extra_pgbouncer.runcmd, []))
-  }) : {}
+  }) : null
 
   cloud_init_rendered_pgbouncer = local.pgbouncer_enabled ? (
     length(keys(local.cloud_init_extra_pgbouncer)) == 0 ? local.cloud_init_template_pgbouncer : "#cloud-config\n${yamlencode(local.cloud_init_merged_pgbouncer)}"
