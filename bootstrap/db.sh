@@ -2367,4 +2367,207 @@ setup_replication_primary() {
 
 setup_replication_primary
 
+# ------------------------------------------------------------------ #
+#  Patroni HA Setup (optional)                                         #
+# ------------------------------------------------------------------ #
+
+setup_patroni() {
+  local patroni_enabled="${PATRONI_ENABLED:-false}"
+  if [ "$patroni_enabled" != "true" ]; then
+    echo "[db] Patroni not enabled; skipping"
+    return 0
+  fi
+
+  require_env "PATRONI_SCOPE"
+  require_env "PATRONI_ETCD_HOSTS"
+
+  local patroni_name="${PATRONI_NAME:-$(hostname)}"
+  local patroni_scope="${PATRONI_SCOPE}"
+  local etcd_hosts="${PATRONI_ETCD_HOSTS}"
+  local patroni_rest_port="${PATRONI_REST_PORT:-8008}"
+  local repl_user="${DB_REPLICATION_USER:-replicator}"
+  local repl_password="${DB_REPLICATION_PASSWORD:-}"
+  local superuser_password="${PATRONI_SUPERUSER_PASSWORD:-}"
+
+  # Resolve private IP for connect_address
+  local connect_address=""
+  if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
+    connect_address=$(python3 - <<'PY'
+import ipaddress, os, subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(addr)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+    ) || true
+  fi
+
+  if [ -z "$connect_address" ]; then
+    echo "[db] unable to determine private IP for Patroni connect_address" >&2
+    return 1
+  fi
+
+  echo "[db] installing Patroni"
+  apt-get install -y python3-pip python3-venv || true
+
+  python3 -m venv /opt/patroni/venv
+  /opt/patroni/venv/bin/pip install --upgrade pip
+  /opt/patroni/venv/bin/pip install 'patroni[etcd3]' psycopg2-binary
+
+  mkdir -p /etc/patroni
+
+  # Build etcd3 hosts list: "host1:2379,host2:2379" → YAML list
+  local etcd_hosts_yaml=""
+  IFS=',' read -r -a etcd_arr <<< "$etcd_hosts"
+  for h in "${etcd_arr[@]}"; do
+    h=$(echo "$h" | xargs)
+    if [ -n "$h" ]; then
+      # Ensure port is present
+      if [[ "$h" != *:* ]]; then
+        h="${h}:2379"
+      fi
+      etcd_hosts_yaml="${etcd_hosts_yaml}    - ${h}
+"
+    fi
+  done
+
+  local pg_data_dir="${DEFAULT_DATA_DIR:-/var/lib/postgresql/${PG_MAJOR}/main}"
+  local pg_bin_dir="/usr/lib/postgresql/${PG_MAJOR}/bin"
+  local pg_conf_dir="/etc/postgresql/${PG_MAJOR}/main"
+
+  # Escape passwords for YAML (wrap in single quotes, escape internal single quotes)
+  local repl_password_yaml
+  repl_password_yaml=$(printf '%s' "$repl_password" | sed "s/'/''/g")
+  local superuser_password_yaml
+  superuser_password_yaml=$(printf '%s' "$superuser_password" | sed "s/'/''/g")
+
+  cat > /etc/patroni/patroni.yml <<PATRONI_EOF
+scope: ${patroni_scope}
+name: ${patroni_name}
+
+restapi:
+  listen: 0.0.0.0:${patroni_rest_port}
+  connect_address: ${connect_address}:${patroni_rest_port}
+
+etcd3:
+  hosts:
+${etcd_hosts_yaml}
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 5
+        max_replication_slots: 5
+        wal_keep_size: 512MB
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: ${connect_address}:5432
+  data_dir: ${pg_data_dir}
+  config_dir: ${pg_conf_dir}
+  bin_dir: ${pg_bin_dir}
+  pgpass: /tmp/pgpass0
+  authentication:
+    replication:
+      username: ${repl_user}
+      password: '${repl_password_yaml}'
+    superuser:
+      username: postgres
+      password: '${superuser_password_yaml}'
+  parameters:
+    unix_socket_directories: '/var/run/postgresql'
+  pg_hba:
+    - local all postgres peer
+    - local all all peer
+    - host replication ${repl_user} 0.0.0.0/0 scram-sha-256
+    - host all all 0.0.0.0/0 scram-sha-256
+
+tags:
+  nofailover: false
+  noloadbalancer: false
+  clonefrom: false
+  nosync: false
+PATRONI_EOF
+
+  chmod 600 /etc/patroni/patroni.yml
+  chown postgres:postgres /etc/patroni/patroni.yml
+
+  # Stop PostgreSQL — Patroni will manage it
+  echo "[db] stopping PostgreSQL systemd unit (Patroni will manage it)"
+  systemctl stop postgresql || true
+  systemctl stop "postgresql@${PG_MAJOR}-main" || true
+  systemctl disable postgresql || true
+  systemctl disable "postgresql@${PG_MAJOR}-main" || true
+
+  # Create Patroni systemd unit
+  cat > /etc/systemd/system/patroni.service <<'UNIT_EOF'
+[Unit]
+Description=Patroni PostgreSQL HA
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/opt/patroni/venv/bin/patroni /etc/patroni/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+  systemctl daemon-reload
+  systemctl enable --now patroni
+
+  # Wait for Patroni to start
+  echo "[db] waiting for Patroni to start"
+  for attempt in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:${patroni_rest_port}/health" >/dev/null 2>&1; then
+      echo "[db] Patroni is healthy (attempt ${attempt})"
+      break
+    fi
+    if [ "$attempt" -eq 30 ]; then
+      echo "[db] Patroni did not become healthy" >&2
+      systemctl status patroni --no-pager || true
+      journalctl -u patroni -n 50 --no-pager || true
+      return 1
+    fi
+    sleep 5
+  done
+
+  # Install patronictl wrapper
+  ln -sf /opt/patroni/venv/bin/patronictl /usr/local/bin/patronictl
+
+  echo "[db] Patroni setup complete (scope: ${patroni_scope}, name: ${patroni_name})"
+}
+
+setup_patroni
+
 echo "[db] $(date -Is) complete"

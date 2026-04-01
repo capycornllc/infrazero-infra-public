@@ -71,6 +71,7 @@ destroy_targets \
   hcloud_server.db
 destroy_targets_prefix hcloud_server.k3s
 destroy_targets_prefix hcloud_server.db_replica
+destroy_targets_prefix hcloud_server.pgbouncer
 
 destroy_targets \
   hcloud_firewall.bastion \
@@ -79,6 +80,7 @@ destroy_targets \
   hcloud_firewall.k3s_agent \
   hcloud_firewall.db
 destroy_targets_prefix hcloud_firewall.db_replica
+destroy_targets_prefix hcloud_firewall.pgbouncer
 
 destroy_targets \
   hcloud_placement_group.main \

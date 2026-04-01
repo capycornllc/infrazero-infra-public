@@ -200,6 +200,18 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_kubelet" {
   remote_ip_prefix  = each.value
 }
 
+# etcd: K3s control planes + DB nodes (Patroni uses embedded etcd)
+resource "openstack_networking_secgroup_rule_v2" "k3s_etcd" {
+  for_each          = local.k3s_ha_enabled ? toset(concat(local.k3s_control_plane_cidrs, [local.db_cidr], local.db_replica_cidrs)) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.k3s.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 2379
+  port_range_max    = 2380
+  remote_ip_prefix  = each.value
+}
+
 resource "openstack_networking_secgroup_rule_v2" "k3s_ssh" {
   for_each          = toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr]))
   security_group_id = openstack_networking_secgroup_v2.k3s.id
@@ -228,13 +240,25 @@ resource "openstack_networking_secgroup_v2" "db" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "db_postgres" {
-  for_each          = toset(concat(local.k3s_node_cidrs, local.db_replica_cidrs))
+  for_each          = toset(concat(local.k3s_node_cidrs, local.db_replica_cidrs, local.pgbouncer_enabled ? [local.pgbouncer_cidr] : []))
   security_group_id = openstack_networking_secgroup_v2.db.id
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
   port_range_min    = 5432
   port_range_max    = 5432
+  remote_ip_prefix  = each.value
+}
+
+# Patroni REST API (8008) — between DB nodes and pgbouncer callback
+resource "openstack_networking_secgroup_rule_v2" "db_patroni_api" {
+  for_each          = toset(concat(local.db_replica_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : []))
+  security_group_id = openstack_networking_secgroup_v2.db.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8008
+  port_range_max    = 8008
   remote_ip_prefix  = each.value
 }
 
@@ -394,13 +418,25 @@ resource "openstack_networking_secgroup_v2" "db_replica" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "db_replica_postgres" {
-  for_each          = length(var.db_replicas) > 0 ? toset(concat(local.k3s_node_cidrs, [local.db_cidr])) : toset([])
+  for_each          = length(var.db_replicas) > 0 ? toset(concat(local.k3s_node_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])) : toset([])
   security_group_id = openstack_networking_secgroup_v2.db_replica[0].id
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
   port_range_min    = 5432
   port_range_max    = 5432
+  remote_ip_prefix  = each.value
+}
+
+# Patroni REST API (8008) — between DB replica nodes and pgbouncer callback
+resource "openstack_networking_secgroup_rule_v2" "db_replica_patroni_api" {
+  for_each          = length(var.db_replicas) > 0 ? toset(concat(local.db_replica_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.db_replica[0].id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8008
+  port_range_max    = 8008
   remote_ip_prefix  = each.value
 }
 
@@ -439,6 +475,66 @@ resource "openstack_compute_instance_v2" "db_replica" {
     environment = var.environment
     role        = "db-replica"
     replica_idx = each.key
+  }
+
+  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+}
+
+# ------------------------------------------------------------------ #
+#  PgBouncer Security Group + Instance                                 #
+# ------------------------------------------------------------------ #
+
+resource "openstack_networking_secgroup_v2" "pgbouncer" {
+  count       = local.pgbouncer_enabled ? 1 : 0
+  name        = "${var.name_prefix}-pgbouncer-sg"
+  description = "PgBouncer connection pooler security group"
+}
+
+# Write pool (5432) and read pool (5433) from K3s nodes
+resource "openstack_networking_secgroup_rule_v2" "pgbouncer_pools" {
+  for_each          = local.pgbouncer_enabled ? toset(local.k3s_node_cidrs) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.pgbouncer[0].id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 5432
+  port_range_max    = 5433
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_networking_secgroup_rule_v2" "pgbouncer_ssh" {
+  for_each          = local.pgbouncer_enabled ? toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.pgbouncer[0].id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_compute_instance_v2" "pgbouncer" {
+  count           = local.pgbouncer_enabled ? 1 : 0
+  name            = "${var.name_prefix}-pgbouncer"
+  image_id        = data.openstack_images_image_v2.ubuntu.id
+  flavor_name     = var.pgbouncer_server_type
+  key_pair        = openstack_compute_keypair_v2.ops["0"].name
+  security_groups = [openstack_networking_secgroup_v2.pgbouncer[0].name]
+  user_data       = local.cloud_init_rendered_pgbouncer
+
+  network {
+    uuid        = openstack_networking_network_v2.main.id
+    fixed_ip_v4 = try(var.servers.pgbouncer.private_ip, "")
+  }
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
+  metadata = {
+    project     = var.project
+    environment = var.environment
+    role        = "pgbouncer"
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]

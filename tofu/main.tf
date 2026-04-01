@@ -192,6 +192,7 @@ resource "hcloud_firewall" "k3s_server" {
     source_ips = concat(local.k3s_node_cidrs, local.k3s_ha_enabled ? [local.k3s_api_lb_cidr] : [])
   }
 
+  # etcd: K3s control planes + DB nodes (Patroni uses embedded etcd)
   dynamic "rule" {
     for_each = local.k3s_ha_enabled ? toset(["2379", "2380"]) : []
     iterator = etcd_port
@@ -199,7 +200,7 @@ resource "hcloud_firewall" "k3s_server" {
       direction  = "in"
       protocol   = "tcp"
       port       = etcd_port.value
-      source_ips = local.k3s_control_plane_cidrs
+      source_ips = concat(local.k3s_control_plane_cidrs, [local.db_cidr], local.db_replica_cidrs)
     }
   }
 
@@ -288,7 +289,15 @@ resource "hcloud_firewall" "db" {
     direction  = "in"
     protocol   = "tcp"
     port       = "5432"
-    source_ips = concat(local.k3s_node_cidrs, local.db_replica_cidrs)
+    source_ips = concat(local.k3s_node_cidrs, local.db_replica_cidrs, local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])
+  }
+
+  # Patroni REST API — between DB nodes and pgbouncer callback
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "8008"
+    source_ips = concat(local.db_replica_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])
   }
 
   rule {
@@ -317,7 +326,15 @@ resource "hcloud_firewall" "db_replica" {
     direction  = "in"
     protocol   = "tcp"
     port       = "5432"
-    source_ips = concat(local.k3s_node_cidrs, [local.db_cidr])
+    source_ips = concat(local.k3s_node_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])
+  }
+
+  # Patroni REST API — between DB nodes and pgbouncer callback
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "8008"
+    source_ips = concat(local.db_replica_cidrs, [local.db_cidr], local.pgbouncer_enabled ? [local.pgbouncer_cidr] : [])
   }
 
   rule {
@@ -332,6 +349,74 @@ resource "hcloud_firewall" "db_replica" {
     protocol   = "icmp"
     source_ips = var.wireguard.allowed_cidrs
   }
+}
+
+# ------------------------------------------------------------------ #
+#  PgBouncer Firewall + Server                                         #
+# ------------------------------------------------------------------ #
+
+resource "hcloud_firewall" "pgbouncer" {
+  count = local.pgbouncer_enabled ? 1 : 0
+  name  = "${var.name_prefix}-pgbouncer-fw"
+
+  apply_to {
+    label_selector = format("project=%s,environment=%s,role=pgbouncer", var.project, var.environment)
+  }
+
+  # Write pool (5432) and read pool (5433) from K3s nodes
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "5432-5433"
+    source_ips = local.k3s_node_cidrs
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "22"
+    source_ips = concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "icmp"
+    source_ips = var.wireguard.allowed_cidrs
+  }
+}
+
+resource "hcloud_server" "pgbouncer" {
+  count       = local.pgbouncer_enabled ? 1 : 0
+  name        = "${var.name_prefix}-pgbouncer"
+  image       = var.server_image
+  server_type = var.pgbouncer_server_type
+  location    = var.location
+
+  public_net {
+    ipv4_enabled = try(var.servers.pgbouncer.public_ipv4, false)
+    ipv6_enabled = try(var.servers.pgbouncer.public_ipv6, false)
+  }
+
+  network {
+    network_id = hcloud_network.main.id
+    ip         = try(var.servers.pgbouncer.private_ip, "")
+  }
+
+  ssh_keys           = local.ssh_key_ids
+  placement_group_id = local.pg_main_id
+  user_data          = local.cloud_init_rendered_pgbouncer
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
+  labels = {
+    project     = var.project
+    environment = var.environment
+    role        = "pgbouncer"
+  }
+
+  depends_on = [hcloud_network_subnet.main]
 }
 
 resource "hcloud_server" "bastion" {

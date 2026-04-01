@@ -30,3 +30,7 @@ output "db_volume_id" {
 output "db_replica_private_ips" {
   value = [for key, replica in local.db_replicas_map : replica.private_ip]
 }
+
+output "pgbouncer_private_ip" {
+  value = local.pgbouncer_enabled ? try(var.servers.pgbouncer.private_ip, "") : ""
+}

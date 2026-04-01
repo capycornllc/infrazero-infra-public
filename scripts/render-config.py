@@ -1,6 +1,7 @@
 import argparse
 import base64
 import gzip
+import hashlib
 import ipaddress
 import json
 import os
@@ -278,6 +279,9 @@ def main() -> int:
     config["nodes_secondary_cloud_init"] = optional_multiline_env(
         "NODES_SECONDARY_CLOUD_INIT"
     ) or optional_multiline_env("nodes_secondary_cloud_init")
+    config["pgbouncer_cloud_init"] = optional_multiline_env("PGBOUNCER_CLOUD_INIT") or optional_multiline_env(
+        "pgbouncer_cloud_init"
+    )
 
     def parse_int_env(name: str, minimum: int | None = None) -> int | None:
         raw = os.getenv(name, "").strip()
@@ -487,6 +491,7 @@ def main() -> int:
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
+    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or "cx22"
 
     db_type = require_env("DB_TYPE")
     db_version = require_env("DB_VERSION")
@@ -923,7 +928,6 @@ def main() -> int:
 
         # Generate a replication password deterministically from existing secrets
         # so it's stable across runs without needing a new GitHub secret.
-        import hashlib
         repl_seed = (s3_secret_key or "") + (db_primary_ip or "") + "replicator"
         repl_password = hashlib.sha256(repl_seed.encode("utf-8")).hexdigest()[:32]
         db_secrets["DB_REPLICATION_USER"] = "replicator"
@@ -938,6 +942,101 @@ def main() -> int:
             "DB_VERSION": db_version,
             "K3S_NODE_CIDRS": ",".join(k3s_node_cidrs),
         }
+
+    # ------------------------------------------------------------------ #
+    #  PgBouncer + Patroni HA                                              #
+    # ------------------------------------------------------------------ #
+
+    pgbouncer_enabled = parse_bool(optional_env("PGBOUNCER_ENABLED"), default=False)
+    patroni_enabled = parse_bool(optional_env("PATRONI_ENABLED"), default=False)
+
+    # Patroni requires at least one replica and HA k3s (embedded etcd)
+    if patroni_enabled and not db_replica_enabled:
+        errors.append("PATRONI_ENABLED=true requires DB_REPLICA_ENABLED=true")
+    if patroni_enabled and k3s_control_planes_count < 3:
+        errors.append("PATRONI_ENABLED=true requires K3S_CONTROL_PLANES_COUNT >= 3 (embedded etcd)")
+
+    # Build etcd endpoints from K3s control plane IPs
+    etcd_endpoints = ""
+    if patroni_enabled and config.get("k3s_control_planes"):
+        etcd_ips = [
+            str(node.get("private_ip", "")).strip()
+            for node in config["k3s_control_planes"]
+            if node.get("private_ip")
+        ]
+        etcd_endpoints = ",".join(f"{ip}:2379" for ip in etcd_ips)
+
+    # Patroni scope: <name_prefix>-db
+    patroni_scope = f"{config.get('name_prefix', 'infrazero')}-db"
+
+    # Deterministic superuser password for Patroni
+    patroni_superuser_password = ""
+    if patroni_enabled:
+        seed = (s3_secret_key or "") + (db_primary_ip or "") + "patroni-superuser"
+        patroni_superuser_password = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+    if patroni_enabled:
+        db_secrets["PATRONI_ENABLED"] = "true"
+        db_secrets["PATRONI_SCOPE"] = patroni_scope
+        db_secrets["PATRONI_ETCD_HOSTS"] = etcd_endpoints
+        db_secrets["PATRONI_SUPERUSER_PASSWORD"] = patroni_superuser_password
+        db_secrets["PATRONI_NAME"] = "db-primary"
+        if db_replica_enabled:
+            db_secrets["DB_REPLICA_HOSTS"] = ",".join(
+                r["private_ip"] for r in config["db_replicas"] if r.get("private_ip")
+            )
+
+    if patroni_enabled and db_replica_enabled and db_replica_count > 0:
+        config["db_replica_secrets"]["PATRONI_ENABLED"] = "true"
+        config["db_replica_secrets"]["PATRONI_SCOPE"] = patroni_scope
+        config["db_replica_secrets"]["PATRONI_ETCD_HOSTS"] = etcd_endpoints
+        config["db_replica_secrets"]["PATRONI_SUPERUSER_PASSWORD"] = patroni_superuser_password
+        # Each replica gets a unique name via index; bootstrap script uses hostname by default
+        # PATRONI_NAME is left unset so Patroni uses hostname (unique per VM)
+
+    # PgBouncer server config
+    pgbouncer_private_ip = ""
+    if pgbouncer_enabled:
+        pgbouncer_cfg = servers_cfg.get("pgbouncer", {}) or {}
+        pgbouncer_private_ip = str(pgbouncer_cfg.get("private_ip", "")).strip()
+        if not pgbouncer_private_ip:
+            # Auto-generate: db_primary_ip + offset
+            if db_primary_ip:
+                try:
+                    pgbouncer_private_ip = str(ipaddress.ip_address(db_primary_ip) + 5)
+                except (ValueError, TypeError):
+                    errors.append("Cannot auto-generate pgbouncer IP from db.private_ip")
+            else:
+                errors.append("servers.pgbouncer.private_ip or servers.db.private_ip is required when PGBOUNCER_ENABLED=true")
+
+        if pgbouncer_private_ip:
+            config.setdefault("servers", {})["pgbouncer"] = {
+                "private_ip": pgbouncer_private_ip,
+                "public_ipv4": bool(pgbouncer_cfg.get("public_ipv4", False)),
+                "public_ipv6": bool(pgbouncer_cfg.get("public_ipv6", False)),
+            }
+
+    # PgBouncer auth credentials
+    pgbouncer_auth_user = optional_env("PGBOUNCER_AUTH_USER") or "pgbouncer"
+    pgbouncer_auth_password = optional_env("PGBOUNCER_AUTH_PASSWORD")
+    if pgbouncer_enabled and not pgbouncer_auth_password:
+        # Derive deterministically
+        seed = (s3_secret_key or "") + (pgbouncer_private_ip or "") + "pgbouncer-auth"
+        pgbouncer_auth_password = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+    config["pgbouncer_secrets"] = {}
+    if pgbouncer_enabled:
+        config["pgbouncer_secrets"] = {
+            "DB_PRIMARY_HOST": db_primary_ip,
+            "PGBOUNCER_AUTH_USER": pgbouncer_auth_user,
+            "PGBOUNCER_AUTH_PASSWORD": pgbouncer_auth_password,
+        }
+        if db_replica_enabled and config["db_replicas"]:
+            replica_ips = [r["private_ip"] for r in config["db_replicas"] if r.get("private_ip")]
+            config["pgbouncer_secrets"]["DB_REPLICA_HOSTS"] = ",".join(replica_ips)
+        if patroni_enabled:
+            config["pgbouncer_secrets"]["PATRONI_SCOPE"] = patroni_scope
+            config["pgbouncer_secrets"]["PATRONI_ETCD_HOSTS"] = etcd_endpoints
 
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
@@ -1123,6 +1222,7 @@ def main() -> int:
     config["egress_server_type"] = egress_server_type
     config["db_server_type"] = db_server_type
     config["k3s_node_server_type"] = k3s_node_server_type
+    config["pgbouncer_server_type"] = pgbouncer_server_type
     config["internal_services_domains"] = {key: {"fqdn": value} for key, value in internal_services.items()}
     config["deployed_apps"] = deployed_apps
 
@@ -1152,6 +1252,8 @@ def main() -> int:
         required_roles = list(REQUIRED_ROLES)
         if db_replica_enabled and db_replica_count > 0:
             required_roles.append("db-replica")
+        if pgbouncer_enabled:
+            required_roles.append("pgbouncer")
         missing = [role for role in required_roles if role not in artifacts]
         if missing:
             print(f"Missing bootstrap artifacts for roles: {', '.join(missing)}", file=sys.stderr)

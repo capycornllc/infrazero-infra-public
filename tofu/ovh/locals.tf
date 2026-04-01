@@ -17,6 +17,8 @@ locals {
   bastion_cidr         = "${var.servers.bastion.private_ip}/32"
   egress_cidr          = "${var.servers.egress.private_ip}/32"
   db_cidr              = "${var.servers.db.private_ip}/32"
+  pgbouncer_enabled    = var.servers.pgbouncer != null
+  pgbouncer_cidr       = var.servers.pgbouncer != null ? "${try(var.servers.pgbouncer.private_ip, "")}/32" : ""
   egress_service_cidrs = concat([var.private_cidr], var.wireguard.allowed_cidrs)
   bastion_ssh_cidrs    = length(var.debug_root_password) > 0 ? concat(var.wireguard.allowed_cidrs, ["0.0.0.0/0"]) : var.wireguard.allowed_cidrs
 
@@ -75,6 +77,11 @@ locals {
   db_replica_cidrs = [for replica in var.db_replicas : "${replica.private_ip}/32"]
   db_replica_env_lines = [
     for key, value in var.db_replica_secrets :
+    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
+  ]
+
+  pgbouncer_env_lines = [
+    for key, value in var.pgbouncer_secrets :
     format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
   ]
 }

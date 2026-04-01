@@ -41,6 +41,11 @@ variable "servers" {
       public_ipv4 = bool
       public_ipv6 = bool
     })
+    pgbouncer = optional(object({
+      private_ip  = string
+      public_ipv4 = bool
+      public_ipv6 = bool
+    }))
   })
 }
 
@@ -146,6 +151,11 @@ variable "egress_server_type" {
 
 variable "db_server_type" {
   type = string
+}
+
+variable "pgbouncer_server_type" {
+  type    = string
+  default = "b2-7"
 }
 
 variable "k3s_node_server_type" {
@@ -269,6 +279,18 @@ variable "db_replicas" {
 variable "db_replica_secrets" {
   type      = map(string)
   default   = {}
+  sensitive = true
+}
+
+variable "pgbouncer_secrets" {
+  type      = map(string)
+  default   = {}
+  sensitive = true
+}
+
+variable "pgbouncer_cloud_init" {
+  type      = string
+  default   = ""
   sensitive = true
 }
 

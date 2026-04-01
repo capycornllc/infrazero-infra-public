@@ -43,6 +43,11 @@ variable "servers" {
       public_ipv4 = bool
       public_ipv6 = bool
     })
+    pgbouncer = optional(object({
+      private_ip  = string
+      public_ipv4 = bool
+      public_ipv6 = bool
+    }))
   })
 }
 
@@ -152,6 +157,11 @@ variable "egress_server_type" {
 
 variable "db_server_type" {
   type = string
+}
+
+variable "pgbouncer_server_type" {
+  type    = string
+  default = "cx22"
 }
 
 variable "k3s_node_server_type" {
@@ -301,6 +311,23 @@ variable "db_replica_secrets" {
   type      = map(string)
   default   = {}
   sensitive = true
+}
+
+variable "pgbouncer_secrets" {
+  type      = map(string)
+  default   = {}
+  sensitive = true
+}
+
+variable "pgbouncer_cloud_init" {
+  type      = string
+  default   = ""
+  sensitive = true
+
+  validation {
+    condition     = trimspace(var.pgbouncer_cloud_init) == "" || can(merge(yamldecode(var.pgbouncer_cloud_init), {}))
+    error_message = "pgbouncer_cloud_init must be empty or a YAML mapping (cloud-init snippet)."
+  }
 }
 
 variable "hcloud_token" {

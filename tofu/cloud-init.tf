@@ -172,4 +172,41 @@ locals {
       format("DB_PRIMARY_HOST='%s'", var.servers.db.private_ip),
     ])
   }) : ""
+
+  # PgBouncer cloud-init
+  cloud_init_extra_pgbouncer = try(yamldecode(var.pgbouncer_cloud_init), {})
+
+  cloud_init_template_pgbouncer = local.pgbouncer_enabled ? templatefile(local.cloud_init_template_path, {
+    bootstrap_role                      = "pgbouncer"
+    bootstrap_url                       = try(var.bootstrap_artifacts["pgbouncer"].url, "")
+    bootstrap_sha256                    = try(var.bootstrap_artifacts["pgbouncer"].sha256, "")
+    db_volume_name                      = var.db_volume.name
+    db_volume_format                    = var.db_volume.format
+    private_cidr                        = var.private_cidr
+    bastion_private_ip                  = var.servers.bastion.private_ip
+    wg_server_address                   = var.wg_server_address
+    wg_cidr                             = var.wireguard.allowed_cidrs[0]
+    admin_users_json_b64                = var.admin_users_json_b64
+    debug_root_password                 = local.debug_root_password_escaped
+    egress_env                          = []
+    infisical_db_backup_age_private_key = ""
+    databases_json_private_b64          = ""
+    bastion_env                         = []
+    node_env                            = []
+    node_role_env = concat(local.pgbouncer_env_lines, [
+      format("DB_PRIMARY_HOST='%s'", var.servers.db.private_ip),
+      format("DB_REPLICA_HOSTS='%s'", join(",", [for r in var.db_replicas : r.private_ip])),
+    ])
+  }) : ""
+  cloud_init_base_pgbouncer = local.pgbouncer_enabled ? yamldecode(local.cloud_init_template_pgbouncer) : {}
+
+  cloud_init_merged_pgbouncer = local.pgbouncer_enabled ? merge(local.cloud_init_base_pgbouncer, local.cloud_init_extra_pgbouncer, {
+    packages    = distinct(concat(try(local.cloud_init_base_pgbouncer.packages, []), try(local.cloud_init_extra_pgbouncer.packages, [])))
+    write_files = concat(try(local.cloud_init_base_pgbouncer.write_files, []), try(local.cloud_init_extra_pgbouncer.write_files, []))
+    runcmd      = concat(try(local.cloud_init_base_pgbouncer.runcmd, []), try(local.cloud_init_extra_pgbouncer.runcmd, []))
+  }) : {}
+
+  cloud_init_rendered_pgbouncer = local.pgbouncer_enabled ? (
+    length(keys(local.cloud_init_extra_pgbouncer)) == 0 ? local.cloud_init_template_pgbouncer : "#cloud-config\n${yamlencode(local.cloud_init_merged_pgbouncer)}"
+  ) : ""
 }
