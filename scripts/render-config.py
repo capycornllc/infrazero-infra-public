@@ -491,7 +491,7 @@ def main() -> int:
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
-    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or "cx22"
+    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or "cx23"
 
     db_type = require_env("DB_TYPE")
     db_version = require_env("DB_VERSION")

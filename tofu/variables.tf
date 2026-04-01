@@ -161,7 +161,7 @@ variable "db_server_type" {
 
 variable "pgbouncer_server_type" {
   type    = string
-  default = "cx22"
+  default = "cx23"
 }
 
 variable "k3s_node_server_type" {
