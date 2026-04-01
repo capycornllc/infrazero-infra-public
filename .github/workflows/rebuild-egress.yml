@@ -226,7 +226,8 @@ jobs:
           chmod +x bootstrap/*.sh
           roles=(egress)
           if [ "${HAS_EXISTING_BOOTSTRAP_ARTIFACTS:-0}" != "1" ]; then
-            roles=(bastion egress node1 nodecp node2 db)
+            roles=(bastion egress node1 nodecp node2 db db-replica)
+            if [ "${PGBOUNCER_ENABLED:-false}" = "true" ]; then roles+=(pgbouncer); fi
           fi
 
           for role in "${roles[@]}"; do

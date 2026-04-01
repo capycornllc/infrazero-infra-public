@@ -225,7 +225,11 @@ jobs:
           set -euo pipefail
           mkdir -p build/bootstrap
           chmod +x bootstrap/*.sh
-          for role in bastion egress node1 nodecp node2 db db-replica; do
+          ROLES="bastion egress node1 nodecp node2 db db-replica"
+          if [ "${PGBOUNCER_ENABLED:-false}" = "true" ]; then
+            ROLES="$ROLES pgbouncer"
+          fi
+          for role in $ROLES; do
             extra_files=()
             if [ "$role" = "egress" ]; then
               extra_files+=(infisical-bootstrap.sh)
@@ -243,7 +247,7 @@ jobs:
           done
 
           manifest='{}'
-          for role in bastion egress node1 nodecp node2 db db-replica; do
+          for role in $ROLES; do
             sha=$(cat "build/bootstrap/${role}.sha256")
             url=$(cat "build/bootstrap/${role}.url")
             manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")
