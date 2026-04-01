@@ -87,6 +87,9 @@ jobs:
       OPENSTACK_TENANT_ID: ${{ secrets.openstack_tenant_id }}
       DB_REPLICA_ENABLED: ${{ secrets.db_replica_enabled }}
       DB_REPLICA_COUNT: ${{ secrets.db_replica_count }}
+      PATRONI_ENABLED: ${{ secrets.patroni_enabled }}
+      PGBOUNCER_ENABLED: ${{ secrets.pgbouncer_enabled }}
+      PGBOUNCER_SERVER_TYPE: ${{ secrets.pgbouncer_server_type }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
