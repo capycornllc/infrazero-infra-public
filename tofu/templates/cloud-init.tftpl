@@ -193,7 +193,7 @@ write_files:
         if timeout 120 curl -fsSL "$URL" -o "$ROLE.tar.zst"; then
           break
         fi
-        echo "[bootstrap] download attempt ${dl_attempt}/3 failed or timed out; retrying in 5s..." >&2
+        echo "[bootstrap] download attempt $${dl_attempt}/3 failed or timed out; retrying in 5s..." >&2
         sleep 5
       done
       echo "$SHA  $ROLE.tar.zst" | sha256sum -c -
