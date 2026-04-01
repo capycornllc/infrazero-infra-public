@@ -200,15 +200,15 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_kubelet" {
   remote_ip_prefix  = each.value
 }
 
-# etcd: K3s control planes + DB nodes (Patroni uses embedded etcd)
+# etcd-patroni: dedicated etcd for Patroni on K3s control planes
 resource "openstack_networking_secgroup_rule_v2" "k3s_etcd" {
   for_each          = local.k3s_ha_enabled ? toset(concat(local.k3s_control_plane_cidrs, [local.db_cidr], local.db_replica_cidrs)) : toset([])
   security_group_id = openstack_networking_secgroup_v2.k3s.id
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
-  port_range_min    = 2379
-  port_range_max    = 2380
+  port_range_min    = 2381
+  port_range_max    = 2382
   remote_ip_prefix  = each.value
 }
 

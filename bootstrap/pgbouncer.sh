@@ -45,8 +45,8 @@ PATRONI_REST_PORT="${PATRONI_REST_PORT:-8008}"
 
 install_packages() {
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y pgbouncer curl jq postgresql-client
+  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
+  timeout 600 apt-get install -y pgbouncer curl jq postgresql-client
 }
 
 install_packages

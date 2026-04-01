@@ -223,4 +223,122 @@ else
   echo "[nodecp] promtail binary unavailable; skipping service setup"
 fi
 
+# ------------------------------------------------------------------ #
+#  Dedicated etcd for Patroni (optional)                               #
+# ------------------------------------------------------------------ #
+
+setup_etcd_patroni() {
+  local enabled="${ETCD_PATRONI_ENABLED:-false}"
+  if [ "$enabled" != "true" ]; then
+    echo "[nodecp] etcd-patroni not enabled; skipping"
+    return 0
+  fi
+
+  echo "[nodecp] installing dedicated etcd for Patroni"
+
+  local etcd_version="${ETCD_PATRONI_VERSION:-3.5.21}"
+  local etcd_name="${ETCD_PATRONI_NAME:-$(hostname)}"
+  local initial_cluster="${ETCD_PATRONI_INITIAL_CLUSTER:-}"
+  local client_port="${ETCD_PATRONI_CLIENT_PORT:-2381}"
+  local peer_port="${ETCD_PATRONI_PEER_PORT:-2382}"
+
+  if [ -z "$initial_cluster" ]; then
+    echo "[nodecp] ETCD_PATRONI_INITIAL_CLUSTER not set; cannot configure etcd" >&2
+    return 1
+  fi
+
+  local advertise_ip=""
+  if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
+    advertise_ip=$(python3 - <<'PY'
+import ipaddress, os, subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(addr)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+    ) || true
+  fi
+
+  if [ -z "$advertise_ip" ]; then
+    echo "[nodecp] unable to determine private IP for etcd advertise" >&2
+    return 1
+  fi
+
+  local arch="amd64"
+  local etcd_url="https://github.com/etcd-io/etcd/releases/download/v${etcd_version}/etcd-v${etcd_version}-linux-${arch}.tar.gz"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  echo "[nodecp] downloading etcd v${etcd_version}"
+  timeout 120 curl -fsSL "$etcd_url" -o "${tmpdir}/etcd.tar.gz"
+  tar -xzf "${tmpdir}/etcd.tar.gz" -C "${tmpdir}" --strip-components=1
+  install -m 0755 "${tmpdir}/etcd" /usr/local/bin/etcd-patroni
+  install -m 0755 "${tmpdir}/etcdctl" /usr/local/bin/etcdctl-patroni
+  rm -rf "${tmpdir}"
+
+  mkdir -p /var/lib/etcd-patroni
+  chmod 700 /var/lib/etcd-patroni
+
+  cat > /etc/systemd/system/etcd-patroni.service <<UNIT_EOF
+[Unit]
+Description=etcd for Patroni DCS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd-patroni \\
+  --name ${etcd_name} \\
+  --data-dir /var/lib/etcd-patroni \\
+  --listen-client-urls http://0.0.0.0:${client_port} \\
+  --advertise-client-urls http://${advertise_ip}:${client_port} \\
+  --listen-peer-urls http://0.0.0.0:${peer_port} \\
+  --initial-advertise-peer-urls http://${advertise_ip}:${peer_port} \\
+  --initial-cluster ${initial_cluster} \\
+  --initial-cluster-state new \\
+  --initial-cluster-token patroni-etcd
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+  systemctl daemon-reload
+  systemctl enable --now etcd-patroni
+
+  echo "[nodecp] waiting for etcd-patroni to start"
+  for attempt in $(seq 1 30); do
+    if ETCDCTL_API=3 /usr/local/bin/etcdctl-patroni \
+      --endpoints="http://127.0.0.1:${client_port}" \
+      endpoint health >/dev/null 2>&1; then
+      echo "[nodecp] etcd-patroni healthy (attempt ${attempt})"
+      return 0
+    fi
+    sleep 3
+  done
+
+  echo "[nodecp] etcd-patroni did not become healthy" >&2
+  systemctl status etcd-patroni --no-pager || true
+  journalctl -u etcd-patroni -n 30 --no-pager || true
+  return 1
+}
+
+setup_etcd_patroni
+
 echo "[nodecp] $(date -Is) complete"

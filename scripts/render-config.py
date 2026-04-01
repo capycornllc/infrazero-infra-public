@@ -964,7 +964,7 @@ def main() -> int:
             for node in config["k3s_control_planes"]
             if node.get("private_ip")
         ]
-        etcd_endpoints = ",".join(f"{ip}:2379" for ip in etcd_ips)
+        etcd_endpoints = ",".join(f"{ip}:2381" for ip in etcd_ips)
 
     # Patroni scope: <name_prefix>-db
     patroni_scope = f"{config.get('name_prefix', 'infrazero')}-db"
@@ -1217,6 +1217,19 @@ def main() -> int:
         k3s_server_secrets["ENVIRONMENT"] = runtime_environment
     if infisical_project_name:
         k3s_server_secrets["INFISICAL_PROJECT_NAME"] = infisical_project_name
+
+    # Dedicated etcd for Patroni on K3s control plane nodes
+    if patroni_enabled and etcd_endpoints:
+        name_prefix = config.get("name_prefix", "infrazero")
+        etcd_initial_cluster_parts = []
+        for i, ip in enumerate(etcd_ips):
+            # Matches hostname: <name_prefix>-node1, <name_prefix>-node2, <name_prefix>-node3
+            node_name = f"{name_prefix}-node{i + 1}"
+            etcd_initial_cluster_parts.append(f"{node_name}=http://{ip}:2382")
+        etcd_initial_cluster = ",".join(etcd_initial_cluster_parts)
+
+        k3s_server_secrets["ETCD_PATRONI_ENABLED"] = "true"
+        k3s_server_secrets["ETCD_PATRONI_INITIAL_CLUSTER"] = etcd_initial_cluster
 
     config["bastion_server_type"] = bastion_server_type
     config["egress_server_type"] = egress_server_type

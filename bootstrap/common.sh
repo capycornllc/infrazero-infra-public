@@ -79,13 +79,16 @@ fi
 install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    for _ in {1..5}; do
-      if apt-get update -y && apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades; then
+    for attempt in {1..5}; do
+      if timeout 300 apt-get update -y && timeout 600 apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades; then
         return 0
       fi
-      sleep 5
+      echo "[common] apt-get attempt ${attempt}/5 failed or timed out; retrying in 10s..." >&2
+      apt-get clean 2>/dev/null || true
+      rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+      sleep 10
     done
-    echo "[common] apt-get failed after retries; continuing without packages" >&2
+    echo "[common] apt-get failed after 5 retries; continuing without packages" >&2
   fi
 }
 

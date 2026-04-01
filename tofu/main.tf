@@ -192,9 +192,9 @@ resource "hcloud_firewall" "k3s_server" {
     source_ips = concat(local.k3s_node_cidrs, local.k3s_ha_enabled ? [local.k3s_api_lb_cidr] : [])
   }
 
-  # etcd: K3s control planes + DB nodes (Patroni uses embedded etcd)
+  # etcd-patroni: dedicated etcd for Patroni on K3s control planes
   dynamic "rule" {
-    for_each = local.k3s_ha_enabled ? toset(["2379", "2380"]) : []
+    for_each = local.k3s_ha_enabled ? toset(["2381", "2382"]) : []
     iterator = etcd_port
     content {
       direction  = "in"

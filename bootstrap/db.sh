@@ -70,17 +70,17 @@ install_packages() {
     return
   fi
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
+  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
+  timeout 600 apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    apt-get update -y
+    timeout 300 apt-get update -y
   fi
 
-  apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}"
+  timeout 600 apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}"
 }
 
 install_packages
