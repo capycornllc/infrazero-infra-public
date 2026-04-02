@@ -980,7 +980,6 @@ def main() -> int:
         db_secrets["PATRONI_SCOPE"] = patroni_scope
         db_secrets["PATRONI_ETCD_HOSTS"] = etcd_endpoints
         db_secrets["PATRONI_SUPERUSER_PASSWORD"] = patroni_superuser_password
-        db_secrets["PATRONI_NAME"] = "db-primary"
         if db_replica_enabled:
             db_secrets["DB_REPLICA_HOSTS"] = ",".join(
                 r["private_ip"] for r in config["db_replicas"] if r.get("private_ip")
@@ -991,8 +990,6 @@ def main() -> int:
         config["db_replica_secrets"]["PATRONI_SCOPE"] = patroni_scope
         config["db_replica_secrets"]["PATRONI_ETCD_HOSTS"] = etcd_endpoints
         config["db_replica_secrets"]["PATRONI_SUPERUSER_PASSWORD"] = patroni_superuser_password
-        # Each replica gets a unique name via index; bootstrap script uses hostname by default
-        # PATRONI_NAME is left unset so Patroni uses hostname (unique per VM)
 
     # PgBouncer server config
     pgbouncer_private_ip = ""

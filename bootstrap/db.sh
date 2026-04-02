@@ -2430,7 +2430,7 @@ PY
 
   mkdir -p /etc/patroni
 
-  # Build etcd3 hosts list: "host1:2379,host2:2379" → YAML list
+  # Build etcd3 hosts list: "host1:2391,host2:2391" → YAML list
   local etcd_hosts_yaml=""
   IFS=',' read -r -a etcd_arr <<< "$etcd_hosts"
   for h in "${etcd_arr[@]}"; do
@@ -2438,7 +2438,7 @@ PY
     if [ -n "$h" ]; then
       # Ensure port is present
       if [[ "$h" != *:* ]]; then
-        h="${h}:2379"
+        h="${h}:2391"
       fi
       etcd_hosts_yaml="${etcd_hosts_yaml}    - ${h}
 "
@@ -2520,6 +2520,27 @@ PATRONI_EOF
   systemctl stop "postgresql@${PG_MAJOR}-main" || true
   systemctl disable postgresql || true
   systemctl disable "postgresql@${PG_MAJOR}-main" || true
+
+  # Ensure postgres user owns config and data dirs (Patroni writes pg_hba.conf etc.)
+  chown -R postgres:postgres "/etc/postgresql/${PG_MAJOR}/main/" || true
+  chown -R postgres:postgres "${pg_data_dir}" || true
+
+  # Set postgres superuser password before Patroni takes over
+  # (Patroni needs TCP auth with password; db.sh uses peer auth which has no password)
+  if [ -n "$superuser_password" ]; then
+    echo "[db] setting postgres superuser password for Patroni"
+    # Start PG temporarily to set password
+    sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main start 2>/dev/null || true
+    for _pw_attempt in {1..10}; do
+      if sudo -u postgres pg_isready -q 2>/dev/null; then break; fi
+      sleep 2
+    done
+    sudo -u postgres psql -c "ALTER USER postgres PASSWORD '$(printf '%s' "$superuser_password" | sed "s/'/''/g")';" 2>/dev/null || true
+    sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main stop 2>/dev/null || true
+  fi
+
+  # Remove standby.signal if present — Patroni manages replication itself
+  rm -f "${pg_data_dir}/standby.signal" "${pg_data_dir}/recovery.signal" || true
 
   # Create Patroni systemd unit
   cat > /etc/systemd/system/patroni.service <<'UNIT_EOF'

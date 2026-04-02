@@ -371,7 +371,7 @@ PY
     h=$(echo "$h" | xargs)
     if [ -n "$h" ]; then
       if [[ "$h" != *:* ]]; then
-        h="${h}:2379"
+        h="${h}:2391"
       fi
       etcd_hosts_yaml="${etcd_hosts_yaml}    - ${h}
 "
@@ -454,8 +454,25 @@ PATRONI_EOF
   systemctl disable postgresql || true
   systemctl disable "postgresql@${PG_MAJOR}-main" || true
 
+  # Ensure postgres user owns config and data dirs
+  chown -R postgres:postgres "/etc/postgresql/${PG_MAJOR}/main/" || true
+  chown -R postgres:postgres "${pg_data_dir}" || true
+
+  # Set postgres superuser password before Patroni takes over
+  if [ -n "$superuser_password" ]; then
+    echo "[db-replica] setting postgres superuser password for Patroni"
+    rm -f "${pg_data_dir}/standby.signal" "${pg_data_dir}/recovery.signal" || true
+    sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main start 2>/dev/null || true
+    for _pw_attempt in {1..10}; do
+      if sudo -u postgres pg_isready -q 2>/dev/null; then break; fi
+      sleep 2
+    done
+    sudo -u postgres psql -c "ALTER USER postgres PASSWORD '$(printf '%s' "$superuser_password" | sed "s/'/''/g")';" 2>/dev/null || true
+    sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main stop 2>/dev/null || true
+  fi
+
   # Remove standby.signal — Patroni manages replication itself
-  rm -f "${pg_data_dir}/standby.signal" || true
+  rm -f "${pg_data_dir}/standby.signal" "${pg_data_dir}/recovery.signal" || true
 
   # Create Patroni systemd unit
   cat > /etc/systemd/system/patroni.service <<'UNIT_EOF'
