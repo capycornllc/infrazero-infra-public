@@ -194,7 +194,7 @@ resource "hcloud_firewall" "k3s_server" {
 
   # etcd-patroni: dedicated etcd for Patroni on K3s control planes
   dynamic "rule" {
-    for_each = local.k3s_ha_enabled ? toset(["2381", "2382"]) : []
+    for_each = local.k3s_ha_enabled ? toset(["2391", "2392"]) : []
     iterator = etcd_port
     content {
       direction  = "in"

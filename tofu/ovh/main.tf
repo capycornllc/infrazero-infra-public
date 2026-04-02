@@ -207,8 +207,8 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_etcd" {
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
-  port_range_min    = 2381
-  port_range_max    = 2382
+  port_range_min    = 2391
+  port_range_max    = 2392
   remote_ip_prefix  = each.value
 }
 

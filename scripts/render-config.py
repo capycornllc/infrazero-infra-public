@@ -964,7 +964,7 @@ def main() -> int:
             for node in config["k3s_control_planes"]
             if node.get("private_ip")
         ]
-        etcd_endpoints = ",".join(f"{ip}:2381" for ip in etcd_ips)
+        etcd_endpoints = ",".join(f"{ip}:2391" for ip in etcd_ips)
 
     # Patroni scope: <name_prefix>-db
     patroni_scope = f"{config.get('name_prefix', 'infrazero')}-db"
@@ -1225,7 +1225,7 @@ def main() -> int:
         for i, ip in enumerate(etcd_ips):
             # Matches hostname: <name_prefix>-node1, <name_prefix>-node2, <name_prefix>-node3
             node_name = f"{name_prefix}-node{i + 1}"
-            etcd_initial_cluster_parts.append(f"{node_name}=http://{ip}:2382")
+            etcd_initial_cluster_parts.append(f"{node_name}=http://{ip}:2392")
         etcd_initial_cluster = ",".join(etcd_initial_cluster_parts)
 
         k3s_server_secrets["ETCD_PATRONI_ENABLED"] = "true"

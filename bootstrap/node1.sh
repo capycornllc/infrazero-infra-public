@@ -638,8 +638,8 @@ setup_etcd_patroni() {
   local etcd_version="${ETCD_PATRONI_VERSION:-3.5.21}"
   local etcd_name="${ETCD_PATRONI_NAME:-$(hostname)}"
   local initial_cluster="${ETCD_PATRONI_INITIAL_CLUSTER:-}"
-  local client_port="${ETCD_PATRONI_CLIENT_PORT:-2381}"
-  local peer_port="${ETCD_PATRONI_PEER_PORT:-2382}"
+  local client_port="${ETCD_PATRONI_CLIENT_PORT:-2391}"
+  local peer_port="${ETCD_PATRONI_PEER_PORT:-2392}"
 
   if [ -z "$initial_cluster" ]; then
     echo "[node1] ETCD_PATRONI_INITIAL_CLUSTER not set; cannot configure etcd" >&2
@@ -694,6 +694,17 @@ PY
   # Data directory
   mkdir -p /var/lib/etcd-patroni
   chmod 700 /var/lib/etcd-patroni
+
+  # Verify ports are free before starting
+  for check_port in "$client_port" "$peer_port"; do
+    if ss -tlnp | grep -q ":${check_port} "; then
+      local occupant
+      occupant=$(ss -tlnp | grep ":${check_port} " | head -1)
+      echo "[node1] ERROR: port ${check_port} already in use: ${occupant}" >&2
+      echo "[node1] etcd-patroni cannot start — pick different ports via ETCD_PATRONI_CLIENT_PORT / ETCD_PATRONI_PEER_PORT" >&2
+      return 1
+    fi
+  done
 
   # Systemd unit
   cat > /etc/systemd/system/etcd-patroni.service <<UNIT_EOF
