@@ -6,6 +6,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[node1] $(date -Is) start"
 
+BOOTSTRAP_ROLE="node1"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -94,6 +96,7 @@ if [ -z "$NODE_IP" ]; then
 fi
 
 if command -v apt-get >/dev/null 2>&1; then
+  beacon_status "installing_packages" "Installing packages" 10
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y curl ca-certificates jq unzip apache2-utils openssl
@@ -133,6 +136,7 @@ retry 10 5 curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
 chmod +x /tmp/k3s-install.sh
 
 install_k3s() {
+  beacon_status "installing_k3s" "Installing K3s" 30
   local attempts=5
   local delay=10
   local i
@@ -175,6 +179,8 @@ install_k3s() {
 install_k3s
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+beacon_status "waiting_k3s_ready" "Waiting for K3s nodes" 45
 
 for i in {1..60}; do
   if kubectl get nodes >/dev/null 2>&1; then
@@ -221,6 +227,7 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
 fi
 
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+beacon_status "deploying_argocd" "Deploying ArgoCD" 55
 # Use server-side apply to avoid client-side last-applied annotations exceeding
 # the 256KiB limit on large CRDs (e.g. ApplicationSet).
 retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
@@ -376,6 +383,8 @@ EOF
   rm -f "$dex_secret_tmp"
 }
 
+beacon_status "configuring_argocd" "Configuring ArgoCD users" 70
+
 configure_argocd_local_users_from_platform_admins
 
 kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}' || true
@@ -514,6 +523,8 @@ systemctl enable --now promtail || echo "[node1] failed to start promtail; conti
 else
   echo "[node1] promtail binary unavailable; skipping service setup"
 fi
+
+beacon_status "validating_certs" "Validating TLS certificates" 85
 
 # ── Certificate validation ──────────────────────────────────────────
 # Wait for cert-manager to issue certificates after ArgoCD sync.
@@ -755,5 +766,7 @@ UNIT_EOF
 }
 
 setup_etcd_patroni
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[node1] $(date -Is) complete"

@@ -265,14 +265,19 @@ jobs:
           scripts/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
 
       - name: Init OpenTofu
-        run: tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
+        run: |
+          echo "::group::OpenTofu Init"
+          tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
+          echo "::endgroup::"
 
       - name: Destroy stack (keep volume)
         run: |
+          echo "::group::Destroy Previous Stack"
           chmod +x scripts/*.sh
           pushd ${{ env.TOFU_DIR }}
           ../scripts/destroy-without-volume.sh
           popd
+          echo "::endgroup::"
 
       - name: Import DB volume if exists
         run: |
@@ -286,16 +291,89 @@ jobs:
 
       - name: Apply OpenTofu
         run: |
+          echo "::group::OpenTofu Apply"
           if bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json; then
             echo "[build] Apply succeeded on first pass."
           else
+            echo "::endgroup::"
+            echo "::group::OpenTofu Retry (exclude LB targets)"
             echo "[build] First apply failed. Retrying with -exclude for LB targets..."
             bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
               -exclude=hcloud_load_balancer_target.k3s \
               -exclude=hcloud_load_balancer_target.k3s_api
+            echo "::endgroup::"
+            echo "::group::OpenTofu Final Apply (LB targets)"
             echo "[build] Servers created. Running final apply for LB targets..."
             bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
           fi
+          echo "::endgroup::"
+
+      - name: Monitor server bootstrap
+        if: success()
+        timeout-minutes: 20
+        env:
+          BASTION_PUBLIC_IP: ""
+          BOOTSTRAP_SERVER_LIST: ""
+          BOOTSTRAP_SSH_PRIVATE_KEY: ${{ secrets.BOOTSTRAP_SSH_PRIVATE_KEY }}
+          PLATFORM_ADMINS_JSON: ${{ secrets.platform_admins_json }}
+        run: |
+          # Extract IPs from OpenTofu outputs
+          BASTION_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw bastion_public_ipv4 2>/dev/null || true)
+          if [ -z "$BASTION_IP" ]; then
+            echo "[build] No bastion IP available; skipping bootstrap monitoring"
+            exit 0
+          fi
+          export BASTION_PUBLIC_IP="$BASTION_IP"
+
+          # Build server list from tofu outputs
+          SERVERS="bastion:${BASTION_IP}"
+          EGRESS_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw egress_private_ipv4 2>/dev/null || true)
+          [ -n "$EGRESS_IP" ] && SERVERS="${SERVERS},egress:${EGRESS_IP}"
+          NODE1_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw node1_private_ipv4 2>/dev/null || true)
+          [ -n "$NODE1_IP" ] && SERVERS="${SERVERS},node1:${NODE1_IP}"
+          DB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw db_private_ipv4 2>/dev/null || true)
+          [ -n "$DB_IP" ] && SERVERS="${SERVERS},db:${DB_IP}"
+
+          export BOOTSTRAP_SERVER_LIST="$SERVERS"
+
+          # Setup SSH key for bootstrap monitoring
+          # Uses PLATFORM_ADMINS_JSON first admin's private key, or falls back to
+          # a dedicated BOOTSTRAP_SSH_PRIVATE_KEY secret if available.
+          mkdir -p ~/.ssh
+          SSH_KEY_WRITTEN=false
+          SSH_USER="root"
+          if [ -n "${BOOTSTRAP_SSH_PRIVATE_KEY:-}" ]; then
+            printf '%s\n' "$BOOTSTRAP_SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/ssh_key"
+            SSH_KEY_WRITTEN=true
+          elif [ -n "${PLATFORM_ADMINS_JSON:-}" ]; then
+            EXTRACTED_KEY=$(echo "$PLATFORM_ADMINS_JSON" | jq -r '.[0].sshPrivateKey // empty' 2>/dev/null || true)
+            EXTRACTED_USER=$(echo "$PLATFORM_ADMINS_JSON" | jq -r '.[0].username // empty' 2>/dev/null || true)
+            if [ -n "$EXTRACTED_KEY" ]; then
+              printf '%s\n' "$EXTRACTED_KEY" > "${RUNNER_TEMP}/ssh_key"
+              SSH_KEY_WRITTEN=true
+              [ -n "$EXTRACTED_USER" ] && SSH_USER="$EXTRACTED_USER"
+            fi
+          fi
+          if [ "$SSH_KEY_WRITTEN" != "true" ]; then
+            echo "[build] No SSH private key available for bootstrap monitoring; skipping"
+            exit 0
+          fi
+          chmod 600 "${RUNNER_TEMP}/ssh_key"
+          export SSH_PRIVATE_KEY_PATH="${RUNNER_TEMP}/ssh_key"
+          export BOOTSTRAP_SSH_USER="$SSH_USER"
+
+          # Wait for bastion SSH to become available
+          echo "[build] Waiting for bastion SSH (${SSH_USER}@${BASTION_IP})..."
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes -i "${RUNNER_TEMP}/ssh_key" "${SSH_USER}@${BASTION_IP}" true 2>/dev/null; then
+              echo "[build] Bastion SSH ready (attempt ${i})"
+              break
+            fi
+            sleep 10
+          done
+
+          chmod +x scripts/monitor-bootstrap.sh
+          bash scripts/monitor-bootstrap.sh || echo "[build] Bootstrap monitoring exited with warnings"
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

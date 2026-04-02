@@ -6,6 +6,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[k3s-agent] $(date -Is) start"
 
+BOOTSTRAP_ROLE="node-agent"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -199,5 +201,7 @@ systemctl enable --now promtail || echo "[k3s-agent] failed to start promtail; c
 else
   echo "[k3s-agent] promtail binary unavailable; skipping service setup"
 fi
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[k3s-agent] $(date -Is) complete"

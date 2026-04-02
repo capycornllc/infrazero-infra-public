@@ -6,6 +6,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[bastion] $(date -Is) start"
 
+BOOTSTRAP_ROLE="bastion"
+
 ENV_FILE="/etc/infrazero/bastion.env"
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -30,6 +32,8 @@ require_env "WG_PRESHARED_KEYS_JSON"
 require_env "EGRESS_LOKI_URL"
 
 DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
+
+beacon_status "installing_wireguard" "Installing WireGuard" 10
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
@@ -73,6 +77,8 @@ while IFS='|' read -r name pubkey ip; do
 done <<< "$peers"
 
 systemctl enable --now wg-quick@wg0
+
+beacon_status "configuring_firewall" "Configuring firewall and routing" 40
 
 # Enable routing between WireGuard and private subnet
 cat > /etc/sysctl.d/99-infrazero-forward.conf <<'EOF'
@@ -389,6 +395,10 @@ else
   if [ -n "$PRIVATE_IP" ]; then
     LISTEN_ADDRESSES+=("${PRIVATE_IP}")
   fi
+  # Allow SSH from GitHub Actions runner via public IP for bootstrap monitoring
+  if [ -n "$PUBLIC_IP" ]; then
+    LISTEN_ADDRESSES+=("${PUBLIC_IP}")
+  fi
 fi
 
 rm -f /etc/ssh/sshd_config.d/infrazero.conf
@@ -399,6 +409,8 @@ rm -f /etc/ssh/sshd_config.d/infrazero.conf
 } > /etc/ssh/sshd_config.d/91-infrazero-bastion.conf
 
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+
+beacon_status "installing_promtail" "Installing Promtail" 85
 
 # Promtail for journald to Loki (optional)
 if [ ! -x /usr/local/bin/promtail ]; then
@@ -454,5 +466,7 @@ systemctl enable --now promtail || echo "[bastion] failed to start promtail; con
 else
   echo "[bastion] promtail binary unavailable; skipping service setup"
 fi
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[bastion] $(date -Is) complete"

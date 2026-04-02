@@ -3,6 +3,8 @@ set -euo pipefail
 
 echo "[db] $(date -Is) start"
 
+BOOTSTRAP_ROLE="db"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -66,6 +68,7 @@ export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
 
 install_packages() {
+  beacon_status "installing_packages" "Installing PostgreSQL packages" 10
   if ! command -v apt-get >/dev/null 2>&1; then
     return
   fi
@@ -96,6 +99,8 @@ if ! command -v aws >/dev/null 2>&1; then
   echo "[db] aws cli not available; cannot continue" >&2
   exit 1
 fi
+
+beacon_status "mounting_volume" "Mounting database volume" 30
 
 MOUNT_DIR="/mnt/db"
 VOLUME_NAME="${DB_VOLUME_NAME:-}"
@@ -817,6 +822,8 @@ END;
     fi
   fi
 }
+
+beacon_status "configuring_postgresql" "Configuring PostgreSQL" 50
 
 ensure_databases
 
@@ -2286,6 +2293,8 @@ EOF
 
 chmod 0644 /etc/cron.d/infrazero-db-backup
 
+beacon_status "restoring_backups" "Restoring database backups" 70
+
 restore_databases_from_s3
 
 # ------------------------------------------------------------------ #
@@ -2590,5 +2599,7 @@ UNIT_EOF
 }
 
 setup_patroni
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[db] $(date -Is) complete"

@@ -3,6 +3,8 @@ set -euo pipefail
 
 echo "[pgbouncer] $(date -Is) start"
 
+BOOTSTRAP_ROLE="pgbouncer"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -44,6 +46,7 @@ PATRONI_REST_PORT="${PATRONI_REST_PORT:-8008}"
 # ------------------------------------------------------------------ #
 
 install_packages() {
+  beacon_status "installing_packages" "Installing PgBouncer" 15
   export DEBIAN_FRONTEND=noninteractive
   timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
   timeout 600 apt-get install -y pgbouncer curl jq postgresql-client
@@ -86,6 +89,8 @@ LISTEN_ADDR=$(resolve_private_ip || echo "0.0.0.0")
 # ------------------------------------------------------------------ #
 #  Write PgBouncer configs                                             #
 # ------------------------------------------------------------------ #
+
+beacon_status "configuring_pools" "Configuring connection pools" 50
 
 mkdir -p /etc/pgbouncer
 
@@ -319,6 +324,8 @@ UNIT_EOF
 create_pgbouncer_service "write" "/etc/pgbouncer/pgbouncer-write.ini"
 create_pgbouncer_service "read" "/etc/pgbouncer/pgbouncer-read.ini"
 
+beacon_status "starting_instances" "Starting PgBouncer instances" 75
+
 systemctl daemon-reload
 systemctl enable --now pgbouncer-write
 systemctl enable --now pgbouncer-read
@@ -353,5 +360,7 @@ for attempt in $(seq 1 15); do
   fi
   sleep 3
 done
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[pgbouncer] $(date -Is) complete"

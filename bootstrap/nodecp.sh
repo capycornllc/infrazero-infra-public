@@ -6,6 +6,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[nodecp] $(date -Is) start"
 
+BOOTSTRAP_ROLE="nodecp"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -351,5 +353,7 @@ UNIT_EOF
 }
 
 setup_etcd_patroni
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[nodecp] $(date -Is) complete"

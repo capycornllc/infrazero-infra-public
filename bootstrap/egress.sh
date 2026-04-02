@@ -6,6 +6,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[egress] $(date -Is) start"
 
+BOOTSTRAP_ROLE="egress"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -1133,5 +1135,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 
 chmod 0644 /etc/cron.d/infisical-backup
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[egress] $(date -Is) complete"

@@ -3,6 +3,8 @@ set -euo pipefail
 
 echo "[db-replica] $(date -Is) start"
 
+BOOTSTRAP_ROLE="db-replica"
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -522,5 +524,7 @@ UNIT_EOF
 }
 
 setup_patroni
+
+beacon_status "complete" "Bootstrap complete" 100
 
 echo "[db-replica] $(date -Is) complete"
