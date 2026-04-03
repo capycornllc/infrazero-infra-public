@@ -206,7 +206,7 @@ write_files:
       echo "[bootstrap] running common + role scripts"
       # Source common.sh to make beacon_status() and other functions available to role scripts.
       # Guard the exec redirect so it only runs once (common.sh and role scripts both have it).
-      export _INFRAZERO_LOG_REDIRECTED="${_INFRAZERO_LOG_REDIRECTED:-}"
+      export _INFRAZERO_LOG_REDIRECTED="$${_INFRAZERO_LOG_REDIRECTED:-}"
       source ./common.sh
       source "./$ROLE.sh"
 

@@ -198,7 +198,7 @@ write_files:
       sed -i 's/\r$//' common.sh "$ROLE.sh" || true
 
       echo "[bootstrap] running common + role scripts"
-      export _INFRAZERO_LOG_REDIRECTED="${_INFRAZERO_LOG_REDIRECTED:-}"
+      export _INFRAZERO_LOG_REDIRECTED="$${_INFRAZERO_LOG_REDIRECTED:-}"
       source ./common.sh
       source "./$ROLE.sh"
 
