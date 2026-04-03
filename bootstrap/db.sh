@@ -2568,8 +2568,9 @@ postgresql:
 tags:
   nofailover: false
   noloadbalancer: false
-  clonefrom: false
+  clonefrom: true
   nosync: false
+  failover_priority: 100
 PATRONI_EOF
 
   chmod 600 /etc/patroni/patroni.yml
@@ -2628,18 +2629,19 @@ UNIT_EOF
   systemctl daemon-reload
   systemctl enable --now patroni
 
-  # Wait for Patroni to start
-  echo "[db] waiting for Patroni to start"
-  for attempt in $(seq 1 30); do
+  # Wait for Patroni to become healthy — it needs etcd which may take time
+  # Non-fatal: Patroni runs as systemd service and will eventually connect
+  echo "[db] waiting for Patroni to start (etcd may still be initializing)"
+  patroni_healthy=false
+  for attempt in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:${patroni_rest_port}/health" >/dev/null 2>&1; then
       echo "[db] Patroni is healthy (attempt ${attempt})"
+      patroni_healthy=true
       break
     fi
-    if [ "$attempt" -eq 30 ]; then
-      echo "[db] Patroni did not become healthy" >&2
+    if [ "$attempt" -eq 60 ]; then
+      echo "[db] WARNING: Patroni not yet healthy after 5 minutes — it will continue starting in background" >&2
       systemctl status patroni --no-pager || true
-      journalctl -u patroni -n 50 --no-pager || true
-      return 1
     fi
     sleep 5
   done

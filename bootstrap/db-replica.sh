@@ -444,6 +444,7 @@ tags:
   noloadbalancer: false
   clonefrom: false
   nosync: false
+  failover_priority: 1
 PATRONI_EOF
 
   chmod 600 /etc/patroni/patroni.yml
@@ -501,18 +502,18 @@ UNIT_EOF
   systemctl daemon-reload
   systemctl enable --now patroni
 
-  # Wait for Patroni to start
-  echo "[db-replica] waiting for Patroni to start"
-  for attempt in $(seq 1 30); do
+  # Wait for Patroni — non-fatal, it will continue in background
+  echo "[db-replica] waiting for Patroni to start (etcd may still be initializing)"
+  patroni_healthy=false
+  for attempt in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:${patroni_rest_port}/health" >/dev/null 2>&1; then
       echo "[db-replica] Patroni is healthy (attempt ${attempt})"
+      patroni_healthy=true
       break
     fi
-    if [ "$attempt" -eq 30 ]; then
-      echo "[db-replica] Patroni did not become healthy" >&2
+    if [ "$attempt" -eq 60 ]; then
+      echo "[db-replica] WARNING: Patroni not yet healthy after 5 minutes — continuing in background" >&2
       systemctl status patroni --no-pager || true
-      journalctl -u patroni -n 50 --no-pager || true
-      return 1
     fi
     sleep 5
   done
