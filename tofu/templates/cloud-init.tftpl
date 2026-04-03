@@ -200,15 +200,19 @@ write_files:
 
       echo "[bootstrap] extracting $ROLE artifact"
       tar --zstd -xf "$ROLE.tar.zst"
-      chmod +x common.sh "$ROLE.sh"
-      sed -i 's/\r$//' common.sh "$ROLE.sh" || true
+      chmod +x common.sh beacon.sh "$ROLE.sh"
+      sed -i 's/\r$//' common.sh beacon.sh "$ROLE.sh" || true
 
       echo "[bootstrap] running common + role scripts"
-      # Source common.sh to make beacon_status() and other functions available to role scripts.
-      # Guard the exec redirect so it only runs once (common.sh and role scripts both have it).
-      export _INFRAZERO_LOG_REDIRECTED="$${_INFRAZERO_LOG_REDIRECTED:-}"
-      source ./common.sh
-      source "./$ROLE.sh"
+      # Run common.sh as subprocess (safe — set -e stays isolated)
+      ./common.sh
+      # Source beacon.sh and export beacon_status so role scripts can use it
+      if [ -f ./beacon.sh ]; then
+        . ./beacon.sh
+        export -f beacon_status
+      fi
+      export BOOTSTRAP_ROLE="$${ROLE}"
+      "./$ROLE.sh"
 
 %{ if length(egress_env) > 0 ~}
   - path: /etc/infrazero/egress.env
