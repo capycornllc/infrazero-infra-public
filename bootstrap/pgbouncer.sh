@@ -22,7 +22,7 @@ require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
     echo "[pgbouncer] missing required env: $name" >&2
-    exit 1
+    return 1 2>/dev/null || exit 1
   fi
 }
 
@@ -206,8 +206,9 @@ if [ -n "${DB_REPLICA_HOSTS:-}" ]; then
 fi
 
 if [ -z "$all_hosts" ]; then
-  log "no DB hosts configured; exiting"
-  exit 0
+  log "no DB hosts configured; skipping PgBouncer setup"
+  beacon_status "complete" "Bootstrap complete (no DB hosts)" 100
+  return 0 2>/dev/null || exit 0
 fi
 
 # Query Patroni /cluster endpoint to get leader + replicas
@@ -229,8 +230,8 @@ for host in $all_hosts; do
 done
 
 if [ -z "$new_primary" ]; then
-  log "WARNING: could not determine Patroni leader from any DB node"
-  exit 0
+  log "WARNING: could not determine Patroni leader from any DB node; using first host as primary"
+  new_primary=$(echo "$all_hosts" | head -1)
 fi
 
 changed=false

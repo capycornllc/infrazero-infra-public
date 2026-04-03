@@ -276,6 +276,30 @@ ensure_bind_mount
 fresh_cluster="false"
 if [ -n "$existing_pg_version" ]; then
   echo "[db] existing PostgreSQL data directory detected on volume; reusing"
+
+  # ── Critical: clean up stale recovery/standby signals ──
+  # When the volume was previously used by a Patroni replica, standby.signal
+  # or recovery.signal may be present. If we're bootstrapping as primary,
+  # PostgreSQL will enter standby mode and fail because there's no
+  # primary_conninfo. Remove these signals so PG starts as primary.
+  # Patroni will manage replication state later if enabled.
+  for signal_file in "$DATA_MOUNT/standby.signal" "$DATA_MOUNT/recovery.signal" "$DEFAULT_DATA_DIR/standby.signal" "$DEFAULT_DATA_DIR/recovery.signal"; do
+    if [ -f "$signal_file" ]; then
+      echo "[db] removing stale signal file: $signal_file"
+      rm -f "$signal_file"
+    fi
+  done
+
+  # Also clean up stale primary_conninfo from postgresql.auto.conf
+  # which would cause PG to try connecting to a non-existent primary
+  for auto_conf in "$DATA_MOUNT/postgresql.auto.conf" "$DEFAULT_DATA_DIR/postgresql.auto.conf"; do
+    if [ -f "$auto_conf" ] && grep -q "primary_conninfo" "$auto_conf"; then
+      echo "[db] removing stale primary_conninfo from $auto_conf"
+      sed -i '/^primary_conninfo/d' "$auto_conf"
+      sed -i '/^primary_slot_name/d' "$auto_conf"
+      sed -i '/^recovery_target_timeline/d' "$auto_conf"
+    fi
+  done
 else
   if [ "$data_empty" != "true" ]; then
     echo "[db] data directory not empty but PG_VERSION missing; refusing to initialize" >&2
@@ -529,8 +553,36 @@ EOF
 setup_db_tls || true
 
 if ! wait_for_postgres; then
-  echo "[db] postgresql did not become ready" >&2
-  exit 1
+  echo "[db] postgresql did not become ready; attempting recovery..." >&2
+
+  # Try to fix common issues and retry
+  # 1. Remove any stale recovery signals that may have appeared
+  for signal_file in "$DEFAULT_DATA_DIR/standby.signal" "$DEFAULT_DATA_DIR/recovery.signal"; do
+    if [ -f "$signal_file" ]; then
+      echo "[db] removing stale signal: $signal_file"
+      rm -f "$signal_file"
+    fi
+  done
+
+  # 2. Clean stale primary_conninfo
+  if [ -f "$DEFAULT_DATA_DIR/postgresql.auto.conf" ] && grep -q "primary_conninfo" "$DEFAULT_DATA_DIR/postgresql.auto.conf"; then
+    echo "[db] removing stale primary_conninfo from postgresql.auto.conf"
+    sed -i '/^primary_conninfo/d' "$DEFAULT_DATA_DIR/postgresql.auto.conf"
+    sed -i '/^primary_slot_name/d' "$DEFAULT_DATA_DIR/postgresql.auto.conf"
+  fi
+
+  # 3. Restart and retry
+  systemctl stop postgresql || true
+  systemctl stop "postgresql@${PG_MAJOR}-main" || true
+  sleep 3
+  systemctl start postgresql || true
+  start_cluster
+
+  if ! wait_for_postgres; then
+    echo "[db] postgresql still not ready after recovery attempt" >&2
+    exit 1
+  fi
+  echo "[db] postgresql recovered successfully"
 fi
 
 psql_as_postgres() {

@@ -212,17 +212,47 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-admin-secret.sh" ]; then
     chmod +x ./infisical-admin-secret.sh
     infisical_ok=false
-    for infisical_attempt in 1 2 3; do
-      echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/3"
+    for infisical_attempt in 1 2 3 4 5; do
+      echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/5"
       if ./infisical-admin-secret.sh; then
         infisical_ok=true
         break
       fi
-      echo "[node1] infisical-admin-secret.sh failed (attempt ${infisical_attempt}/3); retrying in 60s" >&2
-      sleep 60
+      echo "[node1] infisical-admin-secret.sh failed (attempt ${infisical_attempt}/5); retrying in 120s" >&2
+      sleep 120
     done
     if [ "$infisical_ok" != "true" ]; then
-      echo "[node1] WARNING: infisical-admin-secret.sh failed after 3 attempts; continuing without it" >&2
+      echo "[node1] WARNING: infisical-admin-secret.sh failed after 5 attempts; installing retry timer" >&2
+      # Create a systemd timer to retry infisical-admin-secret.sh every 5 minutes
+      # until it succeeds. This handles the case where Infisical on egress starts
+      # after node1 bootstrap completes.
+      cat > /etc/systemd/system/infrazero-infisical-retry.service <<'UNIT'
+[Unit]
+Description=Retry Infisical admin secret bootstrap
+After=network-online.target
+ConditionPathExists=!/etc/infrazero/infisical-bootstrap-done
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/infrazero/bootstrap
+ExecStart=/bin/bash -c './infisical-admin-secret.sh && touch /etc/infrazero/infisical-bootstrap-done'
+TimeoutStartSec=600
+UNIT
+      cat > /etc/systemd/system/infrazero-infisical-retry.timer <<'TIMER'
+[Unit]
+Description=Retry Infisical admin secret bootstrap every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+TIMER
+      systemctl daemon-reload
+      systemctl enable --now infrazero-infisical-retry.timer
+      echo "[node1] infrazero-infisical-retry.timer installed — will retry every 5 minutes until success"
     fi
   else
     echo "[node1] infisical-admin-secret.sh missing; skipping infisical admin secret sync" >&2

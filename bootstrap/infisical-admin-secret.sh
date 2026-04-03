@@ -69,7 +69,7 @@ fi
 wait_for_url() {
   local url="$1"
   echo "[infisical-admin-secret] waiting for $url"
-  for _ in {1..60}; do
+  for _ in {1..90}; do
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
     case "$code" in

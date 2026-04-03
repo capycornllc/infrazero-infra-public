@@ -812,8 +812,41 @@ EOF
     --cert-name infrazero-services --expand "${domain_args[@]}"; then
     echo "[egress] Let's Encrypt cert issued for ${domains[*]}"
   else
-    echo "[egress] Let's Encrypt issuance failed" >&2
-    return 1
+    echo "[egress] Let's Encrypt issuance failed (rate limit or network issue); continuing with self-signed" >&2
+    # Generate self-signed cert as fallback so HTTPS still works
+    local ssl_dir="/etc/letsencrypt/live/infrazero-services"
+    mkdir -p "$ssl_dir"
+    if [ ! -f "$ssl_dir/fullchain.pem" ]; then
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$ssl_dir/privkey.pem" \
+        -out "$ssl_dir/fullchain.pem" \
+        -subj "/CN=${domains[0]}" 2>/dev/null || true
+      echo "[egress] self-signed certificate generated for ${domains[0]}"
+    fi
+    # Install a timer to retry LE cert issuance (rate limits reset after 168h)
+    cat > /etc/systemd/system/infrazero-certbot-retry.service <<'UNIT'
+[Unit]
+Description=Retry Let's Encrypt certificate issuance
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --non-interactive
+TimeoutStartSec=300
+UNIT
+    cat > /etc/systemd/system/infrazero-certbot-retry.timer <<'TIMER'
+[Unit]
+Description=Retry certbot every 6 hours
+
+[Timer]
+OnBootSec=1h
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target
+TIMER
+    systemctl daemon-reload
+    systemctl enable --now infrazero-certbot-retry.timer || true
   fi
 
   cat > /etc/letsencrypt/renewal-hooks/deploy/infrazero-nginx-reload.sh <<'EOF'
@@ -1079,7 +1112,46 @@ fi
 if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-bootstrap.sh" ]; then
     chmod +x ./infisical-bootstrap.sh
-    ./infisical-bootstrap.sh
+    infisical_ok=false
+    for infisical_attempt in 1 2 3; do
+      echo "[egress] infisical-bootstrap.sh attempt ${infisical_attempt}/3"
+      if ./infisical-bootstrap.sh; then
+        infisical_ok=true
+        break
+      fi
+      echo "[egress] infisical-bootstrap.sh failed (attempt ${infisical_attempt}/3); retrying in 120s" >&2
+      sleep 120
+    done
+    if [ "$infisical_ok" != "true" ]; then
+      echo "[egress] WARNING: infisical-bootstrap.sh failed after 3 attempts; installing retry timer" >&2
+      cat > /etc/systemd/system/infrazero-infisical-retry.service <<'UNIT'
+[Unit]
+Description=Retry Infisical bootstrap
+After=network-online.target docker.service
+ConditionPathExists=!/etc/infrazero/infisical-bootstrap-done
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/infrazero/bootstrap
+ExecStart=/bin/bash -c './infisical-bootstrap.sh && touch /etc/infrazero/infisical-bootstrap-done'
+TimeoutStartSec=600
+UNIT
+      cat > /etc/systemd/system/infrazero-infisical-retry.timer <<'TIMER'
+[Unit]
+Description=Retry Infisical bootstrap every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+TIMER
+      systemctl daemon-reload
+      systemctl enable --now infrazero-infisical-retry.timer
+      echo "[egress] infrazero-infisical-retry.timer installed"
+    fi
   else
     echo "[egress] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
   fi
