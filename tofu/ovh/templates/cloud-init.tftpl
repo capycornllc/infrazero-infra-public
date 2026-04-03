@@ -198,8 +198,9 @@ write_files:
       sed -i 's/\r$//' common.sh "$ROLE.sh" || true
 
       echo "[bootstrap] running common + role scripts"
-      ./common.sh
-      "./$ROLE.sh"
+      export _INFRAZERO_LOG_REDIRECTED="${_INFRAZERO_LOG_REDIRECTED:-}"
+      source ./common.sh
+      source "./$ROLE.sh"
 
 %{ if length(egress_env) > 0 ~}
   - path: /etc/infrazero/egress.env

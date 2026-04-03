@@ -2,7 +2,10 @@
 set -euo pipefail
 
 LOG_FILE="/var/log/infrazero-bootstrap.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+if [ -z "${_INFRAZERO_LOG_REDIRECTED:-}" ]; then
+  exec > >(tee -a "$LOG_FILE") 2>&1
+  export _INFRAZERO_LOG_REDIRECTED=1
+fi
 
 echo "[bastion] $(date -Is) start"
 

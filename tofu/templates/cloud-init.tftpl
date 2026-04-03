@@ -204,8 +204,11 @@ write_files:
       sed -i 's/\r$//' common.sh "$ROLE.sh" || true
 
       echo "[bootstrap] running common + role scripts"
-      ./common.sh
-      "./$ROLE.sh"
+      # Source common.sh to make beacon_status() and other functions available to role scripts.
+      # Guard the exec redirect so it only runs once (common.sh and role scripts both have it).
+      export _INFRAZERO_LOG_REDIRECTED="${_INFRAZERO_LOG_REDIRECTED:-}"
+      source ./common.sh
+      source "./$ROLE.sh"
 
 %{ if length(egress_env) > 0 ~}
   - path: /etc/infrazero/egress.env
