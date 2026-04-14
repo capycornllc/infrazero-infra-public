@@ -71,7 +71,7 @@ wait_for_url() {
   echo "[infisical-admin-secret] waiting for $url"
   for _ in {1..90}; do
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
     case "$code" in
       200|301|302|401|403|404)
         return 0

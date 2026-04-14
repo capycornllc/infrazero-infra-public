@@ -51,7 +51,7 @@ download_offloaded_bootstrap_env() {
   tmp_file=$(mktemp)
   if [ -n "$payload_url" ]; then
     for _ in {1..20}; do
-      http_code=$(curl -sS -L -o "$tmp_file" -w "%{http_code}" --connect-timeout 5 --max-time 30 "$payload_url" || true)
+      http_code=$(curl -sS $CURL_INSECURE -L -o "$tmp_file" -w "%{http_code}" --connect-timeout 5 --max-time 30 "$payload_url" || true)
       if [ "$http_code" != "200" ]; then
         sleep 3
         continue
@@ -177,12 +177,17 @@ fi
 INFISICAL_SITE_URL="${INFISICAL_SITE_URL%/}"
 INFISICAL_API_BASE="${INFISICAL_SITE_URL}/api"
 
+# Accept self-signed certs globally — Let's Encrypt rate limits may force self-signed fallback
+# during frequent redeploys. All curl calls to Infisical API use this.
+export CURL_INSECURE="-k"
+
 wait_for_url() {
   local url="$1"
   echo "[infisical-bootstrap] waiting for $url"
   for _ in {1..90}; do
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+    # Use -k to accept self-signed certs (Let's Encrypt rate limits may force self-signed fallback)
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
     case "$code" in
       200|301|302|401|403|404)
         return 0
@@ -274,7 +279,7 @@ bootstrap_payload=$(jq -n \
 bootstrap_tmp=$(mktemp)
 bootstrap_code=""
 for _ in {1..30}; do
-  bootstrap_code=$(curl -sS -o "$bootstrap_tmp" -w "%{http_code}" \
+  bootstrap_code=$(curl -sS $CURL_INSECURE -o "$bootstrap_tmp" -w "%{http_code}" \
     --connect-timeout 5 --max-time 15 \
     -H "Content-Type: application/json" \
     -d "$bootstrap_payload" \
@@ -325,7 +330,7 @@ if [ -z "$PROJECT_SLUG" ]; then
 fi
 
 project_tmp=$(mktemp)
-project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
+project_code=$(curl -sS $CURL_INSECURE -o "$project_tmp" -w "%{http_code}" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "${INFISICAL_API_BASE}/v1/projects/slug/${PROJECT_SLUG}" || true)
 
@@ -335,7 +340,7 @@ if [ "$project_code" = "404" ]; then
   create_payload=$(jq -n \
     --arg name "$PROJECT_NAME" \
     '{projectName:$name, template:"default", type:"secret-manager", shouldCreateDefaultEnvs:true}')
-  project_code=$(curl -sS -o "$project_tmp" -w "%{http_code}" \
+  project_code=$(curl -sS $CURL_INSECURE -o "$project_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$create_payload" \
@@ -346,7 +351,7 @@ if [[ "$project_code" != 2* ]]; then
   # Fallback: project may already exist (e.g. 422) or slug lookup may be unavailable.
   # Resolve by listing projects and matching slug/name.
   projects_tmp=$(mktemp)
-  projects_code=$(curl -sS -o "$projects_tmp" -w "%{http_code}" \
+  projects_code=$(curl -sS $CURL_INSECURE -o "$projects_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     "${INFISICAL_API_BASE}/v1/projects" || true)
   if [[ "$projects_code" == 2* ]]; then
@@ -385,7 +390,7 @@ fi
 
 admin_role_slug=""
 roles_tmp=$(mktemp)
-roles_code=$(curl -sS -o "$roles_tmp" -w "%{http_code}" \
+roles_code=$(curl -sS $CURL_INSECURE -o "$roles_tmp" -w "%{http_code}" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "${INFISICAL_API_BASE}/v1/projects/${PROJECT_ID}/roles" || true)
 if [[ "$roles_code" == 2* ]]; then
@@ -411,7 +416,7 @@ login_seed_user() {
     --arg password "$INFISICAL_PASSWORD" \
     '{email:$email, password:$password}')
   login_tmp=$(mktemp)
-  login_code=$(curl -sS -o "$login_tmp" -w "%{http_code}" \
+  login_code=$(curl -sS $CURL_INSECURE -o "$login_tmp" -w "%{http_code}" \
     -H "Content-Type: application/json" \
     -H "User-Agent: infrazero-bootstrap/1.0" \
     -d "$login_payload" \
@@ -440,7 +445,7 @@ login_seed_user() {
     --arg organization_id "$ORGANIZATION_ID" \
     '{"organizationId":$organization_id,"userAgent":"cli"}')
   select_tmp=$(mktemp)
-  select_code=$(curl -sS -o "$select_tmp" -w "%{http_code}" \
+  select_code=$(curl -sS $CURL_INSECURE -o "$select_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${SEED_USER_ACCESS_TOKEN}" \
     -H "Content-Type: application/json" \
     -H "User-Agent: infrazero-bootstrap/1.0" \
@@ -535,7 +540,7 @@ exchange_invite_code_for_signup_token() {
     --arg code "$invite_code" \
     '{email:$email, organizationId:$organization_id, code:$code}')
   verify_tmp=$(mktemp)
-  verify_code=$(curl -sS -o "$verify_tmp" -w "%{http_code}" \
+  verify_code=$(curl -sS $CURL_INSECURE -o "$verify_tmp" -w "%{http_code}" \
     -H "Content-Type: application/json" \
     -H "User-Agent: infrazero-bootstrap/1.0" \
     -d "$verify_payload" \
@@ -582,7 +587,7 @@ complete_invited_user_signup() {
     --arg first_name "$first_name" \
     '{email:$email, password:$password, firstName:$first_name}')
   complete_tmp=$(mktemp)
-  complete_code=$(curl -sS -o "$complete_tmp" -w "%{http_code}" \
+  complete_code=$(curl -sS $CURL_INSECURE -o "$complete_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${signup_token}" \
     -H "Content-Type: application/json" \
     -H "User-Agent: infrazero-bootstrap/1.0" \
@@ -648,7 +653,7 @@ provision_platform_admin_local_users() {
       --arg org "$ORGANIZATION_ID" \
       '{inviteeEmails:[$email], organizationId:$org, organizationRoleSlug:"admin"}')
     invite_tmp=$(mktemp)
-    invite_code=$(curl -sS -o "$invite_tmp" -w "%{http_code}" \
+    invite_code=$(curl -sS $CURL_INSECURE -o "$invite_tmp" -w "%{http_code}" \
       -H "Authorization: Bearer ${SEED_USER_ACCESS_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$invite_payload" \
@@ -716,7 +721,7 @@ ensure_project_membership() {
     --arg role "$admin_role_slug" \
     '{emails:[$email], roleSlugs:[$role]}')
   membership_tmp=$(mktemp)
-  membership_code=$(curl -sS -o "$membership_tmp" -w "%{http_code}" \
+  membership_code=$(curl -sS $CURL_INSECURE -o "$membership_tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$membership_payload" \
@@ -761,7 +766,7 @@ for env_def in "${default_envs[@]}"; do
     continue
   fi
   env_payload=$(jq -n --arg name "$env_name" --arg slug "$env_slug" --argjson pos "$env_pos" '{name:$name, slug:$slug, position:$pos}')
-  curl -sS -o /dev/null \
+  curl -sS $CURL_INSECURE -o /dev/null \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$env_payload" \
@@ -865,7 +870,7 @@ ensure_folder_path() {
       --arg name "$part" \
       --arg path "$current" \
       '{projectId:$projectId, environment:$environment, name:$name, path:$path}')
-    curl -sS -o /dev/null \
+    curl -sS $CURL_INSECURE -o /dev/null \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$payload" \
@@ -895,7 +900,7 @@ upsert_secret() {
   local tmp
   tmp=$(mktemp)
   local code
-  code=$(curl -sS -o "$tmp" -w "%{http_code}" \
+  code=$(curl -sS $CURL_INSECURE -o "$tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload" \
@@ -906,7 +911,7 @@ upsert_secret() {
     return 0
   fi
 
-  code=$(curl -sS -o "$tmp" -w "%{http_code}" \
+  code=$(curl -sS $CURL_INSECURE -o "$tmp" -w "%{http_code}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload" \

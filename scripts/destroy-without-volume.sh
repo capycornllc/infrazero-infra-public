@@ -65,30 +65,55 @@ destroy_targets_prefix hcloud_load_balancer_network
 destroy_targets_prefix hcloud_load_balancer.
 
 destroy_targets_prefix hcloud_volume_attachment
-destroy_targets \
-  hcloud_server.bastion \
-  hcloud_server.egress \
-  hcloud_server.db
+
+# Destroy ALL servers (use prefix to catch indexed resources like server.k3s[0])
+destroy_targets_prefix hcloud_server.bastion
+destroy_targets_prefix hcloud_server.egress
+destroy_targets_prefix hcloud_server.db
 destroy_targets_prefix hcloud_server.k3s
 destroy_targets_prefix hcloud_server.db_replica
 destroy_targets_prefix hcloud_server.pgbouncer
 
-destroy_targets \
-  hcloud_firewall.bastion \
-  hcloud_firewall.egress \
-  hcloud_firewall.k3s_server \
-  hcloud_firewall.k3s_agent \
-  hcloud_firewall.db
+# Destroy ALL firewalls
+destroy_targets_prefix hcloud_firewall.bastion
+destroy_targets_prefix hcloud_firewall.egress
+destroy_targets_prefix hcloud_firewall.k3s
+destroy_targets_prefix hcloud_firewall.db
 destroy_targets_prefix hcloud_firewall.db_replica
 destroy_targets_prefix hcloud_firewall.pgbouncer
 
-destroy_targets \
-  hcloud_placement_group.main \
-  hcloud_placement_group.bastion \
-  hcloud_placement_group.egress \
-  hcloud_placement_group.k3s \
-  hcloud_placement_group.db
+# Destroy placement groups
+destroy_targets_prefix hcloud_placement_group.
+
+# Destroy only ops SSH keys (project-specific, not user keys)
+# Use prefix "hcloud_ssh_key.ops" to match ops["admin"] etc.
+destroy_targets_prefix hcloud_ssh_key.ops
 
 destroy_targets_prefix hcloud_network_route
+
+# Rotate old S3 bootstrap data to old_backup/ before new deploy overwrites it
+if [ -n "${S3_ENDPOINT:-}" ] && [ -n "${INFRA_STATE_BUCKET:-}" ] && [ -n "${DB_BACKUP_BUCKET:-}" ]; then
+  timestamp=$(date +%Y%m%d_%H%M%S)
+  echo "[destroy] Rotating old bootstrap data to old_backup/${timestamp}/"
+  
+  # Move infra state bootstrap artifacts (not terraform.tfstate — that stays)
+  for role in bastion egress db node1 node2 nodecp db-replica; do
+    aws --endpoint-url "$S3_ENDPOINT" s3 mv \
+      "s3://${INFRA_STATE_BUCKET}/${role}.tar.zst" \
+      "s3://${INFRA_STATE_BUCKET}/old_backup/${timestamp}/${role}.tar.zst" \
+      2>/dev/null || true
+  done
+  
+  # Move infisical bootstrap tokens
+  aws --endpoint-url "$S3_ENDPOINT" s3 mv \
+    "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/latest-tokens.json" \
+    "s3://${DB_BACKUP_BUCKET}/old_backup/${timestamp}/infisical-latest-tokens.json" \
+    2>/dev/null || true
+  
+  echo "[destroy] Old data moved to old_backup/${timestamp}/"
+fi
+
+# Network subnet and network — only destroy AFTER all servers, firewalls, LBs are gone
+# This prevents the hang where Hetzner waits for attachments to be released
 destroy_targets_prefix hcloud_network_subnet
 destroy_targets_prefix hcloud_network.
