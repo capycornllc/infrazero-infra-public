@@ -58,6 +58,13 @@ SaveConfig = false
 
 EOF
 
+# Validate WG peers JSON before parsing
+if ! echo "$WG_ADMIN_PEERS_JSON" | jq empty 2>/dev/null; then
+  echo "[bastion] FATAL: WG_ADMIN_PEERS_JSON is not valid JSON" >&2
+  beacon_status "failed" "Invalid WireGuard peers config" 0
+  return 1 2>/dev/null || exit 1
+fi
+
 peers=$(echo "$WG_ADMIN_PEERS_JSON" | jq -r 'to_entries[] | "\(.key)|\(.value.publicKey)|\(.value.ip)"')
 
 while IFS='|' read -r name pubkey ip; do

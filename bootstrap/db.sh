@@ -205,6 +205,13 @@ if ! mountpoint -q "$MOUNT_DIR"; then
   mount "$MOUNT_DIR" || mount -a
 fi
 
+# Verify volume is actually mounted before writing data
+if ! mountpoint -q "$MOUNT_DIR"; then
+  echo "[db] FATAL: volume not mounted at $MOUNT_DIR after mount attempt" >&2
+  beacon_status "failed" "Volume mount failed" 0
+  return 1 2>/dev/null || exit 1
+fi
+
 DATA_MOUNT="${MOUNT_DIR}/postgresql/${PG_MAJOR}/main"
 DEFAULT_DATA_DIR="/var/lib/postgresql/${PG_MAJOR}/main"
 
