@@ -171,11 +171,12 @@ jobs:
               echo "S3_REGION or CLOUD_REGION is required" >&2
               exit 1
             fi
-            echo "S3_REGION=${CLOUD_REGION}" >> "$GITHUB_ENV"
-            echo "AWS_DEFAULT_REGION=${CLOUD_REGION}" >> "$GITHUB_ENV"
-          else
-            echo "AWS_DEFAULT_REGION=${S3_REGION}" >> "$GITHUB_ENV"
+            S3_REGION="${CLOUD_REGION}"
           fi
+          # OVH S3 expects lowercase region without AZ suffix (e.g. "US-EAST-VA-1" -> "us-east-va")
+          S3_REGION=$(echo "$S3_REGION" | tr '[:upper:]' '[:lower:]' | sed 's/-[0-9]*$//')
+          echo "S3_REGION=${S3_REGION}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${S3_REGION}" >> "$GITHUB_ENV"
 
 
       - name: Display S3 settings

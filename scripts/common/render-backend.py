@@ -38,6 +38,11 @@ def main() -> int:
         or os.getenv("CLOUD_REGION")
         or "us-east-1"
     )
+    # OVH S3 expects lowercase region without the "-1" AZ suffix
+    # e.g. "US-EAST-VA-1" -> "us-east-va", "GRA" -> "gra"
+    import re
+    region = region.strip().lower()
+    region = re.sub(r"-\d+$", "", region)
     state_prefix = s3_cfg.get("state_prefix", "")
     if base_slug and runtime_environment:
         # Keep backend state partitioned by env, controlled by GitHub secret `env`.
