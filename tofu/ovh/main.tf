@@ -18,7 +18,7 @@ provider "openstack" {
 # ------------------------------------------------------------------ #
 
 data "openstack_images_image_v2" "ubuntu" {
-  name        = var.server_image
+  name_regex  = var.server_image_regex
   most_recent = true
 }
 
@@ -168,7 +168,7 @@ resource "openstack_networking_secgroup_v2" "k3s" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "k3s_api" {
-  for_each          = toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.egress_cidr], local.k3s_node_cidrs))
+  for_each          = toset(nonsensitive(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr, local.egress_cidr], local.k3s_node_cidrs)))
   security_group_id = openstack_networking_secgroup_v2.k3s.id
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -213,7 +213,7 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_etcd" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "k3s_ssh" {
-  for_each          = toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr]))
+  for_each          = toset(nonsensitive(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])))
   security_group_id = openstack_networking_secgroup_v2.k3s.id
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -263,7 +263,7 @@ resource "openstack_networking_secgroup_rule_v2" "db_patroni_api" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "db_ssh" {
-  for_each          = toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr]))
+  for_each          = toset(nonsensitive(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])))
   security_group_id = openstack_networking_secgroup_v2.db.id
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -441,7 +441,7 @@ resource "openstack_networking_secgroup_rule_v2" "db_replica_patroni_api" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "db_replica_ssh" {
-  for_each          = length(var.db_replicas) > 0 ? toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])) : toset([])
+  for_each          = length(var.db_replicas) > 0 ? toset(nonsensitive(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr]))) : toset([])
   security_group_id = openstack_networking_secgroup_v2.db_replica[0].id
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -503,7 +503,7 @@ resource "openstack_networking_secgroup_rule_v2" "pgbouncer_pools" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "pgbouncer_ssh" {
-  for_each          = local.pgbouncer_enabled ? toset(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr])) : toset([])
+  for_each          = local.pgbouncer_enabled ? toset(nonsensitive(concat(var.wireguard.allowed_cidrs, [local.bastion_cidr]))) : toset([])
   security_group_id = openstack_networking_secgroup_v2.pgbouncer[0].id
   direction         = "ingress"
   ethertype         = "IPv4"

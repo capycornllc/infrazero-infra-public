@@ -24,6 +24,12 @@ variable "server_image" {
   default = "Ubuntu 24.04"
 }
 
+variable "server_image_regex" {
+  type        = string
+  default     = "^Ubuntu 24\\.04"
+  description = "Regex to match the OS image name. OVH image names vary by region."
+}
+
 variable "servers" {
   type = object({
     bastion = object({

@@ -19,8 +19,8 @@ locals {
   db_cidr              = "${var.servers.db.private_ip}/32"
   pgbouncer_enabled    = var.servers.pgbouncer != null
   pgbouncer_cidr       = var.servers.pgbouncer != null ? "${try(var.servers.pgbouncer.private_ip, "")}/32" : ""
-  egress_service_cidrs = concat([var.private_cidr], var.wireguard.allowed_cidrs)
-  bastion_ssh_cidrs    = length(var.debug_root_password) > 0 ? concat(var.wireguard.allowed_cidrs, ["0.0.0.0/0"]) : var.wireguard.allowed_cidrs
+  egress_service_cidrs = nonsensitive(concat([var.private_cidr], var.wireguard.allowed_cidrs))
+  bastion_ssh_cidrs    = nonsensitive(length(var.debug_root_password) > 0 ? concat(var.wireguard.allowed_cidrs, ["0.0.0.0/0"]) : var.wireguard.allowed_cidrs)
 
   ssh_keys_map = { for idx, key in var.ssh_public_keys : idx => key }
 
