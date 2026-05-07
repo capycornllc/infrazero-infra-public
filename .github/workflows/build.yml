@@ -276,7 +276,7 @@ jobs:
       - name: Destroy stack (keep volume)
         run: |
           echo "::group::Destroy Previous Stack"
-          chmod +x scripts/common/*.sh scripts/${{ env.CLOUD_PROVIDER_RESOLVED }}/*.sh
+          chmod +x scripts/common/*.sh ${{ env.SCRIPTS_DIR }}/*.sh
           pushd ${{ env.TOFU_DIR }}
           ../../${{ env.SCRIPTS_DIR }}/destroy-without-volume.sh
           popd
@@ -284,7 +284,7 @@ jobs:
 
       - name: Import DB volume if exists
         run: |
-          chmod +x scripts/${{ env.CLOUD_PROVIDER_RESOLVED }}/*.sh
+          chmod +x ${{ env.SCRIPTS_DIR }}/*.sh
           pushd ${{ env.TOFU_DIR }}
           DB_VOLUME_NAME="$DB_VOLUME_NAME" ../../${{ env.SCRIPTS_DIR }}/import-volume.sh
           popd

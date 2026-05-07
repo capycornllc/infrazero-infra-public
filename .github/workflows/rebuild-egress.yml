@@ -188,8 +188,8 @@ jobs:
           PROVIDER=$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')
           if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
             echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud"
-            echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
+            echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
@@ -199,8 +199,8 @@ jobs:
             echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
           else
             echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=hetzner"
-            echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
+            echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"
           fi
 
       - name: Render backend
