@@ -217,6 +217,15 @@ jobs:
             echo "TF_VAR_openstack_user_name=${OPENSTACK_USER_NAME}" >> "$GITHUB_ENV"
             echo "TF_VAR_openstack_password=${OPENSTACK_PASSWORD}" >> "$GITHUB_ENV"
             echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
+            # Determine OpenStack auth URL based on region (US vs EU)
+            REGION_LOWER=$(echo "${CLOUD_REGION:-}" | tr '[:upper:]' '[:lower:]')
+            if [[ "$REGION_LOWER" == us-* ]]; then
+              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.us/v3" >> "$GITHUB_ENV"
+              echo "TF_VAR_ovh_endpoint=ovh-us" >> "$GITHUB_ENV"
+            else
+              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.net/v3" >> "$GITHUB_ENV"
+              echo "TF_VAR_ovh_endpoint=ovh-eu" >> "$GITHUB_ENV"
+            fi
           else
             echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
             echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"

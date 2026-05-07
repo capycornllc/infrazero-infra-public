@@ -321,6 +321,12 @@ variable "openstack_auth_url" {
   default = "https://auth.cloud.ovh.net/v3"
 }
 
+variable "ovh_endpoint" {
+  type        = string
+  default     = "ovh-eu"
+  description = "OVH API endpoint: ovh-eu for Europe, ovh-us for US"
+}
+
 variable "openstack_user_name" {
   type = string
 }
