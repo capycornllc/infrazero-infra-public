@@ -111,6 +111,22 @@ fi
 
 install_packages() {
   beacon_status "installing_packages" "Installing base packages" 15
+
+  # Wait for outbound internet connectivity (private-network servers depend on egress NAT)
+  if [ -z "${HAS_PUBLIC_IPV4:-}" ] || [ "${HAS_PUBLIC_IPV4:-}" = "false" ]; then
+    echo "[common] waiting for outbound internet (egress NAT)..."
+    for _wait_i in {1..90}; do
+      if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://mirror.hetzner.com 2>/dev/null; then
+        echo "[common] outbound internet available (attempt ${_wait_i})"
+        break
+      fi
+      if [ "$_wait_i" -eq 90 ]; then
+        echo "[common] WARNING: outbound internet not available after 90 attempts; continuing anyway" >&2
+      fi
+      sleep 2
+    done
+  fi
+
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     for attempt in {1..5}; do

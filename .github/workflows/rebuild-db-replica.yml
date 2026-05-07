@@ -112,7 +112,7 @@ jobs:
           cat > "${RUNNER_TEMP}/github-secrets.json" <<'JSON'
           ${{ toJson(secrets) }}
           JSON
-          python scripts/export-bootstrap-folder-secrets.py \
+          python scripts/common/export-bootstrap-folder-secrets.py \
             --secrets-json "${RUNNER_TEMP}/github-secrets.json" \
             --github-env "${GITHUB_ENV}"
           rm -f "${RUNNER_TEMP}/github-secrets.json"
@@ -158,7 +158,7 @@ jobs:
           fi
 
       - name: Validate config
-        run: python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
+        run: python scripts/common/validate-config.py --config config/infra.yaml --schema config/schema.json
 
       - name: Determine cloud provider
         run: |
@@ -166,7 +166,8 @@ jobs:
           PROVIDER=$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')
           if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
             echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud"
+            echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
@@ -175,12 +176,13 @@ jobs:
             echo "TF_VAR_openstack_password=${OPENSTACK_PASSWORD}" >> "$GITHUB_ENV"
             echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
           else
-            echo "TOFU_DIR=tofu" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
+            echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
+            echo "CLOUD_PROVIDER_RESOLVED=hetzner"
+            echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV" >> "$GITHUB_ENV"
           fi
 
       - name: Render backend
-        run: python scripts/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
+        run: python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
 
       - name: Init OpenTofu
         run: tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
@@ -237,15 +239,15 @@ jobs:
 
       - name: Render tfvars
         run: |
-          python scripts/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
+          python scripts/common/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
       - name: Offload oversized egress bootstrap payload
         run: |
-          chmod +x scripts/offload-egress-bootstrap-secrets.sh
-          scripts/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
+          chmod +x scripts/common/offload-egress-bootstrap-secrets.sh
+          scripts/common/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
 
       - name: Import SSH keys if exist
-        run: python scripts/import-ssh-keys.py --tofu-dir ${{ env.TOFU_DIR }}
+        run: python ${{ env.SCRIPTS_DIR }}/import-ssh-keys.py --tofu-dir ${{ env.TOFU_DIR }}
 
       - name: Replace db replicas
         run: |
@@ -271,6 +273,6 @@ jobs:
           for i in $(seq 0 $((count - 1))); do
             replace_args+=("-replace=${SERVER_RES}[\"${i}\"]")
           done
-          bash scripts/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
+          bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json \
             -target="$SERVER_RES" \
             "${replace_args[@]}"

@@ -424,12 +424,21 @@ beacon_status "installing_promtail" "Installing Promtail" 85
 
 # Promtail for journald to Loki (optional)
 if [ ! -x /usr/local/bin/promtail ]; then
-  if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+  promtail_downloaded=false
+  for _pt_attempt in {1..5}; do
+    if curl -fsSL --connect-timeout 10 --max-time 120 -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+      promtail_downloaded=true
+      break
+    fi
+    echo "[bastion] promtail download attempt ${_pt_attempt}/5 failed; retrying in 15s"
+    sleep 15
+  done
+  if [ "$promtail_downloaded" = "true" ]; then
     unzip -o /tmp/promtail.zip -d /usr/local/bin
     mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
     chmod +x /usr/local/bin/promtail
   else
-    echo "[bastion] promtail download failed; skipping"
+    echo "[bastion] promtail download failed after 5 attempts; skipping"
   fi
 fi
 

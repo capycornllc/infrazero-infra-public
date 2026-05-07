@@ -6,6 +6,18 @@ output "egress_public_ipv4" {
   value = openstack_networking_floatingip_v2.egress.address
 }
 
+output "egress_private_ipv4" {
+  value = var.servers.egress.private_ip
+}
+
+output "node1_private_ipv4" {
+  value = length(var.k3s_nodes) > 0 ? var.k3s_nodes[0].private_ip : ""
+}
+
+output "db_private_ipv4" {
+  value = var.servers.db.private_ip
+}
+
 output "load_balancer_public_ipv4" {
   value = openstack_networking_floatingip_v2.lb.address
 }

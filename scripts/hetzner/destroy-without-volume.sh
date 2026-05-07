@@ -29,7 +29,7 @@ destroy_targets() {
 
   local script_dir
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  bash "$script_dir/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
+  bash "$script_dir/../common/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix() {
@@ -54,7 +54,7 @@ destroy_targets_prefix() {
 
   local script_dir
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  bash "$script_dir/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
+  bash "$script_dir/../common/tofu-retry.sh" tofu destroy -no-color -auto-approve -parallelism=1 "${var_args[@]}" "${targets[@]}"
 }
 
 destroy_targets_prefix hcloud_load_balancer_service
