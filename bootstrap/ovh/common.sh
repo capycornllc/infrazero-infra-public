@@ -408,9 +408,12 @@ print(str(gw))
 PY
 ) || exit 0
 
-priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-if [ -z "$priv_if" ]; then
-  priv_if=$(python3 - <<'PY'
+# Wait for private interface to become available (race condition at boot)
+priv_if=""
+for _wg_wait in {1..30}; do
+  priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  if [ -z "$priv_if" ]; then
+    priv_if=$(python3 - <<'PY'
 import ipaddress
 import os
 import subprocess
@@ -434,7 +437,18 @@ for line in output.splitlines():
         continue
 raise SystemExit(1)
 PY
-  ) || exit 0
+    ) || true
+  fi
+  if [ -n "$priv_if" ]; then
+    break
+  fi
+  echo "[wg-route] waiting for private interface (attempt ${_wg_wait}/30)..." >&2
+  sleep 2
+done
+
+if [ -z "$priv_if" ]; then
+  echo "[wg-route] private interface not found after 30 attempts; cannot add WG route" >&2
+  exit 0
 fi
 
 ip link set dev "$priv_if" up || true
@@ -443,6 +457,7 @@ sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
 /usr/local/sbin/infrazero-private-route.sh || true
 
 ip route replace "$WG_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+echo "[wg-route] added ${WG_CIDR} via ${private_gw} dev ${priv_if}"
 EOF
 
 chmod +x /usr/local/sbin/infrazero-wg-route.sh
