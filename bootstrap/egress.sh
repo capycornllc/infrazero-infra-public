@@ -213,8 +213,27 @@ if [ -z "$PRIVATE_CIDR" ]; then
   echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
 fi
 
+# ── Interface detection (cloud-agnostic) ──────────────────────────────
+# Count distinct non-loopback IPv4 interfaces.
+ALL_IFACES=$(ip -4 -o addr show | awk '$2 != "lo" {print $2}' | sort -u)
+IFACE_COUNT=$(echo "$ALL_IFACES" | wc -l)
+
 PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
+
+# Providers with single NIC + floating IP (OVH, DigitalOcean, …):
+# public and private addresses share the same interface.
+if [ "$IFACE_COUNT" -eq 1 ] && [ -n "$PUBLIC_IF" ]; then
+  PRIVATE_IF="$PUBLIC_IF"
+  NAT_NEEDED="false"
+  echo "[egress] single-NIC host; using ${PRIVATE_IF} for both, NAT skipped"
+else
+  PRIVATE_IF=$(echo "$ALL_IFACES" | awk -v pub="$PUBLIC_IF" '$1 != pub {print $1; exit}')
+  NAT_NEEDED="true"
+fi
+
+# Explicit overrides for non-standard topologies.
+if [ "${EGRESS_FORCE_NAT:-}" = "true" ]; then NAT_NEEDED="true"; fi
+if [ "${EGRESS_FORCE_NAT:-}" = "false" ]; then NAT_NEEDED="false"; fi
 
 if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
   echo "[egress] unable to determine network interfaces" >&2
@@ -237,7 +256,10 @@ if ! iptables -S "$CHAIN" >/dev/null 2>&1; then
   CHAIN="FORWARD"
 fi
 
-if [ -n "$PRIVATE_CIDR" ]; then
+# NAT: needed when egress is the actual default gateway for the private
+# subnet (multi-NIC).  On providers where the cloud router already provides
+# SNAT, this is redundant and auto-skipped.
+if [ "$NAT_NEEDED" = "true" ] && [ -n "$PRIVATE_CIDR" ]; then
   iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE \
     || iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
   iptables -C "$CHAIN" -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT \

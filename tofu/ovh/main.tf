@@ -42,7 +42,8 @@ resource "openstack_networking_subnet_v2" "main" {
     end   = cidrhost(var.private_cidr, 200)
   }
 
-  dns_nameservers = ["213.186.33.99", "1.1.1.1"]
+  # DNS is finalised by cloud-init bootstrap (common.sh → ensure_private_dns).
+  dns_nameservers = ["1.1.1.1", "8.8.8.8"]
 }
 
 resource "openstack_networking_router_v2" "main" {
@@ -52,7 +53,7 @@ resource "openstack_networking_router_v2" "main" {
 }
 
 data "openstack_networking_network_v2" "ext_net" {
-  name = "Ext-Net"
+  name = var.ovh_ext_net_name
 }
 
 resource "openstack_networking_router_interface_v2" "main" {
@@ -68,6 +69,16 @@ resource "openstack_compute_keypair_v2" "ops" {
   for_each   = local.ssh_keys_map
   name       = "${var.name_prefix}-ops-${each.key}"
   public_key = each.value
+}
+
+# ------------------------------------------------------------------ #
+#  Placement Groups (anti-affinity)                                    #
+# ------------------------------------------------------------------ #
+
+resource "openstack_compute_servergroup_v2" "main" {
+  count    = var.placement_groups.enabled ? 1 : 0
+  name     = "${var.name_prefix}-sg"
+  policies = ["anti-affinity"]
 }
 
 # ------------------------------------------------------------------ #
@@ -162,6 +173,39 @@ resource "openstack_networking_secgroup_rule_v2" "egress_ssh" {
   remote_ip_prefix  = local.bastion_cidr
 }
 
+resource "openstack_networking_secgroup_rule_v2" "egress_grafana" {
+  for_each          = toset(local.egress_service_cidrs)
+  security_group_id = openstack_networking_secgroup_v2.egress.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 3000
+  port_range_max    = 3000
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_networking_secgroup_rule_v2" "egress_loki" {
+  for_each          = toset(local.egress_service_cidrs)
+  security_group_id = openstack_networking_secgroup_v2.egress.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 3100
+  port_range_max    = 3100
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_networking_secgroup_rule_v2" "egress_infisical" {
+  for_each          = toset(local.egress_service_cidrs)
+  security_group_id = openstack_networking_secgroup_v2.egress.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8080
+  port_range_max    = 8080
+  remote_ip_prefix  = each.value
+}
+
 resource "openstack_networking_secgroup_v2" "k3s" {
   name        = "${var.name_prefix}-k3s-sg"
   description = "K3s nodes security group"
@@ -186,6 +230,17 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_vxlan" {
   protocol          = "udp"
   port_range_min    = 8472
   port_range_max    = 8472
+  remote_ip_prefix  = each.value
+}
+
+resource "openstack_networking_secgroup_rule_v2" "k3s_join" {
+  for_each          = toset(local.k3s_node_cidrs)
+  security_group_id = openstack_networking_secgroup_v2.k3s.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 9345
+  port_range_max    = 9345
   remote_ip_prefix  = each.value
 }
 
@@ -301,6 +356,13 @@ resource "openstack_compute_instance_v2" "bastion" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 resource "openstack_compute_instance_v2" "egress" {
@@ -327,6 +389,13 @@ resource "openstack_compute_instance_v2" "egress" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 resource "openstack_compute_instance_v2" "k3s" {
@@ -356,6 +425,13 @@ resource "openstack_compute_instance_v2" "k3s" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 resource "openstack_compute_instance_v2" "db" {
@@ -382,6 +458,13 @@ resource "openstack_compute_instance_v2" "db" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 # ------------------------------------------------------------------ #
@@ -478,6 +561,13 @@ resource "openstack_compute_instance_v2" "db_replica" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 # ------------------------------------------------------------------ #
@@ -538,6 +628,13 @@ resource "openstack_compute_instance_v2" "pgbouncer" {
   }
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+
+  dynamic "scheduler_hints" {
+    for_each = var.placement_groups.enabled ? [1] : []
+    content {
+      group = openstack_compute_servergroup_v2.main[0].id
+    }
+  }
 }
 
 # ------------------------------------------------------------------ #
@@ -611,11 +708,85 @@ resource "openstack_lb_monitor_v2" "https" {
 }
 
 # ------------------------------------------------------------------ #
+#  K3s API Load Balancer (HA) — equivalent to Hetzner k3s_api LB      #
+# ------------------------------------------------------------------ #
+
+resource "openstack_lb_loadbalancer_v2" "k3s_api" {
+  count          = local.k3s_ha_enabled ? 1 : 0
+  name           = "${var.name_prefix}-k3s-api-lb"
+  vip_subnet_id  = openstack_networking_subnet_v2.main.id
+  vip_address    = local.k3s_api_lb_private_ip
+}
+
+resource "openstack_lb_listener_v2" "k3s_api_6443" {
+  count            = local.k3s_ha_enabled ? 1 : 0
+  name             = "${var.name_prefix}-k3s-api-6443"
+  loadbalancer_id  = openstack_lb_loadbalancer_v2.k3s_api[0].id
+  protocol         = "TCP"
+  protocol_port    = 6443
+}
+
+resource "openstack_lb_listener_v2" "k3s_api_9345" {
+  count            = local.k3s_ha_enabled ? 1 : 0
+  name             = "${var.name_prefix}-k3s-api-9345"
+  loadbalancer_id  = openstack_lb_loadbalancer_v2.k3s_api[0].id
+  protocol         = "TCP"
+  protocol_port    = 9345
+}
+
+resource "openstack_lb_pool_v2" "k3s_api_6443" {
+  count       = local.k3s_ha_enabled ? 1 : 0
+  name        = "${var.name_prefix}-k3s-api-pool-6443"
+  listener_id = openstack_lb_listener_v2.k3s_api_6443[0].id
+  protocol    = "TCP"
+  lb_method   = "ROUND_ROBIN"
+}
+
+resource "openstack_lb_pool_v2" "k3s_api_9345" {
+  count       = local.k3s_ha_enabled ? 1 : 0
+  name        = "${var.name_prefix}-k3s-api-pool-9345"
+  listener_id = openstack_lb_listener_v2.k3s_api_9345[0].id
+  protocol    = "TCP"
+  lb_method   = "ROUND_ROBIN"
+}
+
+resource "openstack_lb_member_v2" "k3s_api_6443" {
+  for_each = local.k3s_ha_enabled ? {
+    for key, srv in local.k3s_nodes_map : key => srv
+    if tonumber(key) < local.k3s_control_planes_count
+  } : {}
+  pool_id       = openstack_lb_pool_v2.k3s_api_6443[0].id
+  address       = each.value.private_ip
+  protocol_port = 6443
+  subnet_id     = openstack_networking_subnet_v2.main.id
+}
+
+resource "openstack_lb_member_v2" "k3s_api_9345" {
+  for_each = local.k3s_ha_enabled ? {
+    for key, srv in local.k3s_nodes_map : key => srv
+    if tonumber(key) < local.k3s_control_planes_count
+  } : {}
+  pool_id       = openstack_lb_pool_v2.k3s_api_9345[0].id
+  address       = each.value.private_ip
+  protocol_port = 9345
+  subnet_id     = openstack_networking_subnet_v2.main.id
+}
+
+resource "openstack_lb_monitor_v2" "k3s_api" {
+  count       = local.k3s_ha_enabled ? 1 : 0
+  pool_id     = openstack_lb_pool_v2.k3s_api_6443[0].id
+  type        = "TCP"
+  delay       = var.load_balancer.health_check.interval
+  timeout     = var.load_balancer.health_check.timeout
+  max_retries = var.load_balancer.health_check.retries
+}
+
+# ------------------------------------------------------------------ #
 #  Floating IPs (public access)                                        #
 # ------------------------------------------------------------------ #
 
 resource "openstack_networking_floatingip_v2" "bastion" {
-  pool = "Ext-Net"
+  pool = var.ovh_ext_net_name
 }
 
 resource "openstack_compute_floatingip_associate_v2" "bastion" {
@@ -624,7 +795,7 @@ resource "openstack_compute_floatingip_associate_v2" "bastion" {
 }
 
 resource "openstack_networking_floatingip_v2" "egress" {
-  pool = "Ext-Net"
+  pool = var.ovh_ext_net_name
 }
 
 resource "openstack_compute_floatingip_associate_v2" "egress" {
@@ -633,6 +804,6 @@ resource "openstack_compute_floatingip_associate_v2" "egress" {
 }
 
 resource "openstack_networking_floatingip_v2" "lb" {
-  pool    = "Ext-Net"
+  pool    = var.ovh_ext_net_name
   port_id = openstack_lb_loadbalancer_v2.main.vip_port_id
 }

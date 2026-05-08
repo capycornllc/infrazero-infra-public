@@ -346,3 +346,9 @@ variable "openstack_tenant_id" {
   type        = string
   description = "Same as ovh_cloud_project_id for most setups"
 }
+
+variable "ovh_ext_net_name" {
+  type        = string
+  default     = "Ext-Net"
+  description = "OVH Public Cloud external network name (Ext-Net in most regions)"
+}

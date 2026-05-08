@@ -1257,6 +1257,21 @@ def main() -> int:
     config["databases_json_private_b64"] = databases_json_private_b64
     config["wg_server_address"] = wg_server_address
 
+    # Provider-agnostic extra tofu variables.
+    # Any cloud provider can supply additional variable values via a single
+    # JSON secret (CLOUD_PROVIDER_EXTRA_VARS_JSON).  Keys = tfvars variable
+    # names.  No provider-specific code in this file.
+    cloud_extra_raw = os.getenv("CLOUD_PROVIDER_EXTRA_VARS_JSON", "").strip()
+    if cloud_extra_raw:
+        try:
+            cloud_extra = json.loads(cloud_extra_raw)
+            if isinstance(cloud_extra, dict):
+                for key, value in cloud_extra.items():
+                    config[key] = value
+                print(f"Applied {len(cloud_extra)} cloud-provider extra vars")
+        except json.JSONDecodeError:
+            print("CLOUD_PROVIDER_EXTRA_VARS_JSON is not valid JSON", file=sys.stderr)
+
     if args.bootstrap_artifacts:
         artifacts = load_json(Path(args.bootstrap_artifacts))
         required_roles = list(REQUIRED_ROLES)

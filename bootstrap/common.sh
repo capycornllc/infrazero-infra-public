@@ -91,7 +91,7 @@ PY
       fi
 
       if ! id -u "$username" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash -G infrazero-admins "$username"
+        useradd -m -s /bin/bash -N -G infrazero-admins "$username"
       else
         usermod -aG infrazero-admins "$username" || true
       fi
@@ -112,11 +112,20 @@ fi
 install_packages() {
   beacon_status "installing_packages" "Installing base packages" 15
 
-  # Wait for outbound internet connectivity (private-network servers depend on egress NAT)
+  export DEBIAN_FRONTEND=noninteractive
+
+  # Auto-detect if this instance has direct internet access (OVH Gateway, floating IP, etc.)
   if [ -z "${HAS_PUBLIC_IPV4:-}" ] || [ "${HAS_PUBLIC_IPV4:-}" = "false" ]; then
-    echo "[common] waiting for outbound internet (egress NAT)..."
+    if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://connectivity-check.ubuntu.com 2>/dev/null; then
+      HAS_PUBLIC_IPV4=true
+    fi
+  fi
+
+  # Wait for outbound internet connectivity (private-network servers without direct internet depend on egress NAT)
+  if [ -z "${HAS_PUBLIC_IPV4:-}" ] || [ "${HAS_PUBLIC_IPV4:-}" = "false" ]; then
+    echo "[common] waiting for outbound internet (egress NAT or gateway)..."
     for _wait_i in {1..90}; do
-      if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://mirror.hetzner.com 2>/dev/null; then
+      if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://connectivity-check.ubuntu.com 2>/dev/null; then
         echo "[common] outbound internet available (attempt ${_wait_i})"
         break
       fi
@@ -268,7 +277,8 @@ WG_CIDR=${WG_CIDR:-}
 EOF
 chmod 600 /etc/infrazero/network.env
 
-# Ensure /32 private NICs route the subnet via the gateway (Hetzner private nets)
+# Ensure /32 private NICs route the subnet via the gateway (Hetzner private nets).
+# On providers with DHCP subnets (OVH, etc.) this is already handled automatically.
 cat > /usr/local/sbin/infrazero-private-route.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
