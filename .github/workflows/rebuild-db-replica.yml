@@ -168,6 +168,7 @@ jobs:
             echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
             echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
             echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV"
+            echo "BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
             echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
@@ -188,6 +189,7 @@ jobs:
             echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
             echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
             echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"
+            echo "BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
           fi
 
       - name: Render backend
@@ -212,7 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/bootstrap
-          chmod +x bootstrap/*.sh
+          chmod +x ${BOOTSTRAP_DIR}/*.sh
           roles=(db-replica)
           if [ "${HAS_EXISTING_BOOTSTRAP_ARTIFACTS:-0}" != "1" ]; then
             roles=(bastion egress node1 nodecp node2 db db-replica)
@@ -227,7 +229,7 @@ jobs:
             if [ "$role" = "node1" ]; then
               extra_files+=(infisical-admin-secret.sh)
             fi
-            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh "${role}.sh" "${extra_files[@]}"
+            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C ${BOOTSTRAP_DIR} common.sh beacon.sh "${role}.sh" "${extra_files[@]}"
             sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
             echo "$sha" > "build/bootstrap/${role}.sha256"
 

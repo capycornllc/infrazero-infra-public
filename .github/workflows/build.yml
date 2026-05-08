@@ -208,6 +208,7 @@ jobs:
           if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
             echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
             echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV"
+            echo "BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
             echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
             # Set TF_VAR_ for OVH provider credentials
             echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
@@ -229,6 +230,7 @@ jobs:
           else
             echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
             echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"
+            echo "BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
             echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
           fi
 
@@ -236,7 +238,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/bootstrap
-          chmod +x bootstrap/*.sh
+          chmod +x ${BOOTSTRAP_DIR}/*.sh
           ROLES="bastion egress node1 nodecp node2 db db-replica"
           if [ "${PGBOUNCER_ENABLED:-false}" = "true" ]; then
             ROLES="$ROLES pgbouncer"
@@ -249,7 +251,7 @@ jobs:
             if [ "$role" = "node1" ]; then
               extra_files+=(infisical-admin-secret.sh)
             fi
-            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C bootstrap common.sh beacon.sh "${role}.sh" "${extra_files[@]}"
+            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C ${BOOTSTRAP_DIR} common.sh beacon.sh "${role}.sh" "${extra_files[@]}"
             sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
             echo "$sha" > "build/bootstrap/${role}.sha256"
 

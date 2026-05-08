@@ -214,21 +214,17 @@ if [ -z "$PRIVATE_CIDR" ]; then
 fi
 
 # ── Interface detection (cloud-agnostic) ──────────────────────────────
-# Count distinct non-loopback IPv4 interfaces.
-ALL_IFACES=$(ip -4 -o addr show | awk '$2 != "lo" {print $2}' | sort -u)
-IFACE_COUNT=$(echo "$ALL_IFACES" | wc -l)
-
 PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
 
 # Providers with single NIC + floating IP (OVH, DigitalOcean, …):
 # public and private addresses share the same interface.
-if [ "$IFACE_COUNT" -eq 1 ] && [ -n "$PUBLIC_IF" ]; then
+# Detect by checking if PRIVATE_IF is empty (no separate private NIC).
+NAT_NEEDED="true"
+if [ -z "$PRIVATE_IF" ] && [ -n "$PUBLIC_IF" ]; then
   PRIVATE_IF="$PUBLIC_IF"
   NAT_NEEDED="false"
   echo "[egress] single-NIC host; using ${PRIVATE_IF} for both, NAT skipped"
-else
-  PRIVATE_IF=$(echo "$ALL_IFACES" | awk -v pub="$PUBLIC_IF" '$1 != pub {print $1; exit}')
-  NAT_NEEDED="true"
 fi
 
 # Explicit overrides for non-standard topologies.

@@ -210,14 +210,6 @@ cat > /usr/local/sbin/infrazero-egress-routing.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cloud-agnostic: skip egress policy routing when the host already has
-# direct outbound internet (floating IP, cloud NAT gateway, etc.).
-# Functional check — no provider-specific logic.
-if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://connectivity-check.ubuntu.com 2>/dev/null; then
-  echo "[bastion-routing] direct internet available; skipping egress policy routing"
-  exit 0
-fi
-
 NETWORK_ENV="/etc/infrazero/network.env"
 BASTION_ENV="/etc/infrazero/bastion.env"
 
