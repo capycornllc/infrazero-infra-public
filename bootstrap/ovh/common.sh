@@ -274,6 +274,7 @@ mkdir -p /etc/infrazero
 cat > /etc/infrazero/network.env <<EOF
 PRIVATE_CIDR=${PRIVATE_CIDR:-}
 WG_CIDR=${WG_CIDR:-}
+BASTION_PRIVATE_IP=${BASTION_PRIVATE_IP:-}
 EOF
 chmod 600 /etc/infrazero/network.env
 
@@ -465,8 +466,12 @@ sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
 
 /usr/local/sbin/infrazero-private-route.sh || true
 
-ip route replace "$WG_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
-echo "[wg-route] added ${WG_CIDR} via ${private_gw} dev ${priv_if}"
+# WG subnet route: prefer bastion private IP as gateway (bastion hosts wg0).
+# On providers where the network gateway (e.g. OpenStack Router) doesn't know
+# about the WG subnet, we must route directly to bastion.
+wg_gw="${BASTION_PRIVATE_IP:-$private_gw}"
+ip route replace "$WG_CIDR" via "$wg_gw" dev "$priv_if" onlink metric 50 || true
+echo "[wg-route] added ${WG_CIDR} via ${wg_gw} dev ${priv_if}"
 EOF
 
 chmod +x /usr/local/sbin/infrazero-wg-route.sh

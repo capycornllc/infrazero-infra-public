@@ -160,6 +160,11 @@ WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-false}"
 WG_ALLOW_WAN="${WG_ALLOW_WAN:-false}"
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
+  # Disable rp_filter on private interface — required for asymmetric routing
+  # (packets from egress arrive on ens3 with dst in WG subnet, reverse path is wg0)
+  sysctl -w "net.ipv4.conf.${PRIVATE_IF}.rp_filter=0" >/dev/null 2>&1 || true
+  sysctl -w "net.ipv4.conf.all.rp_filter=0" >/dev/null 2>&1 || true
+
   if [ "${WG_SNAT_ENABLED,,}" = "true" ]; then
     # SNAT WG clients to bastion private IP for private subnet access.
     iptables -t nat -C POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE \
@@ -168,8 +173,9 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
 
   iptables -C FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT \
     || iptables -A FORWARD -i "$WG_IF" -o "$PRIVATE_IF" -s "$WG_CIDR" -d "$PRIVATE_CIDR" -j ACCEPT
-  iptables -C FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT \
-    || iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  # Allow return traffic from private subnet to WG clients (both stateful and stateless)
+  iptables -C FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -j ACCEPT \
+    || iptables -A FORWARD -i "$PRIVATE_IF" -o "$WG_IF" -s "$PRIVATE_CIDR" -d "$WG_CIDR" -j ACCEPT
 
   if [ -n "$PUBLIC_IF" ] && [ "${WG_ALLOW_WAN,,}" != "true" ]; then
     iptables -C FORWARD -i "$WG_IF" -o "$PUBLIC_IF" -j REJECT \
