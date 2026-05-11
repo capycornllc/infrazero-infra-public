@@ -91,7 +91,7 @@ PY
       fi
 
       if ! id -u "$username" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash -G infrazero-admins "$username"
+        useradd -m -s /bin/bash -N -G infrazero-admins "$username"
       else
         usermod -aG infrazero-admins "$username" || true
       fi
@@ -112,11 +112,20 @@ fi
 install_packages() {
   beacon_status "installing_packages" "Installing base packages" 15
 
+  # Auto-detect public IPv4: if this instance can reach the internet directly,
+  # it has a public IP (Ext-Net / Floating IP) and doesn't need egress NAT.
+  if [ -z "${HAS_PUBLIC_IPV4:-}" ]; then
+    if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://connectivity-check.ubuntu.com 2>/dev/null; then
+      HAS_PUBLIC_IPV4=true
+      echo "[common] auto-detected public IPv4 (direct internet access)"
+    fi
+  fi
+
   # Wait for outbound internet connectivity (private-network servers depend on egress NAT)
   if [ -z "${HAS_PUBLIC_IPV4:-}" ] || [ "${HAS_PUBLIC_IPV4:-}" = "false" ]; then
     echo "[common] waiting for outbound internet (egress NAT)..."
     for _wait_i in {1..90}; do
-      if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://mirror.hetzner.com 2>/dev/null; then
+      if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://connectivity-check.ubuntu.com 2>/dev/null; then
         echo "[common] outbound internet available (attempt ${_wait_i})"
         break
       fi

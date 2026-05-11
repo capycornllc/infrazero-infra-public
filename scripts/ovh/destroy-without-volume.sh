@@ -3,8 +3,80 @@ set -euo pipefail
 
 existing=$(tofu state list 2>/dev/null || true)
 
+# ─── Fallback: if no tofu state, clean via OpenStack API directly ─────
 if [ -z "$existing" ]; then
-  echo "No state found; skipping destroy"
+  echo "[destroy] No tofu state found — attempting OpenStack API cleanup"
+
+  # Check if openstack CLI is available
+  if ! command -v openstack >/dev/null 2>&1; then
+    echo "[destroy] openstack CLI not found; cannot clean orphaned resources"
+    echo "[destroy] Install with: pip3 install python-openstackclient python-octaviaclient"
+    exit 0
+  fi
+
+  # Verify auth works
+  if ! openstack token issue >/dev/null 2>&1; then
+    echo "[destroy] OpenStack auth failed (OS_* env vars missing or invalid); skipping cleanup"
+    exit 0
+  fi
+
+  echo "[destroy] Deleting instances..."
+  for id in $(openstack server list -f value -c ID 2>/dev/null); do
+    name=$(openstack server show "$id" -f value -c name 2>/dev/null || echo "$id")
+    echo "  Deleting instance $name ($id)"
+    openstack server delete "$id" --wait 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting load balancers..."
+  for id in $(openstack loadbalancer list -f value -c id 2>/dev/null); do
+    echo "  Deleting LB $id (cascade)"
+    openstack loadbalancer delete "$id" --cascade --wait 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting floating IPs..."
+  for id in $(openstack floating ip list -f value -c ID 2>/dev/null); do
+    echo "  Deleting floating IP $id"
+    openstack floating ip delete "$id" 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting routers..."
+  for router_id in $(openstack router list -f value -c ID 2>/dev/null); do
+    # Remove all ports from router
+    for port_id in $(openstack port list --router "$router_id" -f value -c ID 2>/dev/null); do
+      openstack router remove port "$router_id" "$port_id" 2>/dev/null || true
+    done
+    echo "  Deleting router $router_id"
+    openstack router delete "$router_id" 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting ports..."
+  for port_id in $(openstack port list -f value -c ID -c "Device Owner" 2>/dev/null | grep -v "network:dhcp\|network:router" | awk '{print $1}'); do
+    openstack port delete "$port_id" 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting networks (internal only)..."
+  for net_id in $(openstack network list --internal -f value -c ID 2>/dev/null); do
+    for subnet_id in $(openstack subnet list --network "$net_id" -f value -c ID 2>/dev/null); do
+      openstack subnet delete "$subnet_id" 2>/dev/null || true
+    done
+    openstack network delete "$net_id" 2>/dev/null || true
+  done
+
+  echo "[destroy] Deleting security groups (non-default)..."
+  openstack security group list -f value -c ID -c Name 2>/dev/null | while read -r sg_id sg_name rest; do
+    if [ "$sg_name" != "default" ]; then
+      echo "  Deleting security group $sg_name ($sg_id)"
+      openstack security group delete "$sg_id" 2>/dev/null || true
+    fi
+  done
+
+  echo "[destroy] Deleting keypairs..."
+  for name in $(openstack keypair list -f value -c Name 2>/dev/null); do
+    echo "  Deleting keypair $name"
+    openstack keypair delete "$name" 2>/dev/null || true
+  done
+
+  echo "[destroy] OpenStack API cleanup complete"
   exit 0
 fi
 

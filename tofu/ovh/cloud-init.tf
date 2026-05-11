@@ -29,7 +29,8 @@ locals {
     infisical_db_backup_age_private_key = ""
     databases_json_private_b64          = ""
     bastion_env = concat(local.bastion_env_lines, [
-      format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
+      # On OVH, bastion has direct internet via Floating IP — no egress policy routing needed.
+      # EGRESS_PRIVATE_IP is intentionally omitted so infrazero-egress-routing.sh skips.
       format("EGRESS_LOKI_URL='http://%s:3100/loki/api/v1/push'", var.servers.egress.private_ip),
     ])
     node_env      = []
