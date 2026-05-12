@@ -149,7 +149,7 @@ def _run(cmd: List[str], cwd: str, env: Dict[str, str]) -> Tuple[int, str]:
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description="Import existing Hetzner Cloud SSH keys into OpenTofu state")
-    parser.add_argument("--tofu-dir", default="tofu", help="Directory containing *.tf files (default: tofu)")
+    parser.add_argument("--tofu-dir", default="tofu/hetzner", help="Directory containing *.tf files (default: tofu/hetzner)")
     parser.add_argument(
         "--tfvars",
         default=None,
