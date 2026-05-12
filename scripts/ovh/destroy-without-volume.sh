@@ -139,10 +139,10 @@ if [ -n "${S3_ENDPOINT:-}" ] && [ -n "${INFRA_STATE_BUCKET:-}" ] && [ -n "${DB_B
   timestamp=$(date +%Y%m%d_%H%M%S)
   echo "[destroy] Rotating old bootstrap data to old_backup/${timestamp}/"
 
-  for role in bastion egress db node1 node2 nodecp db-replica; do
+  for role in bastion egress db node1 node2 nodecp db-replica pgbouncer; do
     aws --endpoint-url "$S3_ENDPOINT" s3 mv \
-      "s3://${INFRA_STATE_BUCKET}/${role}.tar.zst" \
-      "s3://${INFRA_STATE_BUCKET}/old_backup/${timestamp}/${role}.tar.zst" \
+      "s3://${INFRA_STATE_BUCKET}/bootstrap/${role}.tar.zst" \
+      "s3://${INFRA_STATE_BUCKET}/old_backup/${timestamp}/bootstrap/${role}.tar.zst" \
       2>/dev/null || true
   done
 

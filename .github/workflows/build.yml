@@ -234,6 +234,57 @@ jobs:
             echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
           fi
 
+      - name: Render backend
+        run: python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
+
+      - name: Init OpenTofu
+        run: |
+          echo "::group::OpenTofu Init"
+          tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
+          echo "::endgroup::"
+
+      - name: Render destroy tfvars
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          cat > build/bootstrap_artifacts_placeholder.json <<'JSON'
+          {
+            "bastion": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "egress": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "node1": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "nodecp": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "node2": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "db": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "db-replica": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "pgbouncer": {"url": "http://127.0.0.1/bootstrap-placeholder.tar.zst", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+          }
+          JSON
+
+          if tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json bootstrap_artifacts > build/bootstrap_artifacts_state.json 2>/dev/null; then
+            echo "[build] Reusing bootstrap_artifacts from state for destroy."
+            jq -s '.[0] * (.[1] // {})' build/bootstrap_artifacts_placeholder.json build/bootstrap_artifacts_state.json > build/bootstrap_artifacts_destroy.json
+          else
+            echo "[build] No bootstrap_artifacts output found; rendering destroy tfvars with placeholder artifacts."
+            cp build/bootstrap_artifacts_placeholder.json build/bootstrap_artifacts_destroy.json
+          fi
+
+          python scripts/common/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts_destroy.json
+
+      - name: Offload oversized egress bootstrap payload for destroy
+        run: |
+          chmod +x scripts/common/offload-egress-bootstrap-secrets.sh
+          scripts/common/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
+
+      - name: Destroy stack (keep volume)
+        run: |
+          echo "::group::Destroy Previous Stack"
+          chmod +x scripts/common/*.sh ${{ env.SCRIPTS_DIR }}/*.sh
+          pushd ${{ env.TOFU_DIR }}
+          ../../${{ env.SCRIPTS_DIR }}/destroy-without-volume.sh
+          popd
+          echo "::endgroup::"
+
       - name: Package and upload bootstraps
         run: |
           set -euo pipefail
@@ -268,30 +319,14 @@ jobs:
           done
           echo "$manifest" | jq '.' > build/bootstrap_artifacts.json
 
-      - name: Render backend + tfvars
+      - name: Render tfvars
         run: |
-          python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
           python scripts/common/render-config.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/tofu.tfvars.json --bootstrap-artifacts build/bootstrap_artifacts.json
 
       - name: Offload oversized egress bootstrap payload
         run: |
           chmod +x scripts/common/offload-egress-bootstrap-secrets.sh
           scripts/common/offload-egress-bootstrap-secrets.sh ${{ env.TOFU_DIR }}/tofu.tfvars.json
-
-      - name: Init OpenTofu
-        run: |
-          echo "::group::OpenTofu Init"
-          tofu -chdir=${{ env.TOFU_DIR }} init -no-color -backend-config=backend.hcl
-          echo "::endgroup::"
-
-      - name: Destroy stack (keep volume)
-        run: |
-          echo "::group::Destroy Previous Stack"
-          chmod +x scripts/common/*.sh ${{ env.SCRIPTS_DIR }}/*.sh
-          pushd ${{ env.TOFU_DIR }}
-          ../../${{ env.SCRIPTS_DIR }}/destroy-without-volume.sh
-          popd
-          echo "::endgroup::"
 
       - name: Import DB volume if exists
         run: |
