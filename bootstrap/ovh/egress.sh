@@ -214,31 +214,35 @@ if [ -z "$PRIVATE_CIDR" ]; then
 fi
 
 # ── Interface detection ────────────────────────────────────────────────
-# Egress always has two interfaces: public (Ext-Net) and private (vRack).
-# PUBLIC_IF = interface with default route (internet-facing)
-# PRIVATE_IF = interface with IP from PRIVATE_CIDR
+# OVH Floating IPs are usually implemented by OpenStack outside the guest, so a
+# public egress VM may still have a single private interface inside the OS.
+# PUBLIC_IF = interface with the default route
+# PRIVATE_IF = interface with an IP from PRIVATE_CIDR; may equal PUBLIC_IF on OVH
 PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 
-# Find private interface: the one with an IP in PRIVATE_CIDR (not the public one)
-PRIVATE_IF=""
-if [ -n "$PRIVATE_CIDR" ] && command -v python3 >/dev/null 2>&1; then
-  PRIVATE_IF=$(python3 - <<'PY'
+detect_private_if() {
+  if [ -z "$PRIVATE_CIDR" ] || ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  python3 - <<'PY'
 import ipaddress
 import os
 import subprocess
+
 cidr = os.environ.get("PRIVATE_CIDR", "")
-public_if = os.environ.get("PUBLIC_IF", "")
 try:
     net = ipaddress.ip_network(cidr, strict=False)
 except Exception:
     raise SystemExit(1)
+
 output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
 for line in output.splitlines():
     parts = line.split()
     if len(parts) < 4:
         continue
     ifname = parts[1]
-    if ifname == "lo" or ifname == public_if:
+    if ifname == "lo":
         continue
     addr = parts[3].split("/")[0]
     try:
@@ -249,12 +253,21 @@ for line in output.splitlines():
         continue
 raise SystemExit(1)
 PY
-  ) || true
-fi
+}
 
-# Fallback: pick first non-public, non-lo interface
+PRIVATE_IF=""
+PRIVATE_IF=$(detect_private_if) || true
+
+# Fallbacks keep bootstrapping alive if routing or addressing appears in a
+# different order during early boot.
 if [ -z "$PRIVATE_IF" ]; then
   PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
+fi
+if [ -z "$PRIVATE_IF" ]; then
+  PRIVATE_IF="$PUBLIC_IF"
+fi
+if [ -z "$PUBLIC_IF" ]; then
+  PUBLIC_IF="$PRIVATE_IF"
 fi
 
 if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
@@ -263,6 +276,9 @@ if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
 fi
 
 echo "[egress] interfaces: public=$PUBLIC_IF, private=$PRIVATE_IF"
+if [ "$PUBLIC_IF" = "$PRIVATE_IF" ]; then
+  echo "[egress] using OVH single-interface mode for Floating IP routing"
+fi
 
 PUBLIC_IP=$(ip -4 -o addr show dev "$PUBLIC_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
 if [ -z "$PUBLIC_IP" ]; then
