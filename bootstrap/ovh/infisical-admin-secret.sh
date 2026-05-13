@@ -382,9 +382,10 @@ if kubectl -n infisical-bootstrap get job infisical-k8s-auth-bootstrap >/dev/nul
   fi
   job_failed_count=$(kubectl -n infisical-bootstrap get job infisical-k8s-auth-bootstrap -o jsonpath='{.status.failed}' 2>/dev/null || true)
   if [ "$job_succeeded" != "true" ] && [ -n "$job_failed_count" ] && [ "$job_failed_count" != "0" ]; then
-    echo "[infisical-admin-secret] infisical-k8s-auth-bootstrap failed; dumping logs" >&2
+    echo "[infisical-admin-secret] infisical-k8s-auth-bootstrap failed; dumping logs and resetting job" >&2
     kubectl -n infisical-bootstrap logs job/infisical-k8s-auth-bootstrap --all-containers --tail=200 || true
-    exit 1
+    kubectl -n infisical-bootstrap delete job infisical-k8s-auth-bootstrap --ignore-not-found || true
+    kubectl -n kube-system delete secret infisical-bootstrap-result --ignore-not-found || true
   fi
 fi
 
@@ -395,6 +396,8 @@ if [ "$job_succeeded" != "true" ]; then
     echo "[infisical-admin-secret] infisical-k8s-auth-bootstrap did not complete; dumping logs" >&2
     kubectl -n infisical-bootstrap logs job/infisical-k8s-auth-bootstrap --all-containers --tail=200 || true
     kubectl -n infisical-bootstrap get pods -o wide || true
+    kubectl -n infisical-bootstrap delete job infisical-k8s-auth-bootstrap --ignore-not-found || true
+    kubectl -n kube-system delete secret infisical-bootstrap-result --ignore-not-found || true
     exit 1
   fi
 fi
