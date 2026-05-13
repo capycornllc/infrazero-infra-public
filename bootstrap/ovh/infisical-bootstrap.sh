@@ -148,10 +148,22 @@ if [ -z "$INFISICAL_FQDN" ]; then
   exit 1
 fi
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..10}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[infisical-bootstrap] apt-get $* failed (attempt ${attempt}/10); retrying in 10s" >&2
+    sleep 10
+  done
+  return 1
+}
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip
+  apt_get update -y
+  apt_get install -y curl ca-certificates jq age unzip
 fi
 
 if ! command -v aws >/dev/null 2>&1; then

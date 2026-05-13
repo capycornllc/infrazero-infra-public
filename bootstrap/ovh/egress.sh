@@ -11,6 +11,18 @@ echo "[egress] $(date -Is) start"
 
 BOOTSTRAP_ROLE="egress"
 
+if ! declare -F beacon_status >/dev/null 2>&1; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$SCRIPT_DIR/beacon.sh" ]; then
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/beacon.sh"
+  else
+    beacon_status() {
+      return 0
+    }
+  fi
+fi
+
 load_env() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -983,6 +995,13 @@ services:
     ports:
       - "${INFISICAL_BIND_ADDR}:8080:8080"
 EOF
+
+if [ -n "$KUBERNETES_FQDN" ] && [ -n "$PRIVATE_IP" ]; then
+  cat >> /opt/infrazero/infisical/docker-compose.yml <<EOF
+    extra_hosts:
+      - "${KUBERNETES_FQDN}:${PRIVATE_IP}"
+EOF
+fi
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
 

@@ -206,6 +206,17 @@ resource "openstack_networking_secgroup_rule_v2" "egress_infisical" {
   remote_ip_prefix  = each.value
 }
 
+resource "openstack_networking_secgroup_rule_v2" "egress_k3s_api" {
+  for_each          = toset(local.egress_service_cidrs)
+  security_group_id = openstack_networking_secgroup_v2.egress.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 6443
+  port_range_max    = 6443
+  remote_ip_prefix  = each.value
+}
+
 resource "openstack_networking_secgroup_v2" "k3s" {
   name        = "${var.name_prefix}-k3s-sg"
   description = "K3s nodes security group"

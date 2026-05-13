@@ -59,11 +59,23 @@ require_env "S3_REGION"
 require_env "DB_BACKUP_BUCKET"
 require_env "INFISICAL_DB_BACKUP_AGE_PRIVATE_KEY"
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..10}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[infisical-admin-secret] apt-get $* failed (attempt ${attempt}/10); retrying in 10s" >&2
+    sleep 10
+  done
+  return 1
+}
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq age unzip git python3-yaml
-  apt-get install -y python3-ruamel.yaml || true
+  apt_get update -y
+  apt_get install -y curl ca-certificates jq age unzip git python3-yaml
+  apt_get install -y python3-ruamel.yaml || true
 fi
 
 wait_for_url() {
