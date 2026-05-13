@@ -132,10 +132,10 @@ ensure_aws_cli() {
 
   if command -v apt-get >/dev/null 2>&1; then
     if ! command -v unzip >/dev/null 2>&1; then
-      apt-get install -y unzip
+      apt_get install -y unzip
     fi
     if ! command -v curl >/dev/null 2>&1; then
-      apt-get install -y curl
+      apt_get install -y curl
     fi
   fi
 
@@ -168,10 +168,22 @@ ensure_aws_cli() {
   return 1
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..10}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[egress] apt-get $* failed (attempt ${attempt}/10); retrying in 10s" >&2
+    sleep 10
+  done
+  return 1
+}
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+  apt_get update -y
+  apt_get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
 fi
 
 systemctl enable --now docker
