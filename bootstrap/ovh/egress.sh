@@ -736,8 +736,11 @@ POSTGRES_USER=${INFISICAL_POSTGRES_USER}
 POSTGRES_PASSWORD=${INFISICAL_POSTGRES_PASSWORD}
 EOF
 
-INFISICAL_TLS_CERT="/etc/letsencrypt/live/infrazero-services/fullchain.pem"
-INFISICAL_TLS_KEY="/etc/letsencrypt/live/infrazero-services/privkey.pem"
+INFRAZERO_CERT_NAME="${INFRAZERO_CERT_NAME:-infrazero-services}"
+INFRAZERO_TLS_DIR="/etc/infrazero/tls/${INFRAZERO_CERT_NAME}"
+INFRAZERO_LE_LIVE_DIR="/etc/letsencrypt/live/${INFRAZERO_CERT_NAME}"
+INFISICAL_TLS_CERT="${INFRAZERO_TLS_DIR}/fullchain.pem"
+INFISICAL_TLS_KEY="${INFRAZERO_TLS_DIR}/privkey.pem"
 INFISICAL_NGINX_CONF="/etc/nginx/conf.d/infrazero-services.conf"
 INFISICAL_UPSTREAM_ADDR="${INFISICAL_BIND_ADDR}"
 if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
@@ -854,6 +857,174 @@ EOF
   systemctl restart haproxy
 }
 
+cleanup_broken_certbot_lineage() {
+  local live_dir="$INFRAZERO_LE_LIVE_DIR"
+  local archive_dir="/etc/letsencrypt/archive/${INFRAZERO_CERT_NAME}"
+  local renewal_file="/etc/letsencrypt/renewal/${INFRAZERO_CERT_NAME}.conf"
+  local backup_dir=""
+
+  if [ -d "$live_dir" ] && [ ! -f "${live_dir}/fullchain.pem" ]; then
+    backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$backup_dir"
+    mv "$live_dir" "$backup_dir/live-${INFRAZERO_CERT_NAME}" || true
+    [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+    [ -f "$renewal_file" ] && mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+    echo "[egress] moved incomplete certbot state to ${backup_dir}"
+    return 0
+  fi
+
+  if [ -d "$live_dir" ] && [ -f "${live_dir}/fullchain.pem" ]; then
+    local issuer
+    issuer=$(openssl x509 -in "${live_dir}/fullchain.pem" -noout -issuer 2>/dev/null || true)
+    if [ -n "$issuer" ] && ! echo "$issuer" | grep -qi "Let's Encrypt"; then
+      backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+      mkdir -p "$backup_dir"
+      mv "$live_dir" "$backup_dir/live-${INFRAZERO_CERT_NAME}" || true
+      [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+      [ -f "$renewal_file" ] && mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+      echo "[egress] moved non-Let's Encrypt certbot state to ${backup_dir}"
+      return 0
+    fi
+  fi
+
+  if [ -f "$renewal_file" ] && [ ! -f "${live_dir}/fullchain.pem" ]; then
+    backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$backup_dir"
+    mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+    [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+    echo "[egress] moved broken certbot renewal config to ${backup_dir}"
+  fi
+}
+
+install_certbot_retry_service() {
+  cat > /usr/local/sbin/infrazero-certbot-certonly.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -f /etc/infrazero/egress.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /etc/infrazero/egress.env
+  set +a
+fi
+
+INFRAZERO_CERT_NAME="${INFRAZERO_CERT_NAME:-infrazero-services}"
+INFRAZERO_TLS_DIR="/etc/infrazero/tls/${INFRAZERO_CERT_NAME}"
+INFRAZERO_LE_LIVE_DIR="/etc/letsencrypt/live/${INFRAZERO_CERT_NAME}"
+LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-${INFISICAL_EMAIL:-}}"
+
+if [ -z "${LETSENCRYPT_EMAIL:-}" ]; then
+  echo "[certbot-retry] LETSENCRYPT_EMAIL/INFISICAL_EMAIL is not set" >&2
+  exit 1
+fi
+if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  echo "[certbot-retry] CLOUDFLARE_API_TOKEN is not set" >&2
+  exit 1
+fi
+
+domains=()
+for var in INFISICAL_FQDN GRAFANA_FQDN LOKI_FQDN ARGOCD_FQDN KUBERNETES_FQDN; do
+  value="${!var:-}"
+  [ -n "$value" ] && domains+=("$value")
+done
+if [ "${#domains[@]}" -eq 0 ]; then
+  echo "[certbot-retry] no service FQDNs configured" >&2
+  exit 1
+fi
+
+mkdir -p /etc/letsencrypt /etc/letsencrypt/renewal-hooks/deploy
+umask 077
+printf 'dns_cloudflare_api_token = %s\n' "$CLOUDFLARE_API_TOKEN" > /etc/letsencrypt/cloudflare.ini
+umask 022
+
+live_dir="$INFRAZERO_LE_LIVE_DIR"
+archive_dir="/etc/letsencrypt/archive/${INFRAZERO_CERT_NAME}"
+renewal_file="/etc/letsencrypt/renewal/${INFRAZERO_CERT_NAME}.conf"
+if [ -d "$live_dir" ] && [ ! -f "${live_dir}/fullchain.pem" ]; then
+  backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$backup_dir"
+  mv "$live_dir" "$backup_dir/live-${INFRAZERO_CERT_NAME}" || true
+  [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+  [ -f "$renewal_file" ] && mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+  echo "[certbot-retry] moved incomplete certbot state to ${backup_dir}"
+elif [ -d "$live_dir" ] && [ -f "${live_dir}/fullchain.pem" ]; then
+  issuer=$(openssl x509 -in "${live_dir}/fullchain.pem" -noout -issuer 2>/dev/null || true)
+  if [ -n "$issuer" ] && ! echo "$issuer" | grep -qi "Let's Encrypt"; then
+    backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$backup_dir"
+    mv "$live_dir" "$backup_dir/live-${INFRAZERO_CERT_NAME}" || true
+    [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+    [ -f "$renewal_file" ] && mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+    echo "[certbot-retry] moved non-Let's Encrypt certbot state to ${backup_dir}"
+  fi
+elif [ -f "$renewal_file" ]; then
+  backup_dir="/root/letsencrypt-broken-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$backup_dir"
+  mv "$renewal_file" "$backup_dir/${INFRAZERO_CERT_NAME}.conf" || true
+  [ -d "$archive_dir" ] && mv "$archive_dir" "$backup_dir/archive-${INFRAZERO_CERT_NAME}" || true
+  echo "[certbot-retry] moved broken certbot renewal config to ${backup_dir}"
+fi
+
+domain_args=()
+for domain in "${domains[@]}"; do
+  domain_args+=("-d" "$domain")
+done
+
+certbot certonly --non-interactive --agree-tos --email "$LETSENCRYPT_EMAIL" \
+  --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+  --dns-cloudflare-propagation-seconds "${LETSENCRYPT_DNS_PROPAGATION_SECONDS:-90}" \
+  --cert-name "$INFRAZERO_CERT_NAME" --expand "${domain_args[@]}"
+
+mkdir -p "$INFRAZERO_TLS_DIR"
+ln -sfn "${INFRAZERO_LE_LIVE_DIR}/fullchain.pem" "${INFRAZERO_TLS_DIR}/fullchain.pem"
+ln -sfn "${INFRAZERO_LE_LIVE_DIR}/privkey.pem" "${INFRAZERO_TLS_DIR}/privkey.pem"
+
+if command -v nginx >/dev/null 2>&1 && nginx -t; then
+  systemctl reload nginx || true
+fi
+systemctl disable --now infrazero-certbot-retry.timer >/dev/null 2>&1 || true
+EOF
+  chmod +x /usr/local/sbin/infrazero-certbot-certonly.sh
+
+  cat > /etc/systemd/system/infrazero-certbot-retry.service <<'UNIT'
+[Unit]
+Description=Retry Let's Encrypt certificate issuance
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infrazero-certbot-certonly.sh
+TimeoutStartSec=900
+UNIT
+
+  cat > /etc/systemd/system/infrazero-certbot-retry.timer <<'TIMER'
+[Unit]
+Description=Retry certbot until the service certificate exists
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+  systemctl daemon-reload
+}
+
+generate_self_signed_service_cert() {
+  local primary_domain="$1"
+  mkdir -p "$INFRAZERO_TLS_DIR"
+  rm -f "$INFISICAL_TLS_CERT" "$INFISICAL_TLS_KEY"
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "$INFISICAL_TLS_KEY" \
+    -out "$INFISICAL_TLS_CERT" \
+    -subj "/CN=${primary_domain}" 2>/dev/null
+  chmod 600 "$INFISICAL_TLS_KEY"
+  chmod 644 "$INFISICAL_TLS_CERT"
+  echo "[egress] self-signed fallback certificate generated at ${INFRAZERO_TLS_DIR}"
+}
+
 setup_service_tls() {
   local domains=()
   if [ -n "$INFISICAL_FQDN" ]; then
@@ -877,63 +1048,38 @@ setup_service_tls() {
     return 0
   fi
 
-  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-    echo "[egress] CLOUDFLARE_API_TOKEN not set; skipping Let's Encrypt"
-    return 0
-  fi
-
   mkdir -p /etc/letsencrypt /etc/letsencrypt/renewal-hooks/deploy
   umask 077
-  cat > /etc/letsencrypt/cloudflare.ini <<EOF
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    cat > /etc/letsencrypt/cloudflare.ini <<EOF
 dns_cloudflare_api_token = ${CLOUDFLARE_API_TOKEN}
 EOF
+  fi
   umask 022
 
-  local domain_args=()
-  for domain in "${domains[@]}"; do
-    domain_args+=("-d" "$domain")
-  done
+  install_certbot_retry_service
 
-  if certbot certonly --non-interactive --agree-tos --email "$LETSENCRYPT_EMAIL" \
-    --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-    --dns-cloudflare-propagation-seconds 30 \
-    --cert-name infrazero-services --expand "${domain_args[@]}"; then
-    echo "[egress] Let's Encrypt cert issued for ${domains[*]}"
+  local issued="false"
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${LETSENCRYPT_EMAIL:-}" ]; then
+    for attempt in 1 2 3; do
+      cleanup_broken_certbot_lineage
+      if LETSENCRYPT_DNS_PROPAGATION_SECONDS="${LETSENCRYPT_DNS_PROPAGATION_SECONDS:-60}" /usr/local/sbin/infrazero-certbot-certonly.sh; then
+        issued="true"
+        echo "[egress] Let's Encrypt cert issued for ${domains[*]}"
+        break
+      fi
+      echo "[egress] Let's Encrypt issuance attempt ${attempt}/3 failed" >&2
+      if [ "$attempt" -lt 3 ]; then
+        sleep $((attempt * 30))
+      fi
+    done
   else
-    echo "[egress] Let's Encrypt issuance failed (rate limit or network issue); continuing with self-signed" >&2
-    # Generate self-signed cert as fallback so HTTPS still works
-    local ssl_dir="/etc/letsencrypt/live/infrazero-services"
-    mkdir -p "$ssl_dir"
-    if [ ! -f "$ssl_dir/fullchain.pem" ]; then
-      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$ssl_dir/privkey.pem" \
-        -out "$ssl_dir/fullchain.pem" \
-        -subj "/CN=${domains[0]}" 2>/dev/null || true
-      echo "[egress] self-signed certificate generated for ${domains[0]}"
-    fi
-    # Install a timer to retry LE cert issuance (rate limits reset after 168h)
-    cat > /etc/systemd/system/infrazero-certbot-retry.service <<'UNIT'
-[Unit]
-Description=Retry Let's Encrypt certificate issuance
-After=network-online.target
+    echo "[egress] CLOUDFLARE_API_TOKEN or LETSENCRYPT_EMAIL missing; using self-signed fallback" >&2
+  fi
 
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/certbot renew --non-interactive
-TimeoutStartSec=300
-UNIT
-    cat > /etc/systemd/system/infrazero-certbot-retry.timer <<'TIMER'
-[Unit]
-Description=Retry certbot every 6 hours
-
-[Timer]
-OnBootSec=1h
-OnUnitActiveSec=6h
-
-[Install]
-WantedBy=timers.target
-TIMER
-    systemctl daemon-reload
+  if [ "$issued" != "true" ]; then
+    echo "[egress] Let's Encrypt unavailable; continuing with isolated self-signed fallback" >&2
+    generate_self_signed_service_cert "${domains[0]}"
     systemctl enable --now infrazero-certbot-retry.timer || true
   fi
 
