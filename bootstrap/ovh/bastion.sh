@@ -170,7 +170,9 @@ if [ -z "$WG_CIDR" ]; then
   WG_CIDR="$WG_CIDR_RAW"
 fi
 
-WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-false}"
+# OVH private networks do not provide the Hetzner-style route object we use for
+# the WireGuard subnet, so SNAT WG clients to the bastion private IP by default.
+WG_SNAT_ENABLED="${WG_SNAT_ENABLED:-true}"
 WG_ALLOW_WAN="${WG_ALLOW_WAN:-false}"
 
 if [ "$SKIP_FORWARDING" != "true" ]; then
