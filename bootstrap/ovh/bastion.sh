@@ -38,11 +38,25 @@ DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
 
 beacon_status "installing_wireguard" "Installing WireGuard" 10
 
-if command -v apt-get >/dev/null 2>&1; then
+install_wireguard_packages() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 0
+  fi
+
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y wireguard wireguard-tools unzip
-fi
+  for attempt in {1..20}; do
+    if timeout 300 apt-get update -y && timeout 600 apt-get install -y wireguard wireguard-tools unzip; then
+      return 0
+    fi
+    echo "[bastion] apt-get install wireguard failed (attempt ${attempt}/20); retrying in 10s" >&2
+    sleep 10
+  done
+
+  echo "[bastion] unable to install WireGuard packages" >&2
+  return 1
+}
+
+install_wireguard_packages
 
 mkdir -p /etc/wireguard
 chmod 700 /etc/wireguard
