@@ -111,6 +111,72 @@ EOF
 
 sysctl --system
 
+configure_bastion_private_if() {
+  if [ -z "${BASTION_PRIVATE_IP:-}" ] || [ -z "${PRIVATE_CIDR:-}" ]; then
+    return 0
+  fi
+  if ip -4 -o addr show | awk -v ip="$BASTION_PRIVATE_IP" '{split($4, parts, "/"); if (parts[1]==ip) found=1} END {exit found ? 0 : 1}'; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local public_if private_if private_gw
+  public_if=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  private_if=$(PUBLIC_IF="$public_if" python3 - <<'PY'
+import os
+import re
+import subprocess
+
+public_if = os.environ.get("PUBLIC_IF", "")
+skip_prefixes = ("br-", "docker", "veth", "wg", "tun", "tap")
+links = subprocess.check_output(["ip", "-o", "link", "show"]).decode().splitlines()
+for line in links:
+    match = re.match(r"\d+:\s+([^:@]+)", line)
+    if not match:
+        continue
+    ifname = match.group(1)
+    if ifname == "lo" or ifname == public_if or any(ifname.startswith(prefix) for prefix in skip_prefixes):
+        continue
+    print(ifname)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+  ) || true
+  if [ -z "$private_if" ]; then
+    echo "[bastion] unable to find unconfigured private interface for ${BASTION_PRIVATE_IP}" >&2
+    return 0
+  fi
+
+  private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+print(str(net.network_address + 1 if net.num_addresses > 1 else net.network_address))
+PY
+  ) || return 0
+
+  ip link set dev "$private_if" up || true
+  sysctl -w "net.ipv4.conf.${private_if}.rp_filter=0" >/dev/null 2>&1 || true
+  ip addr replace "${BASTION_PRIVATE_IP}/32" dev "$private_if" || true
+  ip route replace "${private_gw}/32" dev "$private_if" scope link || true
+  ip route del "${private_gw}/32" dev wg0 2>/dev/null || true
+  ip route del "$PRIVATE_CIDR" dev wg0 2>/dev/null || true
+  ip route del "$PRIVATE_CIDR" dev "$public_if" 2>/dev/null || true
+  if [ -n "${WG_CIDR:-}" ] && [ -n "$public_if" ]; then
+    ip route del "$WG_CIDR" via "$private_gw" dev "$public_if" 2>/dev/null || true
+  fi
+  ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$private_if" onlink metric 50 || true
+  echo "[bastion] configured private interface ${private_if} with ${BASTION_PRIVATE_IP}/32"
+}
+
+configure_bastion_private_if
+
 detect_private_if() {
   local private_if=""
   private_if=$(ip -4 route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
@@ -124,7 +190,7 @@ detect_private_if() {
     local public_if=""
     public_if=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
     if [ -n "$public_if" ]; then
-      private_if=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" {print $2; exit}')
+      private_if=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" && $2 !~ /^wg/ && $2 !~ /^docker/ && $2 !~ /^br-/ && $2 !~ /^veth/ {print $2; exit}')
     fi
   fi
   echo "$private_if"
@@ -311,7 +377,7 @@ for line in output.splitlines():
     if len(parts) < 4:
         continue
     ifname = parts[1]
-    if ifname == "lo" or ifname == public_if:
+    if ifname == "lo" or ifname == public_if or ifname.startswith(("wg", "docker", "br-", "veth")):
         continue
     addr = parts[3].split("/")[0]
     try:
@@ -331,7 +397,7 @@ PY
   fi
 
   if [ -z "$ifname" ]; then
-    ifname=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" {print $2; exit}')
+    ifname=$(ip -4 -o addr show | awk -v pub="$public_if" '$2 != pub && $2 != "lo" && $2 !~ /^wg/ && $2 !~ /^docker/ && $2 !~ /^br-/ && $2 !~ /^veth/ {print $2; exit}')
   fi
   echo "$ifname"
 }
