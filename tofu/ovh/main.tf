@@ -75,9 +75,15 @@ resource "openstack_compute_keypair_v2" "ops" {
 #  Placement Groups (anti-affinity)                                    #
 # ------------------------------------------------------------------ #
 
-resource "openstack_compute_servergroup_v2" "main" {
-  count    = var.placement_groups.enabled ? 1 : 0
-  name     = "${var.name_prefix}-sg"
+resource "openstack_compute_servergroup_v2" "k3s_control_plane" {
+  count    = var.placement_groups.enabled && local.k3s_control_planes_count > 1 ? 1 : 0
+  name     = "${var.name_prefix}-k3s-cp-sg"
+  policies = ["anti-affinity"]
+}
+
+resource "openstack_compute_servergroup_v2" "db" {
+  count    = var.placement_groups.enabled && length(var.db_replicas) > 0 ? 1 : 0
+  name     = "${var.name_prefix}-db-placement-sg"
   policies = ["anti-affinity"]
 }
 
@@ -368,12 +374,6 @@ resource "openstack_compute_instance_v2" "bastion" {
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
-  dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
-    content {
-      group = openstack_compute_servergroup_v2.main[0].id
-    }
-  }
 }
 
 resource "openstack_compute_instance_v2" "egress" {
@@ -401,12 +401,6 @@ resource "openstack_compute_instance_v2" "egress" {
 
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
-  dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
-    content {
-      group = openstack_compute_servergroup_v2.main[0].id
-    }
-  }
 }
 
 resource "openstack_compute_instance_v2" "k3s" {
@@ -438,9 +432,9 @@ resource "openstack_compute_instance_v2" "k3s" {
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
   dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
+    for_each = var.placement_groups.enabled && local.k3s_control_planes_count > 1 && tonumber(each.key) < local.k3s_control_planes_count ? [1] : []
     content {
-      group = openstack_compute_servergroup_v2.main[0].id
+      group = openstack_compute_servergroup_v2.k3s_control_plane[0].id
     }
   }
 }
@@ -471,9 +465,9 @@ resource "openstack_compute_instance_v2" "db" {
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
   dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
+    for_each = var.placement_groups.enabled && length(var.db_replicas) > 0 ? [1] : []
     content {
-      group = openstack_compute_servergroup_v2.main[0].id
+      group = openstack_compute_servergroup_v2.db[0].id
     }
   }
 }
@@ -574,9 +568,9 @@ resource "openstack_compute_instance_v2" "db_replica" {
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
   dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
+    for_each = var.placement_groups.enabled && length(var.db_replicas) > 0 ? [1] : []
     content {
-      group = openstack_compute_servergroup_v2.main[0].id
+      group = openstack_compute_servergroup_v2.db[0].id
     }
   }
 }
@@ -641,9 +635,9 @@ resource "openstack_compute_instance_v2" "pgbouncer" {
   depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
 
   dynamic "scheduler_hints" {
-    for_each = var.placement_groups.enabled ? [1] : []
+    for_each = var.placement_groups.enabled && length(var.db_replicas) > 0 ? [1] : []
     content {
-      group = openstack_compute_servergroup_v2.main[0].id
+      group = openstack_compute_servergroup_v2.db[0].id
     }
   }
 }
