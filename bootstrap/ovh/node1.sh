@@ -225,17 +225,21 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-admin-secret.sh" ]; then
     chmod +x ./infisical-admin-secret.sh
     infisical_ok=false
-    for infisical_attempt in 1 2 3 4 5; do
-      echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/5"
+    infisical_attempts="${INFISICAL_BOOTSTRAP_ATTEMPTS:-1}"
+    infisical_retry_delay="${INFISICAL_BOOTSTRAP_RETRY_DELAY:-120}"
+    for infisical_attempt in $(seq 1 "$infisical_attempts"); do
+      echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/${infisical_attempts}"
       if ./infisical-admin-secret.sh; then
         infisical_ok=true
         break
       fi
-      echo "[node1] infisical-admin-secret.sh failed (attempt ${infisical_attempt}/5); retrying in 120s" >&2
-      sleep 120
+      if [ "$infisical_attempt" -lt "$infisical_attempts" ]; then
+        echo "[node1] infisical-admin-secret.sh failed (attempt ${infisical_attempt}/${infisical_attempts}); retrying in ${infisical_retry_delay}s" >&2
+        sleep "$infisical_retry_delay"
+      fi
     done
     if [ "$infisical_ok" != "true" ]; then
-      echo "[node1] WARNING: infisical-admin-secret.sh failed after 5 attempts; installing retry timer" >&2
+      echo "[node1] WARNING: infisical-admin-secret.sh failed after ${infisical_attempts} attempt(s); installing retry timer" >&2
       # Create a systemd timer to retry infisical-admin-secret.sh every 5 minutes
       # until it succeeds. This handles the case where Infisical on egress starts
       # after node1 bootstrap completes.
