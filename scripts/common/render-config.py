@@ -487,11 +487,16 @@ def main() -> int:
     if not s3_endpoint:
         missing_env.append("S3_ENDPOINT")
 
+    cloud_provider = (optional_env("CLOUD_PROVIDER") or str(config.get("cloud_provider", "")) or "hetzner").strip().lower()
+    if cloud_provider == "ovh":
+        cloud_provider = "ovhcloud"
+    pgbouncer_server_type_default = "b2-7" if cloud_provider == "ovhcloud" else "cx23"
+
     bastion_server_type = require_env("BASTION_SERVER_TYPE")
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
-    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or "cx23"
+    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or pgbouncer_server_type_default
 
     db_type = require_env("DB_TYPE")
     db_version = require_env("DB_VERSION")
@@ -955,6 +960,10 @@ def main() -> int:
         errors.append("PATRONI_ENABLED=true requires DB_REPLICA_ENABLED=true")
     if patroni_enabled and k3s_control_planes_count < 3:
         errors.append("PATRONI_ENABLED=true requires K3S_CONTROL_PLANES_COUNT >= 3 (embedded etcd)")
+    if pgbouncer_enabled and not db_replica_enabled:
+        errors.append("PGBOUNCER_ENABLED=true requires DB_REPLICA_ENABLED=true")
+    if pgbouncer_enabled and not patroni_enabled:
+        errors.append("PGBOUNCER_ENABLED=true requires PATRONI_ENABLED=true")
 
     # Build etcd endpoints from K3s control plane IPs
     etcd_endpoints = ""

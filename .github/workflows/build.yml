@@ -388,6 +388,19 @@ jobs:
           [ -n "$NODE1_IP" ] && SERVERS="${SERVERS},node1:${NODE1_IP}"
           DB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw db_private_ipv4 2>/dev/null || true)
           [ -n "$DB_IP" ] && SERVERS="${SERVERS},db:${DB_IP}"
+          DB_REPLICA_IPS=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json db_replica_private_ips 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+          replica_idx=1
+          while IFS= read -r replica_ip; do
+            [ -z "$replica_ip" ] && continue
+            replica_role="db-replica"
+            if [ "$replica_idx" -gt 1 ]; then
+              replica_role="db-replica-${replica_idx}"
+            fi
+            SERVERS="${SERVERS},${replica_role}:${replica_ip}"
+            replica_idx=$((replica_idx + 1))
+          done <<< "$DB_REPLICA_IPS"
+          PGBOUNCER_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw pgbouncer_private_ip 2>/dev/null || true)
+          [ -n "$PGBOUNCER_IP" ] && SERVERS="${SERVERS},pgbouncer:${PGBOUNCER_IP}"
 
           export BOOTSTRAP_SERVER_LIST="$SERVERS"
 
