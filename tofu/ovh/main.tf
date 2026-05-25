@@ -272,7 +272,19 @@ resource "openstack_networking_secgroup_rule_v2" "k3s_kubelet" {
   remote_ip_prefix  = each.value
 }
 
-# etcd-patroni: dedicated etcd for Patroni on K3s control planes
+# K3s embedded etcd for HA control-plane membership.
+resource "openstack_networking_secgroup_rule_v2" "k3s_embedded_etcd" {
+  for_each          = local.k3s_ha_enabled ? toset(local.k3s_control_plane_cidrs) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.k3s.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 2379
+  port_range_max    = 2380
+  remote_ip_prefix  = each.value
+}
+
+# Dedicated etcd for Patroni on K3s control planes.
 resource "openstack_networking_secgroup_rule_v2" "k3s_etcd" {
   for_each          = local.k3s_ha_enabled ? toset(concat(local.k3s_control_plane_cidrs, [local.db_cidr], local.db_replica_cidrs)) : toset([])
   security_group_id = openstack_networking_secgroup_v2.k3s.id
