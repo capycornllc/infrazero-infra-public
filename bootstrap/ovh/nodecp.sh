@@ -60,6 +60,19 @@ retry() {
   return 1
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..12}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[nodecp] apt-get $* failed (attempt ${attempt}/12); retrying in 10s" >&2
+    apt-get clean 2>/dev/null || true
+    sleep 10
+  done
+  return 1
+}
+
 PRIVATE_CIDR="${PRIVATE_CIDR:-}"
 
 detect_private_iface() {
@@ -109,8 +122,8 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq unzip
+  apt_get update -y
+  apt_get install -y curl ca-certificates jq unzip
 fi
 
 K3S_SERVER_TAINT="${K3S_SERVER_TAINT:-false}"

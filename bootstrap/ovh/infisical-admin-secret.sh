@@ -288,7 +288,15 @@ fi
 
 INFISICAL_KUBERNETES_HOST="${INFISICAL_KUBERNETES_HOST:-}"
 if [ -z "$INFISICAL_KUBERNETES_HOST" ]; then
-  INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
+  if [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
+    INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
+  elif [ -n "${K3S_SERVER_IP:-}" ]; then
+    INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
+  elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
+    INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
+  else
+    INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
+  fi
 fi
 export INFISICAL_KUBERNETES_HOST
 echo "[infisical-admin-secret] using INFISICAL_KUBERNETES_HOST=${INFISICAL_KUBERNETES_HOST}"
@@ -371,6 +379,26 @@ git_push_changes() {
 bootstrap_kustomize_dir="${GITOPS_DIR}/clusters/${ENV}/bootstrap/infisical-k8s-auth"
 if [ ! -d "$bootstrap_kustomize_dir" ]; then
   echo "[infisical-admin-secret] missing gitops bootstrap dir: ${bootstrap_kustomize_dir}" >&2
+  exit 1
+fi
+
+bootstrap_configmap_file="${bootstrap_kustomize_dir}/configmap.yaml"
+if [ -f "$bootstrap_configmap_file" ]; then
+  python3 - <<'PY' "$bootstrap_configmap_file" "$INFISICAL_KUBERNETES_HOST"
+import re
+import sys
+
+path, kube_host = sys.argv[1], sys.argv[2]
+text = open(path, "r", encoding="utf-8").read()
+next_text, count = re.subn(r'KUBE_HOST="[^"]*"', f'KUBE_HOST="{kube_host}"', text, count=1)
+if count == 0:
+    raise SystemExit("KUBE_HOST assignment not found in infisical k8s auth configmap")
+if next_text != text:
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(next_text)
+PY
+else
+  echo "[infisical-admin-secret] missing bootstrap configmap: ${bootstrap_configmap_file}" >&2
   exit 1
 fi
 

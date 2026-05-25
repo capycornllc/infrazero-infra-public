@@ -45,7 +45,7 @@ install_wireguard_packages() {
 
   export DEBIAN_FRONTEND=noninteractive
   for attempt in {1..20}; do
-    if timeout 300 apt-get update -y && timeout 600 apt-get install -y wireguard wireguard-tools unzip; then
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 update -y && timeout 1200 apt-get -o DPkg::Lock::Timeout=600 install -y wireguard wireguard-tools unzip; then
       return 0
     fi
     echo "[bastion] apt-get install wireguard failed (attempt ${attempt}/20); retrying in 10s" >&2

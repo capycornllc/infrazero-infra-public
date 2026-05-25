@@ -26,6 +26,19 @@ require_env() {
   fi
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..12}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[pgbouncer] apt-get $* failed (attempt ${attempt}/12); retrying in 10s" >&2
+    apt-get clean 2>/dev/null || true
+    sleep 10
+  done
+  return 1
+}
+
 require_env "DB_PRIMARY_HOST"
 require_env "PGBOUNCER_AUTH_USER"
 require_env "PGBOUNCER_AUTH_PASSWORD"
@@ -48,8 +61,8 @@ PATRONI_REST_PORT="${PATRONI_REST_PORT:-8008}"
 install_packages() {
   beacon_status "installing_packages" "Installing PgBouncer" 15
   export DEBIAN_FRONTEND=noninteractive
-  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
-  timeout 600 apt-get install -y pgbouncer curl jq postgresql-client
+  apt_get update -y || { apt-get clean; apt_get update -y; }
+  apt_get install -y pgbouncer curl jq postgresql-client
 }
 
 install_packages

@@ -139,7 +139,7 @@ install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     for attempt in {1..5}; do
-      if timeout 300 apt-get update -y && timeout 600 apt-get install -y curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades; then
+      if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 update -y && timeout 1200 apt-get -o DPkg::Lock::Timeout=600 install -y curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades; then
         return 0
       fi
       echo "[common] apt-get attempt ${attempt}/5 failed or timed out; retrying in 10s..." >&2

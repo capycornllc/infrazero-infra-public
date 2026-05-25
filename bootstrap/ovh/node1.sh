@@ -51,6 +51,19 @@ retry() {
   return 1
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..12}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[node1] apt-get $* failed (attempt ${attempt}/12); retrying in 10s" >&2
+    apt-get clean 2>/dev/null || true
+    sleep 10
+  done
+  return 1
+}
+
 PRIVATE_CIDR="${PRIVATE_CIDR:-}"
 
 detect_private_iface() {
@@ -101,8 +114,8 @@ fi
 if command -v apt-get >/dev/null 2>&1; then
   beacon_status "installing_packages" "Installing packages" 10
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq unzip apache2-utils openssl
+  apt_get update -y
+  apt_get install -y curl ca-certificates jq unzip apache2-utils openssl
 fi
 
 if ! command -v argocd >/dev/null 2>&1; then

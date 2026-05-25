@@ -37,6 +37,19 @@ require_env() {
   fi
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..12}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[db] apt-get $* failed (attempt ${attempt}/12); retrying in 10s" >&2
+    apt-get clean 2>/dev/null || true
+    sleep 10
+  done
+  return 1
+}
+
 require_env "DB_TYPE"
 require_env "DB_VERSION"
 require_env "DATABASES_JSON"
@@ -73,17 +86,17 @@ install_packages() {
     return
   fi
   export DEBIAN_FRONTEND=noninteractive
-  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
-  timeout 600 apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
+  apt_get update -y || { apt-get clean; apt_get update -y; }
+  apt_get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    timeout 300 apt-get update -y
+    apt_get update -y
   fi
 
-  timeout 600 apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}"
+  apt_get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}"
 }
 
 install_packages
@@ -133,6 +146,30 @@ find_db_volume_device() {
   fi
 
   candidate=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
+  if [ -n "$candidate" ]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  # OVH can expose attached volumes as a plain QEMU disk by serial, without a
+  # by-id link containing the OpenStack volume name.
+  candidate=$(lsblk -rpno NAME,TYPE,MOUNTPOINT 2>/dev/null | awk '
+    $2 == "disk" {
+      disk = $1
+      mounted = 0
+      cmd = "lsblk -nrpo MOUNTPOINT " disk
+      while ((cmd | getline mp) > 0) {
+        if (mp ~ "^/") {
+          mounted = 1
+        }
+      }
+      close(cmd)
+      if (mounted == 0 && disk !~ "^/dev/(loop|ram|sr)") {
+        print disk
+        exit
+      }
+    }
+  ' || true)
   if [ -n "$candidate" ]; then
     echo "$candidate"
     return 0
@@ -1277,6 +1314,25 @@ find_volume_device() {
     if [ -z "$device" ]; then
       device=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
     fi
+    if [ -z "$device" ]; then
+      device=$(lsblk -rpno NAME,TYPE,MOUNTPOINT 2>/dev/null | awk '
+        $2 == "disk" {
+          disk = $1
+          mounted = 0
+          cmd = "lsblk -nrpo MOUNTPOINT " disk
+          while ((cmd | getline mp) > 0) {
+            if (mp ~ "^/") {
+              mounted = 1
+            }
+          }
+          close(cmd)
+          if (mounted == 0 && disk !~ "^/dev/(loop|ram|sr)") {
+            print disk
+            exit
+          }
+        }
+      ' || true)
+    fi
   fi
   if [ -z "$device" ]; then
     echo "[db-restore] no attached volume device found" >&2
@@ -1930,7 +1986,7 @@ install_additional_pg_restore_clients() {
   fi
 
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y >/dev/null 2>&1 || true
+  apt_get update -y >/dev/null 2>&1 || true
 
   for candidate_major in 18 17 16; do
     if apt-cache show "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
@@ -1948,7 +2004,7 @@ install_additional_pg_restore_clients() {
         echo "[db-restore] enabling PGDG repo for newer pg_restore clients"
         curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg || true
         echo "deb http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-        apt-get update -y >/dev/null 2>&1 || true
+        apt_get update -y >/dev/null 2>&1 || true
       fi
     fi
   fi
@@ -1964,7 +2020,7 @@ install_additional_pg_restore_clients() {
       continue
     fi
     echo "[db-restore] installing postgresql-client-${candidate_major} for dump compatibility"
-    if apt-get install -y "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
+    if apt_get install -y "postgresql-client-${candidate_major}" >/dev/null 2>&1; then
       installed="true"
     fi
   done
@@ -2490,7 +2546,7 @@ PY
   fi
 
   echo "[db] installing Patroni"
-  apt-get install -y python3-pip python3-venv || true
+  apt_get install -y python3-pip python3-venv || true
 
   python3 -m venv /opt/patroni/venv
   /opt/patroni/venv/bin/pip install --upgrade pip

@@ -27,6 +27,19 @@ require_env() {
   fi
 }
 
+apt_get() {
+  local attempt=0
+  for attempt in {1..12}; do
+    if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 "$@"; then
+      return 0
+    fi
+    echo "[db-replica] apt-get $* failed (attempt ${attempt}/12); retrying in 10s" >&2
+    apt-get clean 2>/dev/null || true
+    sleep 10
+  done
+  return 1
+}
+
 require_env "DB_TYPE"
 require_env "DB_VERSION"
 require_env "DB_PRIMARY_HOST"
@@ -54,17 +67,17 @@ install_packages() {
     return
   fi
   export DEBIAN_FRONTEND=noninteractive
-  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
-  timeout 600 apt-get install -y curl ca-certificates jq gnupg lsb-release
+  apt_get update -y || { apt-get clean; apt_get update -y; }
+  apt_get install -y curl ca-certificates jq gnupg lsb-release
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db-replica] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    timeout 300 apt-get update -y
+    apt_get update -y
   fi
 
-  timeout 600 apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}"
+  apt_get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}"
 }
 
 install_packages
@@ -358,7 +371,7 @@ PY
   fi
 
   echo "[db-replica] installing Patroni"
-  apt-get install -y python3-pip python3-venv || true
+  apt_get install -y python3-pip python3-venv || true
 
   python3 -m venv /opt/patroni/venv
   /opt/patroni/venv/bin/pip install --upgrade pip
