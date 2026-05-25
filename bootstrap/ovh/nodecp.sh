@@ -37,6 +37,14 @@ require_env "K3S_TOKEN"
 require_env "K3S_SERVER_URL"
 require_env "EGRESS_LOKI_URL"
 
+K3S_CONTROL_PLANE_JOIN_URL="${K3S_CONTROL_PLANE_JOIN_URL:-}"
+if [ -z "$K3S_CONTROL_PLANE_JOIN_URL" ] && [ -n "${K3S_SERVER_IP:-}" ]; then
+  K3S_CONTROL_PLANE_JOIN_URL="https://${K3S_SERVER_IP}:6443"
+fi
+if [ -z "$K3S_CONTROL_PLANE_JOIN_URL" ]; then
+  K3S_CONTROL_PLANE_JOIN_URL="$K3S_SERVER_URL"
+fi
+
 retry() {
   local attempts="$1"
   local delay="$2"
@@ -120,13 +128,26 @@ fi
 retry 10 5 curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
 chmod +x /tmp/k3s-install.sh
 
+echo "[nodecp] waiting for primary K3s API at ${K3S_CONTROL_PLANE_JOIN_URL}"
+for i in {1..90}; do
+  if curl -skf "${K3S_CONTROL_PLANE_JOIN_URL}/cacerts" >/dev/null; then
+    echo "[nodecp] primary K3s API is ready"
+    break
+  fi
+  if [ "$i" -eq 90 ]; then
+    echo "[nodecp] primary K3s API did not become ready at ${K3S_CONTROL_PLANE_JOIN_URL}" >&2
+    exit 1
+  fi
+  sleep 5
+done
+
 install_k3s() {
   local attempts=5
   local delay=10
   local i
   for i in $(seq 1 "$attempts"); do
     set +e
-    INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC" K3S_URL="$K3S_SERVER_URL" K3S_TOKEN="$K3S_TOKEN" /tmp/k3s-install.sh
+    INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC" K3S_URL="$K3S_CONTROL_PLANE_JOIN_URL" K3S_TOKEN="$K3S_TOKEN" /tmp/k3s-install.sh
     local rc=$?
     set -e
 

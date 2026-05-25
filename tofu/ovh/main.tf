@@ -786,6 +786,15 @@ resource "openstack_lb_monitor_v2" "k3s_api" {
   max_retries = var.load_balancer.health_check.retries
 }
 
+resource "openstack_lb_monitor_v2" "k3s_api_join" {
+  count       = local.k3s_ha_enabled ? 1 : 0
+  pool_id     = openstack_lb_pool_v2.k3s_api_9345[0].id
+  type        = "TCP"
+  delay       = var.load_balancer.health_check.interval
+  timeout     = var.load_balancer.health_check.timeout
+  max_retries = var.load_balancer.health_check.retries
+}
+
 # ------------------------------------------------------------------ #
 #  Floating IPs (public access)                                        #
 # ------------------------------------------------------------------ #
