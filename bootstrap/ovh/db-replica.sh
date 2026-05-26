@@ -117,16 +117,18 @@ chmod 700 "$DEFAULT_DATA_DIR"
 # ------------------------------------------------------------------ #
 
 echo "[db-replica] waiting for primary at ${DB_PRIMARY_HOST}:5432"
-for attempt in $(seq 1 60); do
+primary_wait_attempts="${DB_REPLICA_PRIMARY_WAIT_ATTEMPTS:-360}"
+primary_wait_delay="${DB_REPLICA_PRIMARY_WAIT_DELAY:-5}"
+for attempt in $(seq 1 "$primary_wait_attempts"); do
   if pg_isready -h "$DB_PRIMARY_HOST" -p 5432 -U "$DB_REPLICATION_USER" -q 2>/dev/null; then
     echo "[db-replica] primary is ready (attempt ${attempt})"
     break
   fi
-  if [ "$attempt" -eq 60 ]; then
-    echo "[db-replica] primary not ready after 60 attempts" >&2
+  if [ "$attempt" -eq "$primary_wait_attempts" ]; then
+    echo "[db-replica] primary not ready after ${primary_wait_attempts} attempts" >&2
     exit 1
   fi
-  sleep 5
+  sleep "$primary_wait_delay"
 done
 
 # ------------------------------------------------------------------ #

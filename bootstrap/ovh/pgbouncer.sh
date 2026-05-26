@@ -148,13 +148,9 @@ EOF
   chown postgres:postgres "$config_path"
 }
 
-# Determine read backends: all replicas if available, else primary
-# PgBouncer supports comma-separated host list for round-robin (1.21+)
+# Start both pools on the primary. The Patroni watcher moves reads to
+# replicas once they are actually visible in the cluster.
 read_backend="${DB_PRIMARY_HOST}"
-if [ -n "$DB_REPLICA_HOSTS" ]; then
-  # Replace commas with commas (already comma-separated) — just trim whitespace
-  read_backend=$(echo "$DB_REPLICA_HOSTS" | tr ',' '\n' | xargs | tr ' ' ',')
-fi
 
 write_userlist /etc/pgbouncer/userlist-write.txt "$PGBOUNCER_AUTH_USER" "$PGBOUNCER_AUTH_PASSWORD"
 write_userlist /etc/pgbouncer/userlist-read.txt "$PGBOUNCER_AUTH_USER" "$PGBOUNCER_AUTH_PASSWORD"
@@ -244,7 +240,7 @@ done
 
 if [ -z "$new_primary" ]; then
   log "WARNING: could not determine Patroni leader from any DB node; using first host as primary"
-  new_primary=$(echo "$all_hosts" | head -1)
+  new_primary=$(echo "$all_hosts" | awk '{print $1}')
 fi
 
 changed=false
@@ -349,15 +345,19 @@ systemctl enable --now pgbouncer-read
 # ------------------------------------------------------------------ #
 
 echo "[pgbouncer] waiting for PgBouncer instances to start"
+health_host="$LISTEN_ADDR"
+if [ "$health_host" = "0.0.0.0" ] || [ "$health_host" = "::" ]; then
+  health_host="127.0.0.1"
+fi
 for attempt in $(seq 1 15); do
   write_ok=false
   read_ok=false
 
-  if psql -h 127.0.0.1 -p "$PGBOUNCER_WRITE_PORT" -U "$PGBOUNCER_AUTH_USER" \
+  if PGPASSWORD="$PGBOUNCER_AUTH_PASSWORD" psql -h "$health_host" -p "$PGBOUNCER_WRITE_PORT" -U "$PGBOUNCER_AUTH_USER" \
     -c "SHOW DATABASES;" pgbouncer >/dev/null 2>&1; then
     write_ok=true
   fi
-  if psql -h 127.0.0.1 -p "$PGBOUNCER_READ_PORT" -U "$PGBOUNCER_AUTH_USER" \
+  if PGPASSWORD="$PGBOUNCER_AUTH_PASSWORD" psql -h "$health_host" -p "$PGBOUNCER_READ_PORT" -U "$PGBOUNCER_AUTH_USER" \
     -c "SHOW DATABASES;" pgbouncer >/dev/null 2>&1; then
     read_ok=true
   fi

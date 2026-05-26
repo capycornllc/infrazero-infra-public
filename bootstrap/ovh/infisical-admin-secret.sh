@@ -339,7 +339,7 @@ git_sync_repo() {
     echo "[infisical-admin-secret] git fetch failed; continuing without pre-sync" >&2
     return 0
   fi
-  if ! git -C "$GITOPS_DIR" rebase -X theirs "origin/${branch}"; then
+  if ! git -C "$GITOPS_DIR" rebase --autostash -X theirs "origin/${branch}"; then
     git -C "$GITOPS_DIR" rebase --abort || true
     echo "[infisical-admin-secret] git rebase failed; continuing without pre-sync" >&2
     return 0
@@ -364,7 +364,7 @@ git_push_changes() {
     echo "[infisical-admin-secret] git fetch failed; please push manually" >&2
     return 1
   fi
-  if ! git -C "$GITOPS_DIR" rebase -X theirs "origin/${branch}"; then
+  if ! git -C "$GITOPS_DIR" rebase --autostash -X theirs "origin/${branch}"; then
     git -C "$GITOPS_DIR" rebase --abort || true
     echo "[infisical-admin-secret] git rebase failed; please resolve and push manually" >&2
     return 1
@@ -970,15 +970,30 @@ if [ -n "$spc_app_file" ]; then
   fi
 
   if [ "${#spc_files[@]}" -gt 0 ]; then
+    rm -f "${spc_render_dir}/placeholder.yaml"
+  else
     {
-      echo "apiVersion: kustomize.config.k8s.io/v1beta1"
-      echo "kind: Kustomization"
-      echo "resources:"
-      for file in "${spc_files[@]}"; do
-        echo "  - ${file}"
-      done
-    } > "${spc_render_dir}/kustomization.yaml"
+      echo "apiVersion: v1"
+      echo "kind: ConfigMap"
+      echo "metadata:"
+      echo "  name: infisical-secretproviderclass-placeholder"
+      echo "  namespace: ${spc_namespace_target:-default}"
+      echo "  labels:"
+      echo "    app.kubernetes.io/managed-by: infrazero"
+      echo "data:"
+      echo "  reason: \"No SecretProviderClass generated because no CSI-enabled workload has available Infisical secrets.\""
+    } > "${spc_render_dir}/placeholder.yaml"
+    spc_files=("placeholder.yaml")
   fi
+
+  {
+    echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+    echo "kind: Kustomization"
+    echo "resources:"
+    for file in "${spc_files[@]}"; do
+      echo "  - ${file}"
+    done
+  } > "${spc_render_dir}/kustomization.yaml"
 
   if [ -d "$spc_render_dir" ]; then
     for file in "$spc_render_dir"/spc-*.yaml; do
@@ -1278,6 +1293,9 @@ if [ -d "$sync_overlay_dir" ]; then
 fi
 if [ -f "$cluster_kustomization" ]; then
   git -C "$GITOPS_DIR" add "$cluster_kustomization"
+fi
+if [ -f "$bootstrap_configmap_file" ]; then
+  git -C "$GITOPS_DIR" add "$bootstrap_configmap_file"
 fi
 if ! git -C "$GITOPS_DIR" diff --cached --quiet; then
   git -C "$GITOPS_DIR" commit -m "Configure Infisical k8s auth overlay"
