@@ -317,6 +317,13 @@ PY
     return 1
   fi
 
+  if systemctl is-active --quiet etcd-patroni 2>/dev/null \
+    && ss -tln | grep -q ":${client_port} " \
+    && ss -tln | grep -q ":${peer_port} "; then
+    echo "[nodecp] etcd-patroni already running; skipping install"
+    return 0
+  fi
+
   local arch="amd64"
   local etcd_url="https://github.com/etcd-io/etcd/releases/download/v${etcd_version}/etcd-v${etcd_version}-linux-${arch}.tar.gz"
   local tmpdir
@@ -338,7 +345,7 @@ PY
       local occupant
       occupant=$(ss -tlnp | grep ":${check_port} " | head -1)
       echo "[nodecp] ERROR: port ${check_port} already in use: ${occupant}" >&2
-      echo "[nodecp] etcd-patroni cannot start — pick different ports via ETCD_PATRONI_CLIENT_PORT / ETCD_PATRONI_PEER_PORT" >&2
+      echo "[nodecp] etcd-patroni cannot start - pick different ports via ETCD_PATRONI_CLIENT_PORT / ETCD_PATRONI_PEER_PORT" >&2
       return 1
     fi
   done
@@ -350,7 +357,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/local/bin/etcd-patroni \\
   --name ${etcd_name} \\
   --data-dir /var/lib/etcd-patroni \\
@@ -373,17 +380,21 @@ UNIT_EOF
   systemctl enable --now etcd-patroni
 
   echo "[nodecp] waiting for etcd-patroni to start"
-  for attempt in $(seq 1 30); do
+  for attempt in $(seq 1 60); do
     if ETCDCTL_API=3 /usr/local/bin/etcdctl-patroni \
       --endpoints="http://127.0.0.1:${client_port}" \
       endpoint health >/dev/null 2>&1; then
       echo "[nodecp] etcd-patroni healthy (attempt ${attempt})"
       return 0
     fi
+    if ss -tln | grep -q ":${client_port} " && ss -tln | grep -q ":${peer_port} "; then
+      echo "[nodecp] etcd-patroni listeners ready (attempt ${attempt})"
+      return 0
+    fi
     sleep 3
   done
 
-  echo "[nodecp] etcd-patroni did not become healthy" >&2
+  echo "[nodecp] etcd-patroni did not start listening" >&2
   systemctl status etcd-patroni --no-pager || true
   journalctl -u etcd-patroni -n 30 --no-pager || true
   return 1

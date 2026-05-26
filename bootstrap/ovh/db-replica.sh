@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LOG_FILE="${INFRAZERO_BOOTSTRAP_LOG:-/var/log/infrazero-bootstrap.log}"
+mkdir -p "$(dirname "$LOG_FILE")"
+if [ -z "${INFRAZERO_LOG_REDIRECTED:-}" ]; then
+  export INFRAZERO_LOG_REDIRECTED=1
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
 echo "[db-replica] $(date -Is) start"
 
 BOOTSTRAP_ROLE="db-replica"
@@ -117,7 +124,7 @@ chmod 700 "$DEFAULT_DATA_DIR"
 # ------------------------------------------------------------------ #
 
 echo "[db-replica] waiting for primary at ${DB_PRIMARY_HOST}:5432"
-primary_wait_attempts="${DB_REPLICA_PRIMARY_WAIT_ATTEMPTS:-360}"
+primary_wait_attempts="${DB_REPLICA_PRIMARY_WAIT_ATTEMPTS:-720}"
 primary_wait_delay="${DB_REPLICA_PRIMARY_WAIT_DELAY:-5}"
 for attempt in $(seq 1 "$primary_wait_attempts"); do
   if pg_isready -h "$DB_PRIMARY_HOST" -p 5432 -U "$DB_REPLICATION_USER" -q 2>/dev/null; then

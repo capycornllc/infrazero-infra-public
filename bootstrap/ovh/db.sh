@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LOG_FILE="${INFRAZERO_BOOTSTRAP_LOG:-/var/log/infrazero-bootstrap.log}"
+mkdir -p "$(dirname "$LOG_FILE")"
+if [ -z "${INFRAZERO_LOG_REDIRECTED:-}" ]; then
+  export INFRAZERO_LOG_REDIRECTED=1
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
 echo "[db] $(date -Is) start"
 
 BOOTSTRAP_ROLE="db"
@@ -180,8 +187,8 @@ find_db_volume_device() {
 
 wait_for_db_volume_device() {
   local volume_name="${1:-}"
-  local attempts="${DB_VOLUME_ATTACH_WAIT_ATTEMPTS:-45}"
-  local sleep_seconds="${DB_VOLUME_ATTACH_WAIT_SECONDS:-2}"
+  local attempts="${DB_VOLUME_ATTACH_WAIT_ATTEMPTS:-360}"
+  local sleep_seconds="${DB_VOLUME_ATTACH_WAIT_SECONDS:-5}"
   local attempt
   local found=""
 

@@ -207,6 +207,152 @@ for i in {1..60}; do
   sleep 2
 done
 
+# ------------------------------------------------------------------ #
+#  Dedicated etcd for Patroni (optional)                               #
+# ------------------------------------------------------------------ #
+
+setup_etcd_patroni() {
+  local enabled="${ETCD_PATRONI_ENABLED:-false}"
+  if [ "$enabled" != "true" ]; then
+    echo "[node1] etcd-patroni not enabled; skipping"
+    return 0
+  fi
+
+  echo "[node1] installing dedicated etcd for Patroni"
+
+  local etcd_version="${ETCD_PATRONI_VERSION:-3.5.21}"
+  local etcd_name="${ETCD_PATRONI_NAME:-$(hostname)}"
+  local initial_cluster="${ETCD_PATRONI_INITIAL_CLUSTER:-}"
+  local client_port="${ETCD_PATRONI_CLIENT_PORT:-2391}"
+  local peer_port="${ETCD_PATRONI_PEER_PORT:-2392}"
+
+  if [ -z "$initial_cluster" ]; then
+    echo "[node1] ETCD_PATRONI_INITIAL_CLUSTER not set; cannot configure etcd" >&2
+    return 1
+  fi
+
+  # Resolve private IP
+  local advertise_ip=""
+  if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
+    advertise_ip=$(python3 - <<'PY'
+import ipaddress, os, subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(addr)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+    ) || true
+  fi
+
+  if [ -z "$advertise_ip" ]; then
+    echo "[node1] unable to determine private IP for etcd advertise" >&2
+    return 1
+  fi
+
+  if systemctl is-active --quiet etcd-patroni 2>/dev/null \
+    && ss -tln | grep -q ":${client_port} " \
+    && ss -tln | grep -q ":${peer_port} "; then
+    echo "[node1] etcd-patroni already running; skipping install"
+    return 0
+  fi
+
+  # Download etcd
+  local arch="amd64"
+  local etcd_url="https://github.com/etcd-io/etcd/releases/download/v${etcd_version}/etcd-v${etcd_version}-linux-${arch}.tar.gz"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  echo "[node1] downloading etcd v${etcd_version}"
+  timeout 120 curl -fsSL "$etcd_url" -o "${tmpdir}/etcd.tar.gz"
+  tar -xzf "${tmpdir}/etcd.tar.gz" -C "${tmpdir}" --strip-components=1
+  install -m 0755 "${tmpdir}/etcd" /usr/local/bin/etcd-patroni
+  install -m 0755 "${tmpdir}/etcdctl" /usr/local/bin/etcdctl-patroni
+  rm -rf "${tmpdir}"
+
+  # Data directory
+  mkdir -p /var/lib/etcd-patroni
+  chmod 700 /var/lib/etcd-patroni
+
+  # Verify ports are free before starting
+  for check_port in "$client_port" "$peer_port"; do
+    if ss -tlnp | grep -q ":${check_port} "; then
+      local occupant
+      occupant=$(ss -tlnp | grep ":${check_port} " | head -1)
+      echo "[node1] ERROR: port ${check_port} already in use: ${occupant}" >&2
+      echo "[node1] etcd-patroni cannot start - pick different ports via ETCD_PATRONI_CLIENT_PORT / ETCD_PATRONI_PEER_PORT" >&2
+      return 1
+    fi
+  done
+
+  # Systemd unit
+  cat > /etc/systemd/system/etcd-patroni.service <<UNIT_EOF
+[Unit]
+Description=etcd for Patroni DCS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/etcd-patroni \\
+  --name ${etcd_name} \\
+  --data-dir /var/lib/etcd-patroni \\
+  --listen-client-urls http://0.0.0.0:${client_port} \\
+  --advertise-client-urls http://${advertise_ip}:${client_port} \\
+  --listen-peer-urls http://0.0.0.0:${peer_port} \\
+  --initial-advertise-peer-urls http://${advertise_ip}:${peer_port} \\
+  --initial-cluster ${initial_cluster} \\
+  --initial-cluster-state new \\
+  --initial-cluster-token patroni-etcd
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+  systemctl daemon-reload
+  systemctl enable --now etcd-patroni
+
+  # Wait only for local listeners. Full endpoint health may require the other
+  # control-plane members to join and should not block node1 bootstrap.
+  echo "[node1] waiting for etcd-patroni to start"
+  for attempt in $(seq 1 60); do
+    if ETCDCTL_API=3 /usr/local/bin/etcdctl-patroni \
+      --endpoints="http://127.0.0.1:${client_port}" \
+      endpoint health >/dev/null 2>&1; then
+      echo "[node1] etcd-patroni healthy (attempt ${attempt})"
+      return 0
+    fi
+    if ss -tln | grep -q ":${client_port} " && ss -tln | grep -q ":${peer_port} "; then
+      echo "[node1] etcd-patroni listeners ready (attempt ${attempt})"
+      return 0
+    fi
+    sleep 3
+  done
+
+  echo "[node1] etcd-patroni did not start listening" >&2
+  systemctl status etcd-patroni --no-pager || true
+  journalctl -u etcd-patroni -n 30 --no-pager || true
+  return 1
+}
+
+setup_etcd_patroni
+
 if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
   kubectl -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":"web","nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":"websecure","nodePort":30443}]}}' || true
 fi
@@ -269,7 +415,7 @@ WantedBy=timers.target
 TIMER
       systemctl daemon-reload
       systemctl enable --now infrazero-infisical-retry.timer
-      echo "[node1] infrazero-infisical-retry.timer installed — will retry every 5 minutes until success"
+      echo "[node1] infrazero-infisical-retry.timer installed - will retry every 5 minutes until success"
     fi
   else
     echo "[node1] infisical-admin-secret.sh missing; skipping infisical admin secret sync" >&2
@@ -576,7 +722,7 @@ fi
 
 beacon_status "validating_certs" "Validating TLS certificates" 85
 
-# ── Certificate validation ──────────────────────────────────────────
+# в”Ђв”Ђ Certificate validation в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 # Wait for cert-manager to issue certificates after ArgoCD sync.
 # If rate limit is hit, log a clear error so it's visible in Loki/monitoring.
 echo "[node1] $(date -Is) starting certificate validation"
@@ -598,7 +744,7 @@ cert_check() {
   done
 
   if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
-    echo "[node1] WARNING: cert-manager CRDs not found after 120s — certificate validation skipped"
+    echo "[node1] WARNING: cert-manager CRDs not found after 120s - certificate validation skipped"
     return 0
   fi
 
@@ -630,10 +776,10 @@ cert_check() {
       domain=$(echo "$line" | jq -r '.spec.dnsNames[0] // "unknown"')
 
       if [ "$ready" = "True" ]; then
-        cert_summary="${cert_summary}  ✓ ${domain} (${ns}/${name})\n"
+        cert_summary="${cert_summary}  вњ“ ${domain} (${ns}/${name})\n"
       else
         all_ready=false
-        cert_summary="${cert_summary}  ✗ ${domain} (${ns}/${name}): ${message}\n"
+        cert_summary="${cert_summary}  вњ- ${domain} (${ns}/${name}): ${message}\n"
         if echo "$message" | grep -qiE "rate limit|too many certificates|too many requests"; then
           has_rate_limit=true
         fi
@@ -672,9 +818,9 @@ cert_check() {
     message=$(echo "$line" | jq -r '.status.conditions[]? | select(.type=="Ready") | .message' 2>/dev/null || echo "")
     domain=$(echo "$line" | jq -r '.spec.dnsNames[0] // "unknown"')
     if [ "$ready" = "True" ]; then
-      echo "[node1]   ✓ ${domain} (${ns}/${name})"
+      echo "[node1]   вњ“ ${domain} (${ns}/${name})"
     else
-      echo "[node1]   ✗ ${domain} (${ns}/${name}): ${message}"
+      echo "[node1]   вњ- ${domain} (${ns}/${name}): ${message}"
     fi
   done < <(kubectl get certificates --all-namespaces -o json 2>/dev/null | jq -c '.items[]')
   echo "[node1] Sites without valid certificates will show 'connection not secure' warnings."
@@ -683,139 +829,6 @@ cert_check() {
 
 cert_check || echo "[node1] certificate validation encountered an error; continuing"
 
-# ------------------------------------------------------------------ #
-#  Dedicated etcd for Patroni (optional)                               #
-# ------------------------------------------------------------------ #
-
-setup_etcd_patroni() {
-  local enabled="${ETCD_PATRONI_ENABLED:-false}"
-  if [ "$enabled" != "true" ]; then
-    echo "[node1] etcd-patroni not enabled; skipping"
-    return 0
-  fi
-
-  echo "[node1] installing dedicated etcd for Patroni"
-
-  local etcd_version="${ETCD_PATRONI_VERSION:-3.5.21}"
-  local etcd_name="${ETCD_PATRONI_NAME:-$(hostname)}"
-  local initial_cluster="${ETCD_PATRONI_INITIAL_CLUSTER:-}"
-  local client_port="${ETCD_PATRONI_CLIENT_PORT:-2391}"
-  local peer_port="${ETCD_PATRONI_PEER_PORT:-2392}"
-
-  if [ -z "$initial_cluster" ]; then
-    echo "[node1] ETCD_PATRONI_INITIAL_CLUSTER not set; cannot configure etcd" >&2
-    return 1
-  fi
-
-  # Resolve private IP
-  local advertise_ip=""
-  if [ -n "${PRIVATE_CIDR:-}" ] && command -v python3 >/dev/null 2>&1; then
-    advertise_ip=$(python3 - <<'PY'
-import ipaddress, os, subprocess
-cidr = os.environ.get("PRIVATE_CIDR", "")
-try:
-    net = ipaddress.ip_network(cidr, strict=False)
-except Exception:
-    raise SystemExit(1)
-output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
-for line in output.splitlines():
-    parts = line.split()
-    if len(parts) < 4:
-        continue
-    addr = parts[3].split("/")[0]
-    try:
-        if ipaddress.ip_address(addr) in net:
-            print(addr)
-            raise SystemExit(0)
-    except Exception:
-        continue
-raise SystemExit(1)
-PY
-    ) || true
-  fi
-
-  if [ -z "$advertise_ip" ]; then
-    echo "[node1] unable to determine private IP for etcd advertise" >&2
-    return 1
-  fi
-
-  # Download etcd
-  local arch="amd64"
-  local etcd_url="https://github.com/etcd-io/etcd/releases/download/v${etcd_version}/etcd-v${etcd_version}-linux-${arch}.tar.gz"
-  local tmpdir
-  tmpdir=$(mktemp -d)
-
-  echo "[node1] downloading etcd v${etcd_version}"
-  timeout 120 curl -fsSL "$etcd_url" -o "${tmpdir}/etcd.tar.gz"
-  tar -xzf "${tmpdir}/etcd.tar.gz" -C "${tmpdir}" --strip-components=1
-  install -m 0755 "${tmpdir}/etcd" /usr/local/bin/etcd-patroni
-  install -m 0755 "${tmpdir}/etcdctl" /usr/local/bin/etcdctl-patroni
-  rm -rf "${tmpdir}"
-
-  # Data directory
-  mkdir -p /var/lib/etcd-patroni
-  chmod 700 /var/lib/etcd-patroni
-
-  # Verify ports are free before starting
-  for check_port in "$client_port" "$peer_port"; do
-    if ss -tlnp | grep -q ":${check_port} "; then
-      local occupant
-      occupant=$(ss -tlnp | grep ":${check_port} " | head -1)
-      echo "[node1] ERROR: port ${check_port} already in use: ${occupant}" >&2
-      echo "[node1] etcd-patroni cannot start — pick different ports via ETCD_PATRONI_CLIENT_PORT / ETCD_PATRONI_PEER_PORT" >&2
-      return 1
-    fi
-  done
-
-  # Systemd unit
-  cat > /etc/systemd/system/etcd-patroni.service <<UNIT_EOF
-[Unit]
-Description=etcd for Patroni DCS
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=notify
-ExecStart=/usr/local/bin/etcd-patroni \\
-  --name ${etcd_name} \\
-  --data-dir /var/lib/etcd-patroni \\
-  --listen-client-urls http://0.0.0.0:${client_port} \\
-  --advertise-client-urls http://${advertise_ip}:${client_port} \\
-  --listen-peer-urls http://0.0.0.0:${peer_port} \\
-  --initial-advertise-peer-urls http://${advertise_ip}:${peer_port} \\
-  --initial-cluster ${initial_cluster} \\
-  --initial-cluster-state new \\
-  --initial-cluster-token patroni-etcd
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-UNIT_EOF
-
-  systemctl daemon-reload
-  systemctl enable --now etcd-patroni
-
-  # Wait for etcd to be healthy
-  echo "[node1] waiting for etcd-patroni to start"
-  for attempt in $(seq 1 30); do
-    if ETCDCTL_API=3 /usr/local/bin/etcdctl-patroni \
-      --endpoints="http://127.0.0.1:${client_port}" \
-      endpoint health >/dev/null 2>&1; then
-      echo "[node1] etcd-patroni healthy (attempt ${attempt})"
-      return 0
-    fi
-    sleep 3
-  done
-
-  echo "[node1] etcd-patroni did not become healthy" >&2
-  systemctl status etcd-patroni --no-pager || true
-  journalctl -u etcd-patroni -n 30 --no-pager || true
-  return 1
-}
-
-setup_etcd_patroni
 
 beacon_status "complete" "Bootstrap complete" 100
 

@@ -215,10 +215,17 @@ for _token_attempt in $(seq 1 "$MAX_TOKEN_ATTEMPTS"); do
   fi
 
   # 4. Validate token against Infisical API
-  validate_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+  validate_code=$(curl -sk -o /dev/null -w "%{http_code}" \
     --connect-timeout 5 --max-time 10 \
     -H "Authorization: Bearer ${candidate_token}" \
     "${INFISICAL_SITE_URL}/api/v1/projects" 2>/dev/null || true)
+
+  if [ -z "$validate_code" ] || [ "$validate_code" = "000" ]; then
+    echo "[infisical-admin-secret] unable to validate admin token against Infisical (HTTP ${validate_code:-000}); retrying in ${TOKEN_RETRY_INTERVAL}s"
+    rm -f "$workdir/latest-tokens.json" "$workdir/admin.token.age" "$workdir/admin.token"
+    sleep "$TOKEN_RETRY_INTERVAL"
+    continue
+  fi
 
   if [ "$validate_code" = "401" ] || [ "$validate_code" = "403" ]; then
     echo "[infisical-admin-secret] admin token is stale (HTTP ${validate_code}, manifest created_at=${manifest_created:-unknown}); waiting for fresh token (attempt ${_token_attempt}/${MAX_TOKEN_ATTEMPTS})"
@@ -393,6 +400,23 @@ text = open(path, "r", encoding="utf-8").read()
 next_text, count = re.subn(r'KUBE_HOST="[^"]*"', f'KUBE_HOST="{kube_host}"', text, count=1)
 if count == 0:
     raise SystemExit("KUBE_HOST assignment not found in infisical k8s auth configmap")
+if 'CURL_INSECURE="${INFISICAL_BOOTSTRAP_CURL_INSECURE:--k}"' not in next_text:
+    next_text, insecure_count = re.subn(
+        r'(API_RETRY_DELAY="\$\{API_RETRY_DELAY:-2\}"\n)',
+        r'\1    CURL_INSECURE="${INFISICAL_BOOTSTRAP_CURL_INSECURE:--k}"\n',
+        next_text,
+        count=1,
+    )
+    if insecure_count == 0:
+        raise SystemExit("API_RETRY_DELAY assignment not found in infisical k8s auth configmap")
+next_text = next_text.replace(
+    'status=$(curl -sS -o "$tmp"',
+    'status=$(curl -sS $CURL_INSECURE -o "$tmp"',
+)
+next_text = next_text.replace(
+    ' "$url")',
+    ' "$url" || true)',
+)
 if next_text != text:
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(next_text)
@@ -873,6 +897,8 @@ if [ -n "$spc_app_file" ]; then
         ca_file="${workdir}/infisical-ca.pem"
         printf '%s' "$ca_cert" > "$ca_file"
         curl_args+=(--cacert "$ca_file")
+      else
+        curl_args+=(-k)
       fi
 
       secrets_response_file=$(mktemp "${workdir}/infisical-secrets.XXXX")
