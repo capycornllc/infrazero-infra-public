@@ -7,7 +7,7 @@ if [ -z "${_INFRAZERO_LOG_REDIRECTED:-}" ]; then
   export _INFRAZERO_LOG_REDIRECTED=1
 fi
 
-echo "[common] $(date -Is) start
+echo "[common] $(date -Is) start"
 
 # ── Helper: resolve private gateway ─────────────────────────────────────
 # Tries ip route first (works on OpenStack where gateway is set by DHCP),
@@ -52,7 +52,7 @@ PY
   fi
 
   return 1
-}"
+}
 
 # ── Bootstrap beacon (SOC 2: no secrets, descriptive labels only) ──
 mkdir -p /etc/infrazero
