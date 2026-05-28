@@ -1152,10 +1152,13 @@ fi
 
 compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
 
-for i in {1..30}; do
+for i in {1..120}; do
   if compose_cmd -f /opt/infrazero/infisical/docker-compose.yml exec -T infisical-db pg_isready -U "$INFISICAL_POSTGRES_USER" >/dev/null 2>&1; then
     echo "[egress] postgres ready"
     break
+  fi
+  if [ "$i" -eq 120 ]; then
+    echo "[egress] WARNING: postgres not ready after 120 attempts; continuing anyway" >&2
   fi
   sleep 2
 done

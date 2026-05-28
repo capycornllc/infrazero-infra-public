@@ -118,7 +118,6 @@ write_userlist() {
   local path="$1"
   local user="$2"
   local password="$3"
-  # PgBouncer expects MD5 or SCRAM hash, or plain "password" in quotes
   echo "\"${user}\" \"${password}\"" > "$path"
   chmod 640 "$path"
   chown postgres:postgres "$path"
@@ -140,6 +139,7 @@ listen_addr = ${LISTEN_ADDR}
 listen_port = ${listen_port}
 auth_type = md5
 auth_file = ${userlist_path}
+admin_users = ${PGBOUNCER_AUTH_USER}
 pool_mode = ${PGBOUNCER_POOL_MODE}
 max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
 default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
@@ -238,7 +238,7 @@ for host in $all_hosts; do
 
   # Parse leader and replica IPs from cluster JSON
   new_primary=$(echo "$cluster_json" | jq -r '.members[] | select(.role=="leader") | .host' 2>/dev/null | head -1 || true)
-  new_replicas=$(echo "$cluster_json" | jq -r '[.members[] | select(.role=="replica") | .host] | join(",")' 2>/dev/null || true)
+  new_replicas=$(echo "$cluster_json" | jq -r '[.members[] | select(.role=="replica" and (.state=="running" or .state=="streaming")) | .host] | join(",")' 2>/dev/null || true)
 
   if [ -n "$new_primary" ]; then
     break
@@ -255,17 +255,17 @@ changed=false
 # Update write pool
 current_primary=$(grep -oP 'host=\K[^ ]+' "$WRITE_CONFIG" 2>/dev/null | head -1 || true)
 if [ "$current_primary" != "$new_primary" ]; then
-  log "leader changed: ${current_primary} → ${new_primary}"
+  log "leader changed: ${current_primary} -> ${new_primary}"
   sed -i "s|^\* = host=.*|* = host=${new_primary} port=5432|" "$WRITE_CONFIG"
   kill -HUP "$(cat /var/run/postgresql/pgbouncer-5432.pid 2>/dev/null)" 2>/dev/null || true
   changed=true
 fi
 
-# Update read pool — point to all replicas (or primary if no replicas)
+# Update read pool: point to all healthy replicas (or primary if no replicas)
 read_hosts="${new_replicas:-$new_primary}"
 current_read=$(grep -oP 'host=\K[^ ]+' "$READ_CONFIG" 2>/dev/null | head -1 || true)
 if [ "$current_read" != "$read_hosts" ]; then
-  log "read pool changed: ${current_read} → ${read_hosts}"
+  log "read pool changed: ${current_read} -> ${read_hosts}"
   sed -i "s|^\* = host=.*|* = host=${read_hosts} port=5432|" "$READ_CONFIG"
   kill -HUP "$(cat /var/run/postgresql/pgbouncer-5433.pid 2>/dev/null)" 2>/dev/null || true
   changed=true

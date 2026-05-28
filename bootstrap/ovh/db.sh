@@ -2440,7 +2440,8 @@ setup_replication_primary() {
 
   # WAL settings for replication
   set_conf "wal_level" "replica"
-  set_conf "max_wal_senders" "$((replica_count + 2))"
+  set_conf "wal_log_hints" "on"
+  set_conf "max_wal_senders" "${DB_MAX_WAL_SENDERS:-10}"
   set_conf "wal_keep_size" "'512MB'"
   set_conf "hot_standby" "on"
 
@@ -2497,6 +2498,33 @@ setup_replication_primary() {
 }
 
 setup_replication_primary
+
+setup_pgbouncer_auth_role() {
+  if [ -z "${PGBOUNCER_AUTH_USER:-}" ] || [ -z "${PGBOUNCER_AUTH_PASSWORD:-}" ]; then
+    echo "[db] PgBouncer auth env not set; skipping PgBouncer role setup"
+    return 0
+  fi
+
+  local pgbouncer_user_lit
+  local pgbouncer_password_lit
+  pgbouncer_user_lit=$(sql_escape "$PGBOUNCER_AUTH_USER")
+  pgbouncer_password_lit=$(sql_escape "$PGBOUNCER_AUTH_PASSWORD")
+
+  echo "[db] ensuring PgBouncer auth role: ${PGBOUNCER_AUTH_USER}"
+  psql_as_postgres <<SQL
+DO \$\$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${pgbouncer_user_lit}') THEN
+    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${pgbouncer_user_lit}', '${pgbouncer_password_lit}');
+  ELSE
+    EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L', '${pgbouncer_user_lit}', '${pgbouncer_password_lit}');
+  END IF;
+END
+\$\$;
+SQL
+}
+
+setup_pgbouncer_auth_role
 
 # ------------------------------------------------------------------ #
 #  Patroni HA Setup (optional)                                         #
@@ -2606,10 +2634,13 @@ bootstrap:
     postgresql:
       use_pg_rewind: true
       use_slots: true
+      remove_data_directory_on_rewind_failure: true
+      remove_data_directory_on_diverged_timelines: true
       parameters:
         wal_level: replica
+        wal_log_hints: "on"
         hot_standby: "on"
-        max_wal_senders: 5
+        max_wal_senders: 10
         max_replication_slots: 5
         wal_keep_size: 512MB
 
@@ -2632,8 +2663,8 @@ postgresql:
   pg_hba:
     - local all postgres peer
     - local all all peer
-    - host replication ${repl_user} 0.0.0.0/0 scram-sha-256
-    - host all all 0.0.0.0/0 scram-sha-256
+    - host replication ${repl_user} ${PRIVATE_CIDR} scram-sha-256
+    - host all all ${PRIVATE_CIDR} scram-sha-256
 
 tags:
   nofailover: false

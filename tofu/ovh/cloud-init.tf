@@ -76,7 +76,7 @@ locals {
     databases_json_private_b64          = var.databases_json_private_b64
     bastion_env                         = []
     node_env                            = []
-    node_role_env                       = local.db_env_lines
+    node_role_env                       = concat(local.db_env_lines, local.pgbouncer_env_lines)
   })
   cloud_init_base_db = yamldecode(local.cloud_init_template_db)
 

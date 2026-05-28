@@ -339,6 +339,14 @@ PY
   mkdir -p /var/lib/etcd-patroni
   chmod 700 /var/lib/etcd-patroni
 
+  # Determine initial cluster state based on existing data.
+  # Use "new" for first start, "existing" for restart (e.g. after reboot).
+  local etcd_initial_state="new"
+  if [ -d /var/lib/etcd-patroni/member ]; then
+    etcd_initial_state="existing"
+    echo "[nodecp] etcd data detected; using initial-cluster-state=existing"
+  fi
+
   # Verify ports are free before starting
   for check_port in "$client_port" "$peer_port"; do
     if ss -tlnp | grep -q ":${check_port} "; then
@@ -366,7 +374,7 @@ ExecStart=/usr/local/bin/etcd-patroni \\
   --listen-peer-urls http://0.0.0.0:${peer_port} \\
   --initial-advertise-peer-urls http://${advertise_ip}:${peer_port} \\
   --initial-cluster ${initial_cluster} \\
-  --initial-cluster-state new \\
+  --initial-cluster-state ${etcd_initial_state} \\
   --initial-cluster-token patroni-etcd
 Restart=on-failure
 RestartSec=5s

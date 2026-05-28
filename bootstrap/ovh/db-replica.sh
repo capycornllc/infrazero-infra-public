@@ -432,10 +432,13 @@ bootstrap:
     postgresql:
       use_pg_rewind: true
       use_slots: true
+      remove_data_directory_on_rewind_failure: true
+      remove_data_directory_on_diverged_timelines: true
       parameters:
         wal_level: replica
+        wal_log_hints: "on"
         hot_standby: "on"
-        max_wal_senders: 5
+        max_wal_senders: 10
         max_replication_slots: 5
         wal_keep_size: 512MB
 
@@ -458,8 +461,8 @@ postgresql:
   pg_hba:
     - local all postgres peer
     - local all all peer
-    - host replication ${repl_user} 0.0.0.0/0 scram-sha-256
-    - host all all 0.0.0.0/0 scram-sha-256
+    - host replication ${repl_user} ${PRIVATE_CIDR} scram-sha-256
+    - host all all ${PRIVATE_CIDR} scram-sha-256
 
 tags:
   nofailover: false

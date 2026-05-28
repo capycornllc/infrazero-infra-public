@@ -287,6 +287,14 @@ PY
   mkdir -p /var/lib/etcd-patroni
   chmod 700 /var/lib/etcd-patroni
 
+  # Determine initial cluster state based on existing data.
+  # Use "new" for first start, "existing" for restart (e.g. after reboot).
+  local etcd_initial_state="new"
+  if [ -d /var/lib/etcd-patroni/member ]; then
+    etcd_initial_state="existing"
+    echo "[node1] etcd data detected; using initial-cluster-state=existing"
+  fi
+
   # Verify ports are free before starting
   for check_port in "$client_port" "$peer_port"; do
     if ss -tlnp | grep -q ":${check_port} "; then
@@ -315,7 +323,7 @@ ExecStart=/usr/local/bin/etcd-patroni \\
   --listen-peer-urls http://0.0.0.0:${peer_port} \\
   --initial-advertise-peer-urls http://${advertise_ip}:${peer_port} \\
   --initial-cluster ${initial_cluster} \\
-  --initial-cluster-state new \\
+  --initial-cluster-state ${etcd_initial_state} \\
   --initial-cluster-token patroni-etcd
 Restart=on-failure
 RestartSec=5s
@@ -371,8 +379,8 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
   if [ -f "./infisical-admin-secret.sh" ]; then
     chmod +x ./infisical-admin-secret.sh
     infisical_ok=false
-    infisical_attempts="${INFISICAL_BOOTSTRAP_ATTEMPTS:-1}"
-    infisical_retry_delay="${INFISICAL_BOOTSTRAP_RETRY_DELAY:-120}"
+    infisical_attempts="${INFISICAL_BOOTSTRAP_ATTEMPTS:-20}"
+    infisical_retry_delay="${INFISICAL_BOOTSTRAP_RETRY_DELAY:-30}"
     for infisical_attempt in $(seq 1 "$infisical_attempts"); do
       echo "[node1] infisical-admin-secret.sh attempt ${infisical_attempt}/${infisical_attempts}"
       if ./infisical-admin-secret.sh; then
