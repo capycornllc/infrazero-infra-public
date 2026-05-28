@@ -881,15 +881,6 @@ def main() -> int:
         infisical_site_url = f"https://{infisical_fqdn}"
         egress_secrets["INFISICAL_SITE_URL"] = infisical_site_url
 
-    # ── Database host for application connections ──
-    # When Patroni/PgBouncer is disabled, the app connects directly to the primary DB.
-    # Expose as DATABASE_HOST across all relevant secret maps so Infisical bootstrap
-    # and workloads can reference the correct DB address.
-    if not patroni_enabled and db_primary_ip:
-        db_secrets["DATABASE_HOST"] = db_primary_ip
-        db_secrets["DATABASE_PORT"] = "5432"
-        egress_secrets["DATABASE_HOST"] = db_primary_ip
-
     if db_fqdn:
         db_secrets["DB_FQDN"] = db_fqdn
     if cloudflare_api_token:
@@ -1052,6 +1043,15 @@ def main() -> int:
         if patroni_enabled:
             config["pgbouncer_secrets"]["PATRONI_SCOPE"] = patroni_scope
             config["pgbouncer_secrets"]["PATRONI_ETCD_HOSTS"] = etcd_endpoints
+
+    # ── Database host for application connections ──
+    # When Patroni/PgBouncer is disabled, the app connects directly to the primary DB.
+    # Expose as DATABASE_HOST across all relevant secret maps so Infisical bootstrap
+    # and workloads can reference the correct DB address.
+    if not patroni_enabled and db_primary_ip:
+        db_secrets["DATABASE_HOST"] = db_primary_ip
+        db_secrets["DATABASE_PORT"] = "5432"
+        egress_secrets["DATABASE_HOST"] = db_primary_ip
 
     if project_slug:
         egress_secrets["PROJECT_SLUG"] = project_slug
