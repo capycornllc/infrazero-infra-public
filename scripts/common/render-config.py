@@ -320,6 +320,51 @@ def main() -> int:
                 return False
         return bool(value)
 
+    def parse_log_policy() -> dict[str, str]:
+        enabled_raw = optional_env("LOKI_LOG_FILTER_ENABLED") or optional_env("loki_log_filter_enabled")
+        egress_docker_raw = optional_env("LOKI_EGRESS_DOCKER_LOGS_ENABLED") or optional_env(
+            "loki_egress_docker_logs_enabled"
+        )
+        patterns_raw = optional_multiline_env("LOKI_LOG_DROP_PATTERNS") or optional_multiline_env(
+            "loki_log_drop_patterns"
+        )
+        max_size = (
+            optional_env("EGRESS_DOCKER_LOG_MAX_SIZE")
+            or optional_env("egress_docker_log_max_size")
+            or "100m"
+        )
+        max_files = (
+            optional_env("EGRESS_DOCKER_LOG_MAX_FILES")
+            or optional_env("egress_docker_log_max_files")
+            or "5"
+        )
+
+        if not re.fullmatch(r"[1-9][0-9]*(?:[kKmMgG])?", max_size):
+            errors.append("EGRESS_DOCKER_LOG_MAX_SIZE must look like 10m, 100m, or 1g")
+        if not re.fullmatch(r"[1-9][0-9]*", max_files):
+            errors.append("EGRESS_DOCKER_LOG_MAX_FILES must be a positive integer")
+
+        patterns = []
+        seen_patterns = set()
+        for line in patterns_raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            pattern = line.strip()
+            if not pattern or pattern.startswith("#") or pattern in seen_patterns:
+                continue
+            seen_patterns.add(pattern)
+            patterns.append(pattern)
+
+        enabled = parse_bool(enabled_raw, default=bool(patterns))
+        drop_regex = "|".join(re.escape(pattern) for pattern in patterns) if enabled else ""
+        return {
+            "LOKI_LOG_FILTER_ENABLED": str(enabled).lower(),
+            "LOKI_EGRESS_DOCKER_LOGS_ENABLED": str(
+                parse_bool(egress_docker_raw, default=True)
+            ).lower(),
+            "LOKI_LOG_DROP_REGEX": drop_regex,
+            "EGRESS_DOCKER_LOG_MAX_SIZE": max_size,
+            "EGRESS_DOCKER_LOG_MAX_FILES": max_files,
+        }
+
     def parse_platform_admins(raw: str) -> tuple[list[dict], str]:
         if not raw:
             return [], ""
@@ -642,6 +687,8 @@ def main() -> int:
         # Deterministic secure fallback to avoid default admin/admin.
         grafana_admin_password = require_env("INFISICAL_AUTH_SECRET")
 
+    log_policy = parse_log_policy()
+
     split_bootstrap_secrets = {}
     merged_split_bootstrap_payload = {}
     split_prefix = "INFISICAL_BOOTSTRAP_SECRETS__"
@@ -738,6 +785,7 @@ def main() -> int:
         "INFISICAL_ENCRYPTION_KEY": require_env("INFISICAL_ENCRYPTION_KEY"),
         "INFISICAL_AUTH_SECRET": require_env("INFISICAL_AUTH_SECRET"),
         "GRAFANA_ADMIN_PASSWORD": grafana_admin_password,
+        **log_policy,
     }
 
     if platform_admins_json:

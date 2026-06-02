@@ -345,7 +345,27 @@ if [ -z "${PRIVATE_CIDR:-}" ]; then
   exit 0
 fi
 
-private_gw=$(resolve_private_gateway "$PRIVATE_CIDR" || true)
+private_gw=""
+# Try to extract via ip route (OpenStack sets the gateway automatically)
+private_gw=$(ip route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via") {print $(i+1); exit}}' || true)
+# Fallback: compute .1 from CIDR
+if [ -z "$private_gw" ] && command -v python3 >/dev/null 2>&1; then
+  private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+  ) || true
+fi
 if [ -z "$private_gw" ]; then
   echo "[common] unable to resolve private gateway; skipping private route" >&2
   exit 0
@@ -437,7 +457,27 @@ if ip link show wg0 >/dev/null 2>&1; then
   exit 0
 fi
 
-private_gw=$(resolve_private_gateway "$PRIVATE_CIDR" || true)
+private_gw=""
+# Try to extract via ip route (OpenStack sets the gateway automatically)
+private_gw=$(ip route show "$PRIVATE_CIDR" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via") {print $(i+1); exit}}' || true)
+# Fallback: compute .1 from CIDR
+if [ -z "$private_gw" ] && command -v python3 >/dev/null 2>&1; then
+  private_gw=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 1:
+    gw = net.network_address + 1
+else:
+    gw = net.network_address
+print(str(gw))
+PY
+  ) || true
+fi
 if [ -z "$private_gw" ]; then
   echo "[wg-route] unable to resolve private gateway; cannot add WG route" >&2
   exit 0

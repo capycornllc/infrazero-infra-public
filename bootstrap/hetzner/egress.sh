@@ -124,6 +124,11 @@ require_env "GRAFANA_ADMIN_PASSWORD"
 export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$S3_REGION"
+export EGRESS_DOCKER_LOG_MAX_SIZE="${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+export EGRESS_DOCKER_LOG_MAX_FILES="${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
+export LOKI_EGRESS_DOCKER_LOGS_ENABLED="${LOKI_EGRESS_DOCKER_LOGS_ENABLED:-true}"
+export LOKI_LOG_FILTER_ENABLED="${LOKI_LOG_FILTER_ENABLED:-false}"
+export LOKI_LOG_DROP_REGEX="${LOKI_LOG_DROP_REGEX:-}"
 
 ensure_aws_cli() {
   if command -v aws >/dev/null 2>&1; then
@@ -200,6 +205,109 @@ compose_cmd() {
   else
     docker compose "$@"
   fi
+}
+
+json_quote() {
+  python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))'
+}
+
+append_promtail_drop_pipeline() {
+  local config_file="$1"
+  local indent="${2:-    }"
+  local parse_stage="${3:-}"
+  local filter_enabled="false"
+  if [ "${LOKI_LOG_FILTER_ENABLED:-false}" = "true" ] && [ -n "${LOKI_LOG_DROP_REGEX:-}" ]; then
+    filter_enabled="true"
+  fi
+  if [ -z "$parse_stage" ] && [ "$filter_enabled" != "true" ]; then
+    return 0
+  fi
+  cat >> "$config_file" <<EOF
+${indent}pipeline_stages:
+EOF
+  if [ -n "$parse_stage" ]; then
+    cat >> "$config_file" <<EOF
+${indent}  - ${parse_stage}: {}
+EOF
+  fi
+  if [ "$filter_enabled" = "true" ]; then
+    local quoted_regex
+    quoted_regex=$(printf '%s' "$LOKI_LOG_DROP_REGEX" | json_quote)
+    cat >> "$config_file" <<EOF
+${indent}  - match:
+${indent}      selector: '{container="infisical"}'
+${indent}      stages:
+${indent}        - drop:
+${indent}            expression: ${quoted_regex}
+EOF
+  fi
+}
+
+install_egress_docker_promtail() {
+  if [ "${LOKI_EGRESS_DOCKER_LOGS_ENABLED:-true}" != "true" ]; then
+    systemctl disable --now promtail-egress-docker >/dev/null 2>&1 || true
+    echo "[egress] egress Docker log shipping to Loki disabled"
+    return 0
+  fi
+
+  if [ ! -x /usr/local/bin/promtail ]; then
+    if curl -fsSL -o /tmp/promtail.zip "https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip"; then
+      unzip -o /tmp/promtail.zip -d /usr/local/bin
+      mv /usr/local/bin/promtail-linux-amd64 /usr/local/bin/promtail
+      chmod +x /usr/local/bin/promtail
+    else
+      echo "[egress] promtail download failed; skipping egress Docker log shipping" >&2
+      return 0
+    fi
+  fi
+
+  mkdir -p /etc/promtail /var/lib/promtail
+  local config_file="/etc/promtail/egress-docker.yml"
+  cat > "$config_file" <<EOF
+server:
+  http_listen_port: 9081
+  grpc_listen_port: 0
+positions:
+  filename: /var/lib/promtail/egress-docker-positions.yaml
+clients:
+  - url: http://127.0.0.1:3100/loki/api/v1/push
+    external_labels:
+      host: ${HOSTNAME}
+      role: egress
+scrape_configs:
+  - job_name: egress-docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+EOF
+  cat >> "$config_file" <<'EOF'
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container_name'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+EOF
+  append_promtail_drop_pipeline "$config_file" "    " "docker"
+
+  cat > /etc/systemd/system/promtail-egress-docker.service <<'EOF'
+[Unit]
+Description=Promtail egress Docker log shipper
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/egress-docker.yml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now promtail-egress-docker || echo "[egress] failed to start promtail-egress-docker; continuing"
 }
 
 # NAT/egress setup (before any external downloads)
@@ -289,6 +397,11 @@ services:
     image: grafana/loki:2.9.3
     command: -config.file=/etc/loki/config.yaml
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+        max-file: "${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
     ports:
       - "3100:3100"
     volumes:
@@ -297,6 +410,11 @@ services:
   grafana:
     image: grafana/grafana:10.4.2
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+        max-file: "${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
     ports:
       - "3000:3000"
     environment:
@@ -561,6 +679,8 @@ for i in {1..30}; do
   sleep 2
 done
 
+install_egress_docker_promtail
+
 # Infisical + Postgres + Redis
 INFISICAL_FQDN="${INFISICAL_FQDN:-}"
 GRAFANA_FQDN="${GRAFANA_FQDN:-}"
@@ -659,7 +779,7 @@ if [ "$INFISICAL_UPSTREAM_ADDR" = "0.0.0.0" ]; then
   INFISICAL_UPSTREAM_ADDR="127.0.0.1"
 fi
 ARGOCD_UPSTREAM_ADDR="${ARGOCD_UPSTREAM_ADDR:-${K3S_SERVER_PRIVATE_IP:-}}"
-ARGOCD_UPSTREAM_PORT="${ARGOCD_UPSTREAM_PORT:-30443}"
+ARGOCD_UPSTREAM_PORT="${ARGOCD_UPSTREAM_PORT:-80}"
 KUBERNETES_UPSTREAM_ADDR="${KUBERNETES_UPSTREAM_ADDR:-${K3S_API_LB_PRIVATE_IP:-${K3S_SERVER_PRIVATE_IP:-}}}"
 KUBERNETES_UPSTREAM_PORT="${KUBERNETES_UPSTREAM_PORT:-6443}"
 
@@ -1013,7 +1133,7 @@ EOF
   fi
   if [ -n "$ARGOCD_FQDN" ]; then
     if [ -n "$ARGOCD_UPSTREAM_ADDR" ]; then
-      write_https_server_block_insecure_upstream "$ARGOCD_FQDN" "https://${ARGOCD_UPSTREAM_ADDR}:${ARGOCD_UPSTREAM_PORT}"
+      write_https_server_block "$ARGOCD_FQDN" "http://${ARGOCD_UPSTREAM_ADDR}:${ARGOCD_UPSTREAM_PORT}"
     else
       echo "[egress] ARGOCD_FQDN set but no K3S_SERVER_PRIVATE_IP; skipping argocd proxy" >&2
     fi
@@ -1038,15 +1158,30 @@ services:
   infisical-db:
     image: postgres:15
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+        max-file: "${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
     env_file: /opt/infrazero/infisical/infisical.env
     volumes:
       - /opt/infrazero/infisical/db:/var/lib/postgresql/data
   redis:
     image: redis:7
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+        max-file: "${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
   infisical:
     image: infisical/infisical:latest
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${EGRESS_DOCKER_LOG_MAX_SIZE:-100m}"
+        max-file: "${EGRESS_DOCKER_LOG_MAX_FILES:-5}"
     env_file: /opt/infrazero/infisical/infisical.env
     depends_on:
       - infisical-db
