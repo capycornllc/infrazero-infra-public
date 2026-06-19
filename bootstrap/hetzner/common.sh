@@ -9,35 +9,59 @@ fi
 
 echo "[common] $(date -Is) start"
 
-# ── Bootstrap beacon (SOC 2: no secrets, descriptive labels only) ──
+# Bootstrap beacon (SOC 2: no secrets, descriptive labels only).
 mkdir -p /etc/infrazero
-beacon_status() {
-  local phase="$1" message="$2" progress="${3:-0}"
-  # Sanitize: strip anything that looks like a secret value
-  message=$(printf '%s' "$message" | sed -E 's/(password|token|key|secret)=[^ ]*/\1=***REDACTED***/gI' 2>/dev/null || printf '%s' "$message")
-  if command -v jq >/dev/null 2>&1; then
-    jq -n \
-      --arg role "${BOOTSTRAP_ROLE:-unknown}" \
-      --arg phase "$phase" \
-      --arg message "$message" \
-      --argjson progress "$progress" \
-      --arg updated_at "$(date -Is)" \
-      '{role:$role,phase:$phase,message:$message,progress:$progress,updated_at:$updated_at}' \
-      > /etc/infrazero/bootstrap-status.json 2>/dev/null || true
-  else
-    # Fallback without jq — escape quotes in message to produce valid JSON
+if [ -f ./beacon.sh ]; then
+  # shellcheck disable=SC1091
+  . ./beacon.sh
+else
+  beacon_status() {
+    local phase="$1" message="$2" progress="${3:-0}" state="running"
+    case "$phase" in
+      complete) state="complete" ;;
+      failed) state="failed" ;;
+    esac
+    message=$(printf '%s' "$message" | sed -E 's/(password|token|key|secret|private_key|preshared)=[^ ]*/\1=***REDACTED***/gI' 2>/dev/null || printf '%s' "$message")
     local safe_msg
-    safe_msg=$(printf '%s' "$message" | sed 's/"/\\"/g')
+    safe_msg=$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')
     cat > /etc/infrazero/bootstrap-status.json <<EOF
-{"role":"${BOOTSTRAP_ROLE:-unknown}","phase":"${phase}","message":"${safe_msg}","progress":${progress},"updated_at":"$(date -Is)"}
+{"role":"${BOOTSTRAP_ROLE:-unknown}","state":"${state}","phase":"${phase}","message":"${safe_msg}","progress":${progress},"updated_at":"$(date -Is)"}
 EOF
-  fi
-  chmod 600 /etc/infrazero/bootstrap-status.json 2>/dev/null || true
-}
+    chmod 600 /etc/infrazero/bootstrap-status.json 2>/dev/null || true
+  }
+
+  beacon_degraded() {
+    beacon_status "$1" "$2" "${3:-0}"
+  }
+
+  beacon_retrying() {
+    beacon_status "$1" "$2" "${3:-0}"
+  }
+
+  beacon_failed() {
+    local message="${2:-${1:-Bootstrap failed}}"
+    beacon_status failed "$message" "${3:-0}"
+  }
+fi
+
+if declare -F infrazero_install_error_trap >/dev/null 2>&1; then
+  infrazero_install_error_trap
+fi
 
 beacon_status "starting" "Bootstrap starting" 0
 
 beacon_status "creating_admins" "Creating admin users" 5
+
+dump_network_snapshot() {
+  echo "[common] network diagnostics snapshot:"
+  ip -4 addr 2>/dev/null || true
+  ip -4 route 2>/dev/null || true
+  ip route get 1.1.1.1 2>/dev/null || true
+  if command -v resolvectl >/dev/null 2>&1; then
+    resolvectl status 2>/dev/null || true
+  fi
+  getent hosts mirror.hetzner.com 2>/dev/null || true
+}
 
 # Create admin users from OPS_SSH_KEYS_JSON (base64) if provided
 if [ -n "${ADMIN_USERS_JSON_B64:-}" ]; then
@@ -120,8 +144,13 @@ install_packages() {
         echo "[common] outbound internet available (attempt ${_wait_i})"
         break
       fi
+      if [ "$_wait_i" -eq 1 ] || [ $((_wait_i % 15)) -eq 0 ]; then
+        beacon_retrying "waiting_outbound_internet" "Waiting for outbound internet via egress NAT" 14 "network" "NET_OUTBOUND_WAIT" "$_wait_i" 90
+      fi
       if [ "$_wait_i" -eq 90 ]; then
         echo "[common] WARNING: outbound internet not available after 90 attempts; continuing anyway" >&2
+        beacon_degraded "waiting_outbound_internet" "Outbound internet unavailable after retries; continuing for diagnostics" 14 "network" "NET_OUTBOUND_UNAVAILABLE"
+        dump_network_snapshot
       fi
       sleep 2
     done
@@ -134,11 +163,13 @@ install_packages() {
         return 0
       fi
       echo "[common] apt-get attempt ${attempt}/5 failed or timed out; retrying in 10s..." >&2
+      beacon_retrying "installing_packages" "apt-get failed or timed out; retrying" 15 "external" "APT_INSTALL_RETRY" "$attempt" 5
       apt-get clean 2>/dev/null || true
       rm -rf /var/lib/apt/lists/* 2>/dev/null || true
       sleep 10
     done
     echo "[common] apt-get failed after 5 retries; continuing without packages" >&2
+    beacon_degraded "installing_packages" "apt-get failed after retries; continuing without confirmed base packages" 15 "external" "APT_INSTALL_FAILED"
   fi
 }
 
@@ -342,6 +373,11 @@ sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
 ip route replace "${private_gw}/32" dev "$priv_if" scope link || true
 ip route del "$PRIVATE_CIDR" dev "$priv_if" 2>/dev/null || true
 ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+
+if ! ip route show default 2>/dev/null | grep -q "^default" || ! ip route get 1.1.1.1 >/dev/null 2>&1; then
+  ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
+  echo "[private-route] default route repaired via ${private_gw} dev ${priv_if}"
+fi
 EOF
 
 chmod +x /usr/local/sbin/infrazero-private-route.sh
@@ -356,7 +392,6 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/infrazero-private-route.sh
-RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -364,6 +399,23 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now infrazero-private-route.service
+
+cat > /etc/systemd/system/infrazero-private-route.timer <<'EOF'
+[Unit]
+Description=Periodically repair Infrazero private network routes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=infrazero-private-route.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now infrazero-private-route.timer
 
 # Ensure WireGuard subnet routes to bastion via the private gateway on non-WG hosts
 cat > /usr/local/sbin/infrazero-wg-route.sh <<'EOF'

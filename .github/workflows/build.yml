@@ -239,6 +239,14 @@ jobs:
             echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
           fi
 
+      - name: GitOps preflight
+        run: |
+          if [ "${CLOUD_PROVIDER_RESOLVED:-hetzner}" != "hetzner" ]; then
+            echo "[gitops-preflight] skipped for provider ${CLOUD_PROVIDER_RESOLVED:-unknown}"
+            exit 0
+          fi
+          bash scripts/hetzner/gitops-preflight.sh
+
       - name: Render backend
         run: python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
 
@@ -387,11 +395,40 @@ jobs:
 
           # Build server list from tofu outputs
           SERVERS="bastion:${BASTION_IP}"
-          EGRESS_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw egress_private_ipv4 2>/dev/null || true)
+          PRIVATE_IPS_JSON=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json private_ips 2>/dev/null || echo '{}')
+          EGRESS_IP=$(echo "$PRIVATE_IPS_JSON" | jq -r '.egress // empty' 2>/dev/null || true)
           [ -n "$EGRESS_IP" ] && SERVERS="${SERVERS},egress:${EGRESS_IP}"
-          NODE1_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw node1_private_ipv4 2>/dev/null || true)
-          [ -n "$NODE1_IP" ] && SERVERS="${SERVERS},node1:${NODE1_IP}"
-          DB_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw db_private_ipv4 2>/dev/null || true)
+
+          K3S_CP_COUNT="${K3S_CONTROL_PLANES_COUNT:-1}"
+          if ! [[ "$K3S_CP_COUNT" =~ ^[0-9]+$ ]] || [ "$K3S_CP_COUNT" -lt 1 ]; then
+            K3S_CP_COUNT=1
+          fi
+          K3S_NODE_IPS=$(echo "$PRIVATE_IPS_JSON" | jq -r '.k3s_nodes[]?' 2>/dev/null || true)
+          k3s_idx=0
+          nodecp_idx=1
+          worker_idx=1
+          while IFS= read -r node_ip; do
+            [ -z "$node_ip" ] && continue
+            if [ "$k3s_idx" -eq 0 ]; then
+              node_role="node1"
+            elif [ "$k3s_idx" -lt "$K3S_CP_COUNT" ]; then
+              node_role="nodecp"
+              if [ "$nodecp_idx" -gt 1 ]; then
+                node_role="nodecp-${nodecp_idx}"
+              fi
+              nodecp_idx=$((nodecp_idx + 1))
+            else
+              node_role="node2"
+              if [ "$worker_idx" -gt 1 ]; then
+                node_role="node2-${worker_idx}"
+              fi
+              worker_idx=$((worker_idx + 1))
+            fi
+            SERVERS="${SERVERS},${node_role}:${node_ip}"
+            k3s_idx=$((k3s_idx + 1))
+          done <<< "$K3S_NODE_IPS"
+
+          DB_IP=$(echo "$PRIVATE_IPS_JSON" | jq -r '.db // empty' 2>/dev/null || true)
           [ -n "$DB_IP" ] && SERVERS="${SERVERS},db:${DB_IP}"
           DB_REPLICA_IPS=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -json db_replica_private_ips 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
           replica_idx=1
@@ -446,7 +483,7 @@ jobs:
           done
 
           chmod +x scripts/common/monitor-bootstrap.sh
-          bash scripts/common/monitor-bootstrap.sh || echo "[build] Bootstrap monitoring exited with warnings"
+          bash scripts/common/monitor-bootstrap.sh
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

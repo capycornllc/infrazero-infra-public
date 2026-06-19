@@ -7,6 +7,78 @@ packages:
   - zstd
   - tar
 
+bootcmd:
+  - |
+    #!/usr/bin/env bash
+    set +e
+    PRIVATE_CIDR="${private_cidr}"
+    if [ -z "$PRIVATE_CIDR" ]; then
+      exit 0
+    fi
+    if ip route show default 2>/dev/null | grep -q "^default" && ip route get 1.1.1.1 >/dev/null 2>&1; then
+      exit 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "[infrazero-bootcmd] python3 unavailable; cannot repair default route before packages" >&2
+      exit 0
+    fi
+    private_gw=$(python3 - <<'PY'
+    import ipaddress
+    import os
+    cidr = os.environ.get("PRIVATE_CIDR", "")
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        raise SystemExit(1)
+    print(str(net.network_address + 1 if net.num_addresses > 1 else net.network_address))
+    PY
+    ) || exit 0
+    priv_if=""
+    for _route_wait in $(seq 1 30); do
+      priv_if=$(python3 - <<'PY'
+    import ipaddress
+    import os
+    import subprocess
+    cidr = os.environ.get("PRIVATE_CIDR", "")
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        raise SystemExit(1)
+    output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        ifname = parts[1]
+        addr = parts[3].split("/")[0]
+        try:
+            if ipaddress.ip_address(addr) in net:
+                print(ifname)
+                raise SystemExit(0)
+        except Exception:
+            continue
+    raise SystemExit(1)
+    PY
+      ) || true
+      if [ -n "$priv_if" ]; then
+        break
+      fi
+      sleep 2
+    done
+    if [ -z "$priv_if" ]; then
+      echo "[infrazero-bootcmd] private interface unavailable; cannot repair default route before packages" >&2
+      exit 0
+    fi
+    ip link set dev "$priv_if" up || true
+    ip route replace "$private_gw/32" dev "$priv_if" scope link || true
+    prefix_len=$(ip -4 -o addr show "$priv_if" | awk '{print $4}' | cut -d/ -f2 | head -n 1 || true)
+    if [ "$prefix_len" = "32" ]; then
+      ip route del "$PRIVATE_CIDR" dev "$priv_if" 2>/dev/null || true
+      ip route replace "$PRIVATE_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
+    fi
+    ip route replace default via "$private_gw" dev "$priv_if" onlink metric 50 || true
+    echo "[infrazero-bootcmd] default route repaired via $private_gw dev $priv_if"
+
 write_files:
   - path: /opt/infrazero/bootstrap/run.sh
     permissions: "0755"
@@ -203,16 +275,51 @@ write_files:
       chmod +x common.sh beacon.sh "$ROLE.sh"
       sed -i 's/\r$//' common.sh beacon.sh "$ROLE.sh" || true
 
+      mark_bootstrap_script_failed() {
+        local phase="$1"
+        local message="$2"
+        local file="$3"
+        local command="$4"
+        local exit_code="$5"
+        if [ -f ./beacon.sh ]; then
+          # shellcheck disable=SC1091
+          . ./beacon.sh
+          if declare -F beacon_failed >/dev/null 2>&1; then
+            beacon_failed "$phase" "$message" 0 "script" "BOOTSTRAP_SCRIPT_FAILED" "$file" "" "$command" "$exit_code"
+          fi
+        fi
+      }
+
       echo "[bootstrap] running common + role scripts"
       # Run common.sh as subprocess (safe — set -e stays isolated)
+      set +e
       ./common.sh
+      common_rc=$?
+      set -e
+      if [ "$common_rc" -ne 0 ]; then
+        mark_bootstrap_script_failed "common_failed" "common.sh exited with code $${common_rc}" "common.sh" "./common.sh" "$common_rc"
+        exit "$common_rc"
+      fi
+
       # Source beacon.sh and export beacon_status so role scripts can use it
       if [ -f ./beacon.sh ]; then
+        # shellcheck disable=SC1091
         . ./beacon.sh
-        export -f beacon_status
+        for fn in beacon_status beacon_retrying beacon_degraded beacon_failed beacon_write infrazero_redact infrazero_json_escape infrazero_state_for_phase; do
+          if declare -F "$fn" >/dev/null 2>&1; then
+            export -f "$fn"
+          fi
+        done
       fi
       export BOOTSTRAP_ROLE="$${ROLE}"
+      set +e
       "./$ROLE.sh"
+      role_rc=$?
+      set -e
+      if [ "$role_rc" -ne 0 ]; then
+        mark_bootstrap_script_failed "role_failed" "$${ROLE}.sh exited with code $${role_rc}" "$${ROLE}.sh" "./$${ROLE}.sh" "$role_rc"
+        exit "$role_rc"
+      fi
 
 %{ if length(egress_env) > 0 ~}
   - path: /etc/infrazero/egress.env

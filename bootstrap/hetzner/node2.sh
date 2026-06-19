@@ -109,6 +109,29 @@ INSTALL_K3S_EXEC="agent --node-ip ${NODE_IP} --flannel-iface ${PRIVATE_IF}"
 retry 10 5 curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
 chmod +x /tmp/k3s-install.sh
 
+wait_for_k3s_primary_api() {
+  echo "[k3s-agent] waiting for primary K3s API at ${K3S_SERVER_URL}"
+  local i
+  for i in {1..90}; do
+    if curl -skf "${K3S_SERVER_URL}/cacerts" >/dev/null; then
+      echo "[k3s-agent] primary K3s API is ready"
+      return 0
+    fi
+    if [ "$i" -eq 1 ] || [ $((i % 15)) -eq 0 ]; then
+      if declare -F beacon_retrying >/dev/null 2>&1; then
+        beacon_retrying "waiting_k3s_primary_api" "Waiting for primary K3s API before agent join" 40 "dependency" "K3S_PRIMARY_API_WAIT" "$i" 90
+      fi
+    fi
+    sleep 5
+  done
+
+  echo "[k3s-agent] primary K3s API did not become ready at ${K3S_SERVER_URL}" >&2
+  if declare -F beacon_failed >/dev/null 2>&1; then
+    beacon_failed "waiting_k3s_primary_api" "Primary K3s API did not become ready before agent join" 40 "dependency" "K3S_PRIMARY_API_NOT_READY" "node2.sh" "" "curl -skf ${K3S_SERVER_URL}/cacerts" 1
+  fi
+  return 1
+}
+
 install_k3s() {
   local attempts=5
   local delay=10
@@ -148,6 +171,7 @@ install_k3s() {
   return 1
 }
 
+wait_for_k3s_primary_api
 install_k3s
 
 # Promtail for journald to Loki (optional)

@@ -85,17 +85,49 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     status_json=$(ssh_cmd "$ip" "sudo cat ${STATUS_FILE} 2>/dev/null" 2>/dev/null || true)
 
     phase="unknown"
+    state=""
+    category=""
+    code=""
+    file=""
+    line=""
+    command=""
+    exit_code=""
     message="Waiting for server..."
     progress=0
 
     if [ -n "$status_json" ]; then
       phase=$(echo "$status_json" | jq -r '.phase // "unknown"' 2>/dev/null || echo "unknown")
+      state=$(echo "$status_json" | jq -r '.state // ""' 2>/dev/null || echo "")
+      category=$(echo "$status_json" | jq -r '.category // ""' 2>/dev/null || echo "")
+      code=$(echo "$status_json" | jq -r '.code // ""' 2>/dev/null || echo "")
+      file=$(echo "$status_json" | jq -r '.file // ""' 2>/dev/null || echo "")
+      line=$(echo "$status_json" | jq -r '.line // ""' 2>/dev/null || echo "")
+      command=$(echo "$status_json" | jq -r '.command // ""' 2>/dev/null || echo "")
+      exit_code=$(echo "$status_json" | jq -r '.exit_code // ""' 2>/dev/null || echo "")
       message=$(echo "$status_json" | jq -r '.message // "No status"' 2>/dev/null || echo "No status")
       progress=$(echo "$status_json" | jq -r '.progress // 0' 2>/dev/null || echo "0")
+    fi
+    if [ -z "$state" ]; then
+      case "$phase" in
+        complete) state="complete" ;;
+        failed) state="failed" ;;
+        *) state="running" ;;
+      esac
     fi
 
     safe_message=$(sanitize_line "$message")
     echo "[BOOTSTRAP:${role}] STATUS ${phase} ${progress} ${safe_message}"
+    if [ -n "$category" ] || [ -n "$code" ] || [ "$state" != "running" ]; then
+      safe_command=$(sanitize_line "$command")
+      detail="state=${state}"
+      [ -n "$category" ] && detail="${detail} category=${category}"
+      [ -n "$code" ] && detail="${detail} code=${code}"
+      [ -n "$file" ] && detail="${detail} file=${file}"
+      [ -n "$line" ] && detail="${detail} line=${line}"
+      [ -n "$exit_code" ] && detail="${detail} exit_code=${exit_code}"
+      [ -n "$safe_command" ] && detail="${detail} command=${safe_command}"
+      echo "[BOOTSTRAP:${role}] DETAIL ${detail}"
+    fi
 
     # 2. Fetch new log lines (incremental — only lines after offset)
     new_lines=$(ssh_cmd "$ip" "sudo tail -n +$((offset + 1)) ${LOG_FILE} 2>/dev/null | head -200" 2>/dev/null || true)
@@ -111,9 +143,9 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     fi
 
     # 3. Check completion
-    if [ "$phase" = "complete" ]; then
+    if [ "$state" = "complete" ] || [ "$phase" = "complete" ]; then
       COMPLETED["$role"]="true"
-    elif [ "$phase" = "failed" ]; then
+    elif [ "$state" = "failed" ] || [ "$phase" = "failed" ]; then
       COMPLETED["$role"]="failed"
       # On failure, grab last 50 lines for context
       tail_lines=$(ssh_cmd "$ip" "sudo tail -50 ${LOG_FILE} 2>/dev/null" 2>/dev/null || true)

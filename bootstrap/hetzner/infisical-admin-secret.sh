@@ -1238,10 +1238,10 @@ if [ -f "$cluster_kustomization" ]; then
 fi
 if ! git -C "$GITOPS_DIR" diff --cached --quiet; then
   git -C "$GITOPS_DIR" commit -m "Configure Infisical k8s auth overlay"
-  git_push_changes || true
+  git_push_changes
 else
   echo "[infisical-admin-secret] gitops overlay already up to date"
-  git_push_changes || true
+  git_push_changes
 fi
 
 rm -f "$workdir/age.key" "$workdir/admin.token" "$workdir/admin.token.age" "$workdir/latest-tokens.json"

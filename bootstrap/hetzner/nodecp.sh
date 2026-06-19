@@ -120,6 +120,29 @@ fi
 retry 10 5 curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
 chmod +x /tmp/k3s-install.sh
 
+wait_for_k3s_primary_api() {
+  echo "[nodecp] waiting for primary K3s API at ${K3S_SERVER_URL}"
+  local i
+  for i in {1..90}; do
+    if curl -skf "${K3S_SERVER_URL}/cacerts" >/dev/null; then
+      echo "[nodecp] primary K3s API is ready"
+      return 0
+    fi
+    if [ "$i" -eq 1 ] || [ $((i % 15)) -eq 0 ]; then
+      if declare -F beacon_retrying >/dev/null 2>&1; then
+        beacon_retrying "waiting_k3s_primary_api" "Waiting for primary K3s API before control-plane join" 40 "dependency" "K3S_PRIMARY_API_WAIT" "$i" 90
+      fi
+    fi
+    sleep 5
+  done
+
+  echo "[nodecp] primary K3s API did not become ready at ${K3S_SERVER_URL}" >&2
+  if declare -F beacon_failed >/dev/null 2>&1; then
+    beacon_failed "waiting_k3s_primary_api" "Primary K3s API did not become ready before control-plane join" 40 "dependency" "K3S_PRIMARY_API_NOT_READY" "nodecp.sh" "" "curl -skf ${K3S_SERVER_URL}/cacerts" 1
+  fi
+  return 1
+}
+
 install_k3s() {
   local attempts=5
   local delay=10
@@ -160,6 +183,7 @@ install_k3s() {
   return 1
 }
 
+wait_for_k3s_primary_api
 install_k3s
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml

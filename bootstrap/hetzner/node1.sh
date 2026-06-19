@@ -263,11 +263,31 @@ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 beacon_status "deploying_argocd" "Deploying ArgoCD" 55
 # Use server-side apply to avoid client-side last-applied annotations exceeding
 # the 256KiB limit on large CRDs (e.g. ApplicationSet).
-retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+ARGOCD_INSTALL_MANIFEST_URL="${ARGOCD_INSTALL_MANIFEST_URL:-https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml}"
+retry 10 5 kubectl apply --server-side --force-conflicts -n argocd -f "$ARGOCD_INSTALL_MANIFEST_URL"
 
-for dep in argocd-server argocd-repo-server argocd-application-controller argocd-dex-server; do
-  kubectl -n argocd rollout status "deployment/${dep}" --timeout=300s || true
-done
+wait_argocd_rollouts() {
+  local kind resources resource
+  for kind in deployment statefulset; do
+    resources=$(kubectl -n argocd get "$kind" -o name --ignore-not-found 2>/dev/null || true)
+    if [ -z "$resources" ]; then
+      continue
+    fi
+    while IFS= read -r resource; do
+      [ -z "$resource" ] && continue
+      echo "[node1] waiting for ArgoCD ${resource}"
+      if ! kubectl -n argocd rollout status "$resource" --timeout=300s; then
+        echo "[node1] ArgoCD ${resource} did not become ready" >&2
+        if declare -F beacon_failed >/dev/null 2>&1; then
+          beacon_failed "deploying_argocd" "ArgoCD ${resource} did not become ready" 55 "dependency" "ARGOCD_NOT_READY" "node1.sh" "" "kubectl -n argocd rollout status ${resource}" 1
+        fi
+        return 1
+      fi
+    done <<< "$resources"
+  done
+}
+
+wait_argocd_rollouts
 
 # Expose ArgoCD server via NodePort so egress nginx can proxy to it
 kubectl -n argocd patch svc argocd-server --type=merge -p '{"spec":{"type":"NodePort"}}' || true
@@ -470,6 +490,13 @@ if [ -n "${ARGOCD_APP_REPO_URL:-}" ] && [ -n "${ARGOCD_APP_PATH:-}" ]; then
   for i in {1..30}; do
     if kubectl get crd applications.argoproj.io >/dev/null 2>&1; then
       break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "[node1] ArgoCD Application CRD did not become available" >&2
+      if declare -F beacon_failed >/dev/null 2>&1; then
+        beacon_failed "configuring_argocd" "ArgoCD Application CRD did not become available" 70 "dependency" "ARGOCD_CRD_NOT_READY" "node1.sh" "" "kubectl get crd applications.argoproj.io" 1
+      fi
+      exit 1
     fi
     sleep 2
   done
