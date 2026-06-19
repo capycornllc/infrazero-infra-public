@@ -87,8 +87,19 @@ PY
   exit 1
 fi
 
-scopes=$(awk -F': *' 'tolower($1)=="x-oauth-scopes" {print $2}' "$headers_file" | tr -d '\r' | tail -n 1)
-scopes_compact=",${scopes// /},"
+scopes=$(awk '
+  {
+    line=$0
+    sub(/\r$/, "", line)
+    if (tolower(line) ~ /^x-oauth-scopes:/) {
+      sub(/^[^:]*:[[:space:]]*/, "", line)
+      value=line
+    }
+  }
+  END {print value}
+' "$headers_file")
+scopes_compact=$(printf '%s' "$scopes" | tr -d '[:space:]')
+scopes_compact=",${scopes_compact},"
 missing_scopes=()
 if [[ "$scopes_compact" != *",repo,"* ]]; then
   missing_scopes+=("repo")
