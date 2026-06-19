@@ -507,8 +507,69 @@ sysctl -w "net.ipv4.conf.${priv_if}.rp_filter=0" >/dev/null 2>&1 || true
 
 /usr/local/sbin/infrazero-private-route.sh || true
 
-ip route replace "$WG_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50 || true
-echo "[wg-route] added ${WG_CIDR} via ${private_gw} dev ${priv_if}"
+cleanup_stale_wg_routes() {
+  local route_line route_via route_dev route_metric
+  local -a route_args
+
+  while IFS= read -r route_line; do
+    if [ -z "$route_line" ]; then
+      continue
+    fi
+
+    route_via=$(printf '%s\n' "$route_line" | awk '{for (i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')
+    route_dev=$(printf '%s\n' "$route_line" | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+    route_metric=$(printf '%s\n' "$route_line" | awk '{for (i=1;i<=NF;i++) if ($i=="metric") {print $(i+1); exit}}')
+
+    if [ "$route_via" = "$private_gw" ] && [ "$route_dev" = "$priv_if" ] && [ "$route_metric" = "50" ]; then
+      continue
+    fi
+
+    echo "[wg-route] removing stale ${WG_CIDR} route: ${route_line}"
+    read -r -a route_args <<< "$route_line"
+    if ! ip route del "${route_args[@]}" 2>/dev/null; then
+      if [ -n "$route_via" ] && [ -n "$route_dev" ]; then
+        ip route del "$WG_CIDR" via "$route_via" dev "$route_dev" 2>/dev/null || true
+      elif [ -n "$route_dev" ]; then
+        ip route del "$WG_CIDR" dev "$route_dev" 2>/dev/null || true
+      else
+        ip route del "$WG_CIDR" 2>/dev/null || true
+      fi
+    fi
+  done < <(ip -4 route show "$WG_CIDR" 2>/dev/null || true)
+}
+
+cleanup_stale_wg_routes
+
+# Hetzner routes WG_CIDR to the bastion at the network layer. Guests with /32
+# private NICs must still use the private gateway as their local next hop.
+ip route replace "$WG_CIDR" via "$private_gw" dev "$priv_if" onlink metric 50
+
+wg_probe_ip=$(python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("WG_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+if net.num_addresses > 2:
+    probe = net.network_address + 1
+else:
+    probe = net.network_address
+print(str(probe))
+PY
+) || wg_probe_ip=""
+
+if [ -n "$wg_probe_ip" ]; then
+  selected_route=$(ip -4 route get "$wg_probe_ip" 2>/dev/null || true)
+  selected_via=$(printf '%s\n' "$selected_route" | awk '{for (i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')
+  selected_dev=$(printf '%s\n' "$selected_route" | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  if [ "$selected_via" != "$private_gw" ] || [ "$selected_dev" != "$priv_if" ]; then
+    echo "[wg-route] warning: ${WG_CIDR} selected route is '${selected_route}', expected via ${private_gw} dev ${priv_if}" >&2
+  fi
+fi
+
+echo "[wg-route] ensured ${WG_CIDR} via ${private_gw} dev ${priv_if}"
 EOF
 
 chmod +x /usr/local/sbin/infrazero-wg-route.sh
@@ -523,14 +584,28 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/infrazero-wg-route.sh
-RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/infrazero-wg-route.timer <<'EOF'
+[Unit]
+Description=Periodically repair Infrazero WireGuard subnet route
+
+[Timer]
+OnBootSec=35s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=infrazero-wg-route.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --now infrazero-wg-route.service
+systemctl enable --now infrazero-wg-route.timer
 
 # Unattended upgrades (security-only, no reboot)
 if command -v unattended-upgrades >/dev/null 2>&1; then
