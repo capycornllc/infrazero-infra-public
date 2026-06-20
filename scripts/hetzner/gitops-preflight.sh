@@ -56,17 +56,63 @@ github_api() {
   local method="$1"
   local path="$2"
   local output_file="$3"
+  local input_file="${4:-}"
   local http_code
-  http_code=$(curl -sS \
+  local curl_args=(
+    -sS
     -X "$method" \
     -D "$headers_file" \
     -o "$output_file" \
     -w "%{http_code}" \
     -H "Authorization: Bearer ${GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com${path}" || true)
+    -H "X-GitHub-Api-Version: 2022-11-28"
+  )
+  if [ -n "$input_file" ]; then
+    curl_args+=(-H "Content-Type: application/json" --data-binary "@${input_file}")
+  fi
+  http_code=$(curl "${curl_args[@]}" "https://api.github.com${path}" || true)
   printf '%s' "$http_code"
+}
+
+create_initial_commit() {
+  local request_file="${tmpdir}/initial-readme.json"
+  python3 - "$request_file" <<'PY'
+import base64
+import json
+import sys
+from pathlib import Path
+
+content = """# Infrazero GitOps
+
+Initial commit created automatically by Infrazero so deployment can sync GitOps manifests.
+"""
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "message": "Infrazero: initialize GitOps repo",
+    "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+}), encoding="utf-8")
+PY
+
+  local init_code
+  init_code=$(github_api PUT "/repos/${repo_owner}/${repo_name}/contents/README.md" "$body_file" "$request_file")
+  if [ "$init_code" != "200" ] && [ "$init_code" != "201" ]; then
+    echo "[gitops-preflight] ERROR config/GIT_REPO_INITIAL_COMMIT_FAILED: failed to create README.md initial commit in ${repo_owner}/${repo_name} (HTTP ${init_code})" >&2
+    python3 - "$body_file" <<'PY' >&2 || true
+import json
+import sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+except Exception:
+    raise SystemExit(0)
+message = data.get("message")
+if message:
+    print(f"[gitops-preflight] GitHub response: {message}")
+PY
+    exit 1
+  fi
+  echo "[gitops-preflight] initialized empty GitOps repo ${repo_owner}/${repo_name} with README.md"
 }
 
 user_code=$(github_api GET "/user" "$body_file")
@@ -141,11 +187,42 @@ PY
 )
 
 if [ -z "$default_branch" ]; then
-  echo "[gitops-preflight] ERROR config/GIT_REPO_NO_DEFAULT_BRANCH: GitOps repo ${repo_owner}/${repo_name} has no default branch. Initialize the repo or enable initial commit creation before deploy." >&2
-  exit 1
+  create_initial_commit
+  repo_code=$(github_api GET "/repos/${repo_owner}/${repo_name}" "$body_file")
+  if [ "$repo_code" != "200" ]; then
+    echo "[gitops-preflight] ERROR auth/GITOPS_REPO_INACCESSIBLE: GET /repos/${repo_owner}/${repo_name} returned HTTP ${repo_code} after initial commit" >&2
+    exit 1
+  fi
+  default_branch=$(python3 - "$body_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+value = data.get("default_branch") or ""
+print(value)
+PY
+)
 fi
 
 branch_code=$(github_api GET "/repos/${repo_owner}/${repo_name}/branches/${default_branch}" "$body_file")
+if [ "$branch_code" != "200" ]; then
+  if [ "$branch_code" = "404" ]; then
+    create_initial_commit
+    repo_code=$(github_api GET "/repos/${repo_owner}/${repo_name}" "$body_file")
+    if [ "$repo_code" = "200" ]; then
+      default_branch=$(python3 - "$body_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+value = data.get("default_branch") or ""
+print(value)
+PY
+)
+    fi
+    branch_code=$(github_api GET "/repos/${repo_owner}/${repo_name}/branches/${default_branch}" "$body_file")
+  fi
+fi
 if [ "$branch_code" != "200" ]; then
   echo "[gitops-preflight] ERROR config/GIT_REPO_NO_DEFAULT_BRANCH: default branch '${default_branch}' is not readable for ${repo_owner}/${repo_name} (HTTP ${branch_code})" >&2
   exit 1
