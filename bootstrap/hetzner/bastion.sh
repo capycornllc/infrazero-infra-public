@@ -458,8 +458,23 @@ if [ -n "$public_ip" ]; then
   ip rule add pref 120 from "$public_ip/32" lookup main
 fi
 
-ip rule del pref 200 || true
-ip rule add pref 200 lookup "$table_name"
+# Bastion's own private IP traffic must also use main table (eth0 → public)
+# so that bastion's services (apt, curl, monitoring) always go via bastion's
+# own public interface, NOT via the private gateway.
+private_ip_local=$(ip -4 -o addr show "$private_if" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1 || true)
+ip rule del pref 130 2>/dev/null || true
+if [ -n "$private_ip_local" ]; then
+  ip rule add pref 130 from "$private_ip_local/32" lookup main
+fi
+
+# REMOVED: pref 200 catch-all lookup egress
+# Bastion has its own public IP — it must NOT route its outbound traffic via
+# the private gateway. That catch-all caused all unbound-socket traffic (apt,
+# curl, bootstrap downloads) to go through 10.10.0.1 → egress MASQUERADE,
+# which is not ready during bastion's own bootstrap, breaking everything.
+# Without pref 200, unmatched traffic falls to the kernel default (pref 32766
+# = main table → eth0 → public IP). That is the correct behaviour.
+ip rule del pref 200 2>/dev/null || true
 EOF
 
 chmod +x /usr/local/sbin/infrazero-egress-routing.sh
