@@ -171,7 +171,7 @@ write_files:
       wait_for_bootstrap_url() {
         local url="$1"
         echo "[bootstrap] waiting for bootstrap URL to be reachable"
-        for i in {1..60}; do
+        for i in {1..120}; do
           local code
           code=$(curl -s -o /dev/null -w "%%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
           if [ -n "$code" ] && [ "$code" != "000" ]; then

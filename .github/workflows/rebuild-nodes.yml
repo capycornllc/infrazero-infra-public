@@ -129,7 +129,7 @@ jobs:
           bootstrap = cfg.get("bootstrap", {})
 
           env_lines = [
-              f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 3600)}",
+              f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 7200)}",
           ]
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(env_lines) + "\n")

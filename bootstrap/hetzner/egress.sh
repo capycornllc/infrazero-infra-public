@@ -175,8 +175,22 @@ ensure_aws_cli() {
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy
+  _apt_attempts=5
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get update -y && break
+    echo "[egress] apt-get update attempt $_apt_i/$_apt_attempts failed; retrying in 10s"
+    sleep 10
+  done
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get install -y docker.io docker-compose age jq iptables unzip openssl nginx certbot python3-certbot-dns-cloudflare haproxy && break
+    echo "[egress] apt-get install attempt $_apt_i/$_apt_attempts failed; retrying in 15s"
+    apt-get clean
+    sleep 15
+    if [ "$_apt_i" -eq "$_apt_attempts" ]; then
+      echo "[egress] apt-get install failed after $_apt_attempts attempts" >&2
+      exit 1
+    fi
+  done
 fi
 
 systemctl enable --now docker
@@ -321,11 +335,20 @@ if [ -z "$PRIVATE_CIDR" ]; then
   echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
 fi
 
-PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
+PUBLIC_IF=""
+PRIVATE_IF=""
+for _if_i in $(seq 1 30); do
+  PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
+  if [ -n "$PUBLIC_IF" ] && [ -n "$PRIVATE_IF" ]; then
+    break
+  fi
+  echo "[egress] waiting for network interfaces (attempt $_if_i/30)..."
+  sleep 2
+done
 
 if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
-  echo "[egress] unable to determine network interfaces" >&2
+  echo "[egress] unable to determine network interfaces after 60s" >&2
   exit 1
 fi
 

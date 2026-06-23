@@ -312,10 +312,20 @@ if [ -z "${PRIVATE_CIDR:-}" ]; then
   exit 0
 fi
 
-public_if=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+public_if=""
+for _pub_attempt in {1..30}; do
+  public_if=$(ip -4 route show table main default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  if [ -n "$public_if" ]; then break; fi
+  sleep 2
+done
+
 public_ip=""
 if [ -n "$public_if" ]; then
-  public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+  for _pub_ip_attempt in {1..30}; do
+    public_ip=$(ip -4 -o addr show "$public_if" | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+    if [ -n "$public_ip" ]; then break; fi
+    sleep 2
+  done
 fi
 
 if [ -z "$public_if" ]; then

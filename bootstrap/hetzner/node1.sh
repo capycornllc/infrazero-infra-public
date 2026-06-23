@@ -101,8 +101,22 @@ fi
 if command -v apt-get >/dev/null 2>&1; then
   beacon_status "installing_packages" "Installing packages" 10
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq unzip apache2-utils openssl
+  _apt_attempts=5
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get update -y && break
+    echo "[node1] apt-get update attempt $_apt_i/$_apt_attempts failed; retrying in 10s"
+    sleep 10
+  done
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get install -y curl ca-certificates jq unzip apache2-utils openssl && break
+    echo "[node1] apt-get install attempt $_apt_i/$_apt_attempts failed; retrying in 15s"
+    apt-get clean
+    sleep 15
+    if [ "$_apt_i" -eq "$_apt_attempts" ]; then
+      echo "[node1] apt-get install failed after $_apt_attempts attempts" >&2
+      exit 1
+    fi
+  done
 fi
 
 if ! command -v argocd >/dev/null 2>&1; then

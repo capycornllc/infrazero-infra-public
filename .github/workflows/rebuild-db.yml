@@ -140,7 +140,7 @@ jobs:
               db_volume_name = f"{base_slug}-{runtime_env}-db"
 
           env_lines = [
-              f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 3600)}",
+              f"BOOTSTRAP_PRESIGN_EXPIRY={bootstrap.get('presign_expiry_seconds', 7200)}",
               f"DB_VOLUME_NAME={db_volume_name}",
           ]
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:

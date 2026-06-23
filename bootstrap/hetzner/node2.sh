@@ -101,8 +101,22 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates jq unzip
+  _apt_attempts=5
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get update -y && break
+    echo "[k3s-agent] apt-get update attempt $_apt_i/$_apt_attempts failed; retrying in 10s"
+    sleep 10
+  done
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    apt-get install -y curl ca-certificates jq unzip && break
+    echo "[k3s-agent] apt-get install attempt $_apt_i/$_apt_attempts failed; retrying in 15s"
+    apt-get clean
+    sleep 15
+    if [ "$_apt_i" -eq "$_apt_attempts" ]; then
+      echo "[k3s-agent] apt-get install failed after $_apt_attempts attempts" >&2
+      exit 1
+    fi
+  done
 fi
 
 INSTALL_K3S_EXEC="agent --node-ip ${NODE_IP} --flannel-iface ${PRIVATE_IF}"
@@ -112,14 +126,14 @@ chmod +x /tmp/k3s-install.sh
 wait_for_k3s_primary_api() {
   echo "[k3s-agent] waiting for primary K3s API at ${K3S_SERVER_URL}"
   local i
-  for i in {1..90}; do
+  for i in {1..120}; do
     if curl -skf "${K3S_SERVER_URL}/cacerts" >/dev/null; then
       echo "[k3s-agent] primary K3s API is ready"
       return 0
     fi
     if [ "$i" -eq 1 ] || [ $((i % 15)) -eq 0 ]; then
       if declare -F beacon_retrying >/dev/null 2>&1; then
-        beacon_retrying "waiting_k3s_primary_api" "Waiting for primary K3s API before agent join" 40 "dependency" "K3S_PRIMARY_API_WAIT" "$i" 90
+        beacon_retrying "waiting_k3s_primary_api" "Waiting for primary K3s API before agent join" 40 "dependency" "K3S_PRIMARY_API_WAIT" "$i" 120
       fi
     fi
     sleep 5

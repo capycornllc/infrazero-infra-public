@@ -73,26 +73,56 @@ install_packages() {
     return
   fi
   export DEBIAN_FRONTEND=noninteractive
-  timeout 300 apt-get update -y || { apt-get clean; timeout 300 apt-get update -y; }
-  timeout 600 apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd
+  local _apt_attempts=5
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    timeout 300 apt-get update -y && break
+    echo "[db] apt-get update attempt $_apt_i/$_apt_attempts failed; retrying in 10s"
+    apt-get clean; sleep 10
+  done
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    timeout 600 apt-get install -y curl ca-certificates jq age unzip gnupg lsb-release rsync certbot python3-certbot-dns-cloudflare zstd && break
+    echo "[db] apt-get install attempt $_apt_i/$_apt_attempts failed; retrying in 15s"
+    apt-get clean; sleep 15
+    if [ "$_apt_i" -eq "$_apt_attempts" ]; then
+      echo "[db] apt-get install failed after $_apt_attempts attempts" >&2
+      exit 1
+    fi
+  done
 
   if ! apt-cache show "postgresql-${PG_MAJOR}" >/dev/null 2>&1; then
     echo "[db] enabling PGDG repo for PostgreSQL ${PG_MAJOR}"
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    timeout 300 apt-get update -y
+    for _apt_i in $(seq 1 "$_apt_attempts"); do
+      timeout 300 apt-get update -y && break
+      echo "[db] apt-get update (pgdg) attempt $_apt_i/$_apt_attempts failed; retrying in 10s"
+      sleep 10
+    done
   fi
 
-  timeout 600 apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}"
+  for _apt_i in $(seq 1 "$_apt_attempts"); do
+    timeout 600 apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-contrib-${PG_MAJOR}" && break
+    echo "[db] postgresql install attempt $_apt_i/$_apt_attempts failed; retrying in 15s"
+    apt-get clean; sleep 15
+    if [ "$_apt_i" -eq "$_apt_attempts" ]; then
+      echo "[db] postgresql install failed after $_apt_attempts attempts" >&2
+      exit 1
+    fi
+  done
 }
 
 install_packages
 
 if ! command -v aws >/dev/null 2>&1; then
-  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
-    unzip -q /tmp/awscliv2.zip -d /tmp
-    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
-  fi
+  for _aws_i in $(seq 1 5); do
+    if curl -fsSL --retry 3 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip; then
+      rm -rf /tmp/aws
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update && break
+    fi
+    echo "[db] aws cli install attempt $_aws_i/5 failed; retrying in 10s"
+    sleep 10
+  done
 fi
 
 if ! command -v aws >/dev/null 2>&1; then

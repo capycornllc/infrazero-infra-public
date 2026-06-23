@@ -521,7 +521,7 @@ resource "hcloud_server" "k3s" {
     k3s_role    = tonumber(each.key) < local.k3s_control_planes_count ? "server" : "agent"
   }
 
-  depends_on = [hcloud_network_subnet.main]
+  depends_on = [hcloud_network_subnet.main, hcloud_server.egress]
 }
 
 resource "hcloud_server" "db" {
@@ -554,7 +554,7 @@ resource "hcloud_server" "db" {
     role        = "db"
   }
 
-  depends_on = [hcloud_network_subnet.main]
+  depends_on = [hcloud_network_subnet.main, hcloud_server.egress]
 }
 
 resource "hcloud_server" "db_replica" {
