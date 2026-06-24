@@ -694,13 +694,20 @@ EOF
 
 compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
 
-for i in {1..30}; do
+loki_ready=false
+for i in {1..60}; do
   if curl -sf http://127.0.0.1:3100/ready >/dev/null; then
-    echo "[egress] loki ready"
+    echo "[egress] loki ready (attempt $i)"
+    loki_ready=true
     break
   fi
   sleep 2
 done
+
+if [ "$loki_ready" != "true" ]; then
+  echo "[egress] WARNING: loki did not become ready after 120s — dumping container logs:" >&2
+  compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml logs --no-color --tail=50 loki >&2 || true
+fi
 
 install_egress_docker_promtail
 
@@ -1508,13 +1515,4 @@ chmod +x /opt/infrazero/infisical/backup.sh
 
 cat > /etc/cron.d/infisical-backup <<'EOF'
 SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-15 2 * * * root /opt/infrazero/infisical/backup.sh >> /var/log/infrazero-infisical-backup.log 2>&1
-EOF
-
-chmod 0644 /etc/cron.d/infisical-backup
-
-beacon_status "complete" "Bootstrap complete" 100
-
-echo "[egress] $(date -Is) complete"
+PATH=/u
