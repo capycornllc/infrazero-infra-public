@@ -1515,4 +1515,13 @@ chmod +x /opt/infrazero/infisical/backup.sh
 
 cat > /etc/cron.d/infisical-backup <<'EOF'
 SHELL=/bin/bash
-PATH=/u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+15 2 * * * root /opt/infrazero/infisical/backup.sh >> /var/log/infrazero-infisical-backup.log 2>&1
+EOF
+
+chmod 0644 /etc/cron.d/infisical-backup
+
+beacon_status "complete" "Bootstrap complete" 100
+
+echo "[egress] $(date -Is) complete"
