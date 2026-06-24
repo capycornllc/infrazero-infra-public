@@ -22,6 +22,9 @@ resource "hcloud_network_route" "default_egress" {
   network_id  = hcloud_network.main.id
   destination = "0.0.0.0/0"
   gateway     = var.servers.egress.private_ip
+
+  # Prevent race: gateway must be a confirmed network member before the route is created.
+  depends_on = [hcloud_server.egress]
 }
 
 resource "hcloud_network_route" "wireguard" {
@@ -29,6 +32,10 @@ resource "hcloud_network_route" "wireguard" {
   network_id  = hcloud_network.main.id
   destination = local.wg_cidr
   gateway     = var.servers.bastion.private_ip
+
+  # Prevent race: Hetzner rejects the gateway if the bastion's network attachment
+  # isn't fully propagated yet. Same pattern as hcloud_load_balancer_target above.
+  depends_on = [hcloud_server.bastion]
 }
 
 resource "hcloud_placement_group" "main" {
