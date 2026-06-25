@@ -692,7 +692,19 @@ cat > /opt/infrazero/egress/grafana-dashboards/infrazero-bootstrap-and-security.
 }
 EOF
 
-compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d
+loki_up=false
+for _loki_attempt in {1..3}; do
+  if compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml up -d; then
+    loki_up=true
+    break
+  fi
+  echo "[egress] WARNING: loki compose up failed (attempt ${_loki_attempt}/3); retrying in 10s" >&2
+  sleep 10
+  compose_cmd -f /opt/infrazero/egress/docker-compose.loki.yml down --remove-orphans 2>/dev/null || true
+done
+if [ "$loki_up" != "true" ]; then
+  echo "[egress] WARNING: loki compose up failed after 3 attempts; continuing without loki" >&2
+fi
 
 loki_ready=false
 for i in {1..60}; do
@@ -1220,12 +1232,23 @@ services:
       - "${INFISICAL_BIND_ADDR}:8080:8080"
 EOF
 
-compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis
+for _infra_attempt in {1..5}; do
+  if compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical-db redis; then
+    break
+  fi
+  echo "[egress] docker compose up infisical-db redis failed (attempt ${_infra_attempt}/5); retrying in 15s" >&2
+  sleep 15
+  compose_cmd -f /opt/infrazero/infisical/docker-compose.yml down --remove-orphans 2>/dev/null || true
+  docker system prune -f 2>/dev/null || true
+done
 
-for i in {1..30}; do
+for i in {1..120}; do
   if compose_cmd -f /opt/infrazero/infisical/docker-compose.yml exec -T infisical-db pg_isready -U "$INFISICAL_POSTGRES_USER" >/dev/null 2>&1; then
     echo "[egress] postgres ready"
     break
+  fi
+  if [ "$i" -eq 120 ]; then
+    echo "[egress] WARNING: postgres not ready after 120 attempts; continuing anyway" >&2
   fi
   sleep 2
 done
@@ -1305,7 +1328,14 @@ if [ "${INFISICAL_RESTORE_FROM_S3,,}" != "true" ]; then
   aws --endpoint-url "$S3_ENDPOINT" s3 rm "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/latest-tokens.json" >/dev/null 2>&1 || true
 fi
 
-compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical
+for _infra_attempt in {1..5}; do
+  if compose_cmd -f /opt/infrazero/infisical/docker-compose.yml up -d infisical; then
+    break
+  fi
+  echo "[egress] docker compose up infisical failed (attempt ${_infra_attempt}/5); retrying in 15s" >&2
+  sleep 15
+  compose_cmd -f /opt/infrazero/infisical/docker-compose.yml down --remove-orphans 2>/dev/null || true
+done
 
 setup_k3s_haproxy || true
 setup_service_tls || true

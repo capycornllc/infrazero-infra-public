@@ -444,7 +444,8 @@ if [ "$prefix_len" = "32" ]; then
 else
   ip route replace "$PRIVATE_CIDR" dev "$private_if" scope link || true
 fi
-ip route replace default via "$private_gw" dev "$private_if" onlink table "$table_name"
+ip route replace default via "$private_gw" dev "$private_if" onlink table "$table_name" || \
+  echo "[bastion-routing] WARNING: could not set default route in egress table; ip rules will still be configured" >&2
 
 ip rule del pref 100 || true
 if [ -n "$WG_CIDR" ]; then

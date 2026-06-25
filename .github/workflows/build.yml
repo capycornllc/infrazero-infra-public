@@ -378,12 +378,13 @@ jobs:
 
       - name: Monitor server bootstrap
         if: success()
-        timeout-minutes: 20
+        timeout-minutes: 40
         env:
           BASTION_PUBLIC_IP: ""
           BOOTSTRAP_SERVER_LIST: ""
           BOOTSTRAP_SSH_PRIVATE_KEY: ${{ secrets.BOOTSTRAP_SSH_PRIVATE_KEY }}
           PLATFORM_ADMINS_JSON: ${{ secrets.platform_admins_json }}
+          BOOTSTRAP_TIMEOUT_MINUTES: "35"
         run: |
           # Extract IPs from OpenTofu outputs
           BASTION_IP=$(tofu -chdir=${{ env.TOFU_DIR }} output -no-color -raw bastion_public_ipv4 2>/dev/null || true)
