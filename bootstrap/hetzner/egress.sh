@@ -1555,8 +1555,37 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
       sleep 120
     done
     if [ "$infisical_ok" != "true" ]; then
-      echo "[egress] infisical-bootstrap.sh failed after 3 attempts" >&2
+      echo "[egress] WARNING: infisical-bootstrap.sh failed after 3 attempts; installing retry timer" >&2
+      cat > /etc/systemd/system/infrazero-infisical-retry.service <<'UNIT'
+[Unit]
+Description=Retry Infisical bootstrap
+After=network-online.target docker.service
+ConditionPathExists=!/etc/infrazero/infisical-bootstrap-done
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/infrazero/bootstrap
+ExecStart=/bin/bash -c './infisical-bootstrap.sh && touch /etc/infrazero/infisical-bootstrap-done'
+TimeoutStartSec=600
+UNIT
+      cat > /etc/systemd/system/infrazero-infisical-retry.timer <<'TIMER'
+[Unit]
+Description=Retry Infisical bootstrap every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+TIMER
+      systemctl daemon-reload
+      systemctl enable --now infrazero-infisical-retry.timer
+      echo "[egress] infrazero-infisical-retry.timer installed"
     fi
+  else
+    echo "[egress] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
   fi
 fi
 

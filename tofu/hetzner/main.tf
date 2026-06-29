@@ -759,6 +759,7 @@ resource "hcloud_volume" "db" {
   location = var.location
   format   = var.db_volume.format
 
+  lifecycle {
     prevent_destroy = true
   }
 

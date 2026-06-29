@@ -588,6 +588,8 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+systemctl daemon-reload
+systemctl enable --now promtail || echo "[bastion] failed to start promtail; continuing"
 else
   echo "[bastion] promtail binary unavailable; skipping service setup"
 fi
