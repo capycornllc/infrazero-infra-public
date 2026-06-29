@@ -637,6 +637,9 @@ fi
 # Enable auditd
 systemctl enable --now auditd || true
 
+# Journald persistence
+mkdir -p /var/log/journal
+sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
 systemctl restart systemd-journald || true
 
 # DNS fallback

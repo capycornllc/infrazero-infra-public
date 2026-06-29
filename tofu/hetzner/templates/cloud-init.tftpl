@@ -352,6 +352,7 @@ write_files:
 %{ endfor ~}
 %{ endif ~}
 
+%{ if length(node_role_env) > 0 ~}
   - path: /etc/infrazero/${bootstrap_role}.env
     permissions: "0600"
     content: |
