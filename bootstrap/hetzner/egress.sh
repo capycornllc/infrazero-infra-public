@@ -173,6 +173,15 @@ ensure_aws_cli() {
   return 1
 }
 
+# Enable IP forwarding BEFORE Docker starts so the kernel accepts forwarded
+# packets from the moment the first container comes up.
+cat > /etc/sysctl.d/99-infrazero-forward-early.conf <<'SYSCTL'
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+SYSCTL
+sysctl --system >/dev/null 2>&1 || true
+
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   _apt_attempts=5
@@ -194,6 +203,12 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 systemctl enable --now docker
+# Wait for Docker daemon socket to be ready before any compose calls
+for _docker_wait in {1..30}; do
+  docker info >/dev/null 2>&1 && break
+  echo "[egress] waiting for Docker daemon (attempt ${_docker_wait}/30)..."
+  sleep 2
+done
 
 ensure_dns() {
   local default_if=""
@@ -850,12 +865,14 @@ iptables-save > /etc/iptables/rules.v4
 cat > /etc/systemd/system/infrazero-iptables.service <<'EOF'
 [Unit]
 Description=Restore iptables rules for Infrazero
-After=network-online.target
+# Must run after Docker so DOCKER-USER chain already exists when we restore rules.
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/iptables-restore /etc/iptables/rules.v4
+ExecStart=/usr/sbin/iptables-restore --noflush /etc/iptables/rules.v4
 RemainAfterExit=yes
 
 [Install]
@@ -1538,3 +1555,65 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
       sleep 120
     done
     if [ "$infisical_ok" != "true" ]; then
+      echo "[egress] infisical-bootstrap.sh failed after 3 attempts" >&2
+    fi
+  fi
+fi
+
+cat > /opt/infrazero/infisical/backup.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="/etc/infrazero/egress.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
+export AWS_DEFAULT_REGION="$S3_REGION"
+
+TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+WORKDIR="/opt/infrazero/infisical/backups"
+mkdir -p "$WORKDIR"
+
+DUMP_PATH="$WORKDIR/infisical-${TIMESTAMP}.sql.gz"
+ENC_PATH="$DUMP_PATH.age"
+
+if command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE=(docker-compose)
+else
+  COMPOSE=(docker compose)
+fi
+
+"${COMPOSE[@]}" -f /opt/infrazero/infisical/docker-compose.yml exec -T infisical-db pg_dump -U "$INFISICAL_POSTGRES_USER" -d "$INFISICAL_POSTGRES_DB" | gzip > "$DUMP_PATH"
+
+age -r "$INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY" -o "$ENC_PATH" "$DUMP_PATH"
+SHA=$(sha256sum "$ENC_PATH" | awk '{print $1}')
+KEY="infisical/${TIMESTAMP}.sql.gz.age"
+
+aws --endpoint-url "$S3_ENDPOINT" s3 cp "$ENC_PATH" "s3://${DB_BACKUP_BUCKET}/${KEY}"
+
+jq -n --arg key "$KEY" --arg sha "$SHA" --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{key:$key, sha256:$sha, created_at:$created_at}' > "$WORKDIR/latest-dump.json"
+aws --endpoint-url "$S3_ENDPOINT" s3 cp "$WORKDIR/latest-dump.json" "s3://${DB_BACKUP_BUCKET}/infisical/latest-dump.json"
+
+rm -f "$DUMP_PATH" "$ENC_PATH"
+EOF
+
+chmod +x /opt/infrazero/infisical/backup.sh
+
+cat > /etc/cron.d/infisical-backup <<'EOF'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+15 2 * * * root /opt/infrazero/infisical/backup.sh >> /var/log/infrazero-infisical-backup.log 2>&1
+EOF
+
+chmod 0644 /etc/cron.d/infisical-backup
+
+beacon_status "complete" "Bootstrap complete" 100
+
+echo "[egress] $(date -Is) complete"

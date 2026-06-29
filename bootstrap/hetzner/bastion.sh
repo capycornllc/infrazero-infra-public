@@ -197,17 +197,19 @@ detect_private_if() {
 }
 
 PRIVATE_IF=""
-for i in {1..30}; do
+# 90 attempts × 5 s = 7.5 min — covers slow Hetzner private NIC IP assignment races.
+for i in {1..90}; do
   PRIVATE_IF=$(detect_private_if)
   if [ -n "$PRIVATE_IF" ]; then
     break
   fi
-  sleep 2
+  echo "[bastion] waiting for private interface (attempt ${i}/90)..."
+  sleep 5
 done
 
 SKIP_FORWARDING="false"
 if [ -z "$PRIVATE_IF" ]; then
-  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR after retries; skipping WG forwarding" >&2
+  echo "[bastion] unable to determine private interface for $PRIVATE_CIDR after 7.5 min; skipping WG forwarding" >&2
   SKIP_FORWARDING="true"
 fi
 
@@ -586,8 +588,6 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now promtail || echo "[bastion] failed to start promtail; continuing"
 else
   echo "[bastion] promtail binary unavailable; skipping service setup"
 fi

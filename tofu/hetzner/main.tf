@@ -597,7 +597,10 @@ resource "hcloud_server" "db_replica" {
     replica_idx = each.key
   }
 
-  depends_on = [hcloud_network_subnet.main]
+  # Replica bootstrap immediately tries pg_basebackup from the primary.
+  # Ensure the primary VM exists first so the replica's retry window overlaps
+  # with the primary's actual replication setup (not a cold boot).
+  depends_on = [hcloud_network_subnet.main, hcloud_server.db]
 }
 
 resource "hcloud_load_balancer" "main" {
@@ -756,7 +759,6 @@ resource "hcloud_volume" "db" {
   location = var.location
   format   = var.db_volume.format
 
-  lifecycle {
     prevent_destroy = true
   }
 

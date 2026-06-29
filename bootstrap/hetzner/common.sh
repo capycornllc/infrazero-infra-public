@@ -136,23 +136,25 @@ fi
 install_packages() {
   beacon_status "installing_packages" "Installing base packages" 15
 
-  # Wait for outbound internet connectivity (private-network servers depend on egress NAT)
+  # Wait for outbound internet connectivity (private-network servers depend on egress NAT).
+  # Egress bootstrap (Docker install + NAT setup + Loki/Infisical) can take up to 15 min.
+  # 300 attempts × 5 s = 25 min max wait — enough for worst-case egress boot on any region.
   if [ -z "${HAS_PUBLIC_IPV4:-}" ] || [ "${HAS_PUBLIC_IPV4:-}" = "false" ]; then
     echo "[common] waiting for outbound internet (egress NAT)..."
-    for _wait_i in {1..90}; do
+    for _wait_i in {1..300}; do
       if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null https://mirror.hetzner.com 2>/dev/null; then
         echo "[common] outbound internet available (attempt ${_wait_i})"
         break
       fi
-      if [ "$_wait_i" -eq 1 ] || [ $((_wait_i % 15)) -eq 0 ]; then
-        beacon_retrying "waiting_outbound_internet" "Waiting for outbound internet via egress NAT" 14 "network" "NET_OUTBOUND_WAIT" "$_wait_i" 90
+      if [ "$_wait_i" -eq 1 ] || [ $((_wait_i % 12)) -eq 0 ]; then
+        beacon_retrying "waiting_outbound_internet" "Waiting for outbound internet via egress NAT" 14 "network" "NET_OUTBOUND_WAIT" "$_wait_i" 300
       fi
-      if [ "$_wait_i" -eq 90 ]; then
-        echo "[common] WARNING: outbound internet not available after 90 attempts; continuing anyway" >&2
+      if [ "$_wait_i" -eq 300 ]; then
+        echo "[common] WARNING: outbound internet not available after 300 attempts (25 min); continuing anyway" >&2
         beacon_degraded "waiting_outbound_internet" "Outbound internet unavailable after retries; continuing for diagnostics" 14 "network" "NET_OUTBOUND_UNAVAILABLE"
         dump_network_snapshot
       fi
-      sleep 2
+      sleep 5
     done
   fi
 
@@ -405,7 +407,7 @@ cat > /etc/systemd/system/infrazero-private-route.timer <<'EOF'
 Description=Periodically repair Infrazero private network routes
 
 [Timer]
-OnBootSec=30s
+OnBootSec=90s
 OnUnitActiveSec=60s
 AccuracySec=10s
 Unit=infrazero-private-route.service
@@ -459,9 +461,10 @@ print(str(gw))
 PY
 ) || exit 0
 
-# Wait for private interface to become available (race condition at boot)
+# Wait for private interface to become available (race condition at boot).
+# 90 attempts × 3 s = 4.5 min — covers slow Hetzner private NIC attachment.
 priv_if=""
-for _wg_wait in {1..30}; do
+for _wg_wait in {1..90}; do
   priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
   if [ -z "$priv_if" ]; then
     priv_if=$(python3 - <<'PY'
@@ -493,12 +496,12 @@ PY
   if [ -n "$priv_if" ]; then
     break
   fi
-  echo "[wg-route] waiting for private interface (attempt ${_wg_wait}/30)..." >&2
-  sleep 2
+  echo "[wg-route] waiting for private interface (attempt ${_wg_wait}/90)..." >&2
+  sleep 3
 done
 
 if [ -z "$priv_if" ]; then
-  echo "[wg-route] private interface not found after 30 attempts; cannot add WG route" >&2
+  echo "[wg-route] private interface not found after 90 attempts (4.5 min); cannot add WG route" >&2
   exit 0
 fi
 
@@ -594,7 +597,7 @@ cat > /etc/systemd/system/infrazero-wg-route.timer <<'EOF'
 Description=Periodically repair Infrazero WireGuard subnet route
 
 [Timer]
-OnBootSec=35s
+OnBootSec=120s
 OnUnitActiveSec=60s
 AccuracySec=10s
 Unit=infrazero-wg-route.service
@@ -634,9 +637,6 @@ fi
 # Enable auditd
 systemctl enable --now auditd || true
 
-# Journald persistence
-mkdir -p /var/log/journal
-sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
 systemctl restart systemd-journald || true
 
 # DNS fallback
