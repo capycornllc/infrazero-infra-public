@@ -128,6 +128,7 @@ ignore_startup_parameters = extra_float_digits
 log_connections = 0
 log_disconnections = 0
 log_pooler_errors = 1
+admin_users = ${PGBOUNCER_AUTH_USER}
 pidfile = /var/run/postgresql/pgbouncer-${listen_port}.pid
 unix_socket_dir = /var/run/postgresql
 EOF
@@ -206,9 +207,8 @@ if [ -n "${DB_REPLICA_HOSTS:-}" ]; then
 fi
 
 if [ -z "$all_hosts" ]; then
-  log "no DB hosts configured; skipping PgBouncer setup"
-  beacon_status "complete" "Bootstrap complete (no DB hosts)" 100
-  return 0 2>/dev/null || exit 0
+  log "no DB hosts configured; skipping"
+  exit 0
 fi
 
 # Query Patroni /cluster endpoint to get leader + replicas

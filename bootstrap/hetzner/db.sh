@@ -2463,7 +2463,13 @@ setup_replication_primary() {
   echo "[db] primary replication setup complete"
 }
 
-setup_replication_primary
+# When Patroni is enabled it manages all replication parameters via DCS.
+# Running setup_replication_primary first writes conflicting values to
+# postgresql.conf (e.g. max_wal_senders=replica_count+2 vs DCS 5)
+# which causes a pending_restart loop on every fresh deploy.
+if [ "${PATRONI_ENABLED:-false}" != "true" ]; then
+  setup_replication_primary
+fi
 
 # ------------------------------------------------------------------ #
 #  Patroni HA Setup (optional)                                         #
@@ -2587,6 +2593,11 @@ postgresql:
   config_dir: ${pg_conf_dir}
   bin_dir: ${pg_bin_dir}
   pgpass: /tmp/pgpass0
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    max-rate: 100M
+    checkpoint: fast
   authentication:
     replication:
       username: ${repl_user}
@@ -2641,6 +2652,34 @@ PATRONI_EOF
   # Remove standby.signal if present — Patroni manages replication itself
   rm -f "${pg_data_dir}/standby.signal" "${pg_data_dir}/recovery.signal" || true
 
+  # Write etcd readiness wait script (called by patroni.service ExecStartPre).
+  # Reads hosts from patroni.yml so it works with any etcd topology.
+  cat > /usr/local/sbin/wait-etcd.sh <<'WAIT_EOF'
+#!/bin/bash
+etcd_hosts=$(awk '/^etcd3:/,/^[a-z]/' /etc/patroni/patroni.yml \
+  | grep -E '^\s+- ' | awk '{print $2}' | head -10)
+
+if [ -z "$etcd_hosts" ]; then
+  echo "[wait-etcd] no etcd hosts found in patroni.yml; skipping wait"
+  exit 0
+fi
+
+for attempt in $(seq 1 30); do
+  for h in $etcd_hosts; do
+    if curl -sf --max-time 3 "http://${h}/health" >/dev/null 2>&1; then
+      echo "[wait-etcd] etcd reachable at ${h} (attempt ${attempt})"
+      exit 0
+    fi
+  done
+  echo "[wait-etcd] etcd not ready (attempt ${attempt}/30), waiting 5s..."
+  sleep 5
+done
+
+echo "[wait-etcd] WARNING: etcd not reachable after 150s, starting Patroni anyway"
+exit 0
+WAIT_EOF
+  chmod +x /usr/local/sbin/wait-etcd.sh
+
   # Create Patroni systemd unit
   cat > /etc/systemd/system/patroni.service <<'UNIT_EOF'
 [Unit]
@@ -2652,12 +2691,14 @@ Wants=network-online.target
 Type=simple
 User=postgres
 Group=postgres
+ExecStartPre=/usr/local/sbin/wait-etcd.sh
 ExecStart=/opt/patroni/venv/bin/patroni /etc/patroni/patroni.yml
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=process
-TimeoutSec=30
+TimeoutStartSec=300
+TimeoutStopSec=60
 Restart=on-failure
-RestartSec=5s
+RestartSec=10s
 
 [Install]
 WantedBy=multi-user.target
