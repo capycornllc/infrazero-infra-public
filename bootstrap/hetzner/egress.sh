@@ -335,22 +335,96 @@ if [ -z "$PRIVATE_CIDR" ]; then
   echo "[egress] PRIVATE_CIDR missing; NAT may be incomplete" >&2
 fi
 
+# Detect the Hetzner private network interface.
+# Strategy: find a physical/virtual NIC whose MAC starts with 86:00:00: (Hetzner
+# private-network prefix), excluding loopback and Docker/bridge/veth interfaces.
+# We do NOT rely on the interface having an IP yet — Hetzner cloud-init may not
+# have configured it before this script runs (race condition observed in prod).
+_find_private_if() {
+  ip -o link show | awk '
+    $2 == "lo:" { next }
+    $2 ~ /^docker/ || $2 ~ /^br-/ || $2 ~ /^veth/ || $2 ~ /^tun/ || $2 ~ /^wg/ { next }
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^86:00:00:/) {
+          name = $2; gsub(/:$/, "", name); print name; exit
+        }
+      }
+    }
+  '
+}
+
+# If Hetzner private-NIC MAC not found, fall back to any non-virtual, non-public NIC.
+_find_private_if_fallback() {
+  local pub="$1"
+  ip -o link show | awk -v pub="$pub" '
+    $2 == "lo:" { next }
+    $2 ~ /^docker/ || $2 ~ /^br-/ || $2 ~ /^veth/ || $2 ~ /^tun/ || $2 ~ /^wg/ { next }
+    {
+      name = $2; gsub(/:$/, "", name)
+      if (name != pub) { print name; exit }
+    }
+  '
+}
+
 PUBLIC_IF=""
-PRIVATE_IF=""
+PRIVATE_IF_NAME=""   # interface name (may have no IP yet)
 for _if_i in $(seq 1 30); do
   PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-  PRIVATE_IF=$(ip -4 -o addr show | awk -v pub="$PUBLIC_IF" '$2 != pub && $2 != "lo" {print $2; exit}')
-  if [ -n "$PUBLIC_IF" ] && [ -n "$PRIVATE_IF" ]; then
+  if [ -n "$PUBLIC_IF" ]; then
+    PRIVATE_IF_NAME=$(_find_private_if)
+    if [ -z "$PRIVATE_IF_NAME" ]; then
+      PRIVATE_IF_NAME=$(_find_private_if_fallback "$PUBLIC_IF")
+    fi
+  fi
+  if [ -n "$PUBLIC_IF" ] && [ -n "$PRIVATE_IF_NAME" ]; then
     break
   fi
   echo "[egress] waiting for network interfaces (attempt $_if_i/30)..."
   sleep 2
 done
 
-if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
+if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF_NAME" ]; then
   echo "[egress] unable to determine network interfaces after 60s" >&2
   exit 1
 fi
+
+# Ensure the private interface is UP and has its IP.
+# If Hetzner cloud-init hasn't configured it yet, do it ourselves using the
+# PRIVATE_IP variable injected by Terraform cloud-init.
+if ! ip -4 addr show dev "$PRIVATE_IF_NAME" 2>/dev/null | grep -q "inet "; then
+  _expected_priv_ip="${PRIVATE_IP:-}"
+  if [ -n "$_expected_priv_ip" ]; then
+    echo "[egress] private interface $PRIVATE_IF_NAME has no IP; configuring with $_expected_priv_ip"
+    ip link set "$PRIVATE_IF_NAME" up || true
+    ip addr add "${_expected_priv_ip}/32" dev "$PRIVATE_IF_NAME" 2>/dev/null || true
+    _priv_gw=$(echo "$_expected_priv_ip" | awk -F. '{print $1"."$2"."$3".1"}')
+    _priv_cidr_rt=$(echo "$_expected_priv_ip" | awk -F. '{print $1"."$2"."$3".0/24"}')
+    ip route add "$_priv_cidr_rt" via "$_priv_gw" dev "$PRIVATE_IF_NAME" onlink 2>/dev/null || true
+    # Persist across reboots via systemd-networkd
+    _priv_mac=$(ip link show dev "$PRIVATE_IF_NAME" | awk '/link\/ether/{print $2}')
+    mkdir -p /etc/systemd/network
+    cat > "/etc/systemd/network/20-priv-${PRIVATE_IF_NAME}.network" <<NETEOF
+[Match]
+MACAddress=${_priv_mac}
+
+[Network]
+Address=${_expected_priv_ip}/32
+
+[Route]
+Destination=${_priv_cidr_rt}
+Gateway=${_priv_gw}
+GatewayOnLink=yes
+NETEOF
+    systemctl enable systemd-networkd 2>/dev/null || true
+    systemctl reload-or-restart systemd-networkd 2>/dev/null || true
+    echo "[egress] private interface $PRIVATE_IF_NAME persisted via systemd-networkd"
+  else
+    echo "[egress] WARNING: PRIVATE_IP not set; private interface $PRIVATE_IF_NAME left unconfigured" >&2
+  fi
+fi
+
+PRIVATE_IF="$PRIVATE_IF_NAME"
 
 PUBLIC_IP=$(ip -4 -o addr show dev "$PUBLIC_IF" | awk '{split($4, parts, "/"); print parts[1]; exit}')
 if [ -z "$PUBLIC_IP" ]; then
@@ -1464,94 +1538,3 @@ if [ -n "${INFISICAL_FQDN:-}" ] || [ -n "${INFISICAL_SITE_URL:-}" ]; then
       sleep 120
     done
     if [ "$infisical_ok" != "true" ]; then
-      echo "[egress] WARNING: infisical-bootstrap.sh failed after 3 attempts; installing retry timer" >&2
-      cat > /etc/systemd/system/infrazero-infisical-retry.service <<'UNIT'
-[Unit]
-Description=Retry Infisical bootstrap
-After=network-online.target docker.service
-ConditionPathExists=!/etc/infrazero/infisical-bootstrap-done
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/infrazero/bootstrap
-ExecStart=/bin/bash -c './infisical-bootstrap.sh && touch /etc/infrazero/infisical-bootstrap-done'
-TimeoutStartSec=600
-UNIT
-      cat > /etc/systemd/system/infrazero-infisical-retry.timer <<'TIMER'
-[Unit]
-Description=Retry Infisical bootstrap every 5 minutes
-
-[Timer]
-OnBootSec=3min
-OnUnitActiveSec=5min
-AccuracySec=30s
-
-[Install]
-WantedBy=timers.target
-TIMER
-      systemctl daemon-reload
-      systemctl enable --now infrazero-infisical-retry.timer
-      echo "[egress] infrazero-infisical-retry.timer installed"
-    fi
-  else
-    echo "[egress] infisical-bootstrap.sh missing; skipping infisical bootstrap" >&2
-  fi
-fi
-
-cat > /opt/infrazero/infisical/backup.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-ENV_FILE="/etc/infrazero/egress.env"
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
-
-export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
-export AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
-export AWS_DEFAULT_REGION="$S3_REGION"
-
-TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-WORKDIR="/opt/infrazero/infisical/backups"
-mkdir -p "$WORKDIR"
-
-DUMP_PATH="$WORKDIR/infisical-${TIMESTAMP}.sql.gz"
-ENC_PATH="$DUMP_PATH.age"
-
-if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE=(docker-compose)
-else
-  COMPOSE=(docker compose)
-fi
-
-"${COMPOSE[@]}" -f /opt/infrazero/infisical/docker-compose.yml exec -T infisical-db pg_dump -U "$INFISICAL_POSTGRES_USER" -d "$INFISICAL_POSTGRES_DB" | gzip > "$DUMP_PATH"
-
-age -r "$INFISICAL_DB_BACKUP_AGE_PUBLIC_KEY" -o "$ENC_PATH" "$DUMP_PATH"
-SHA=$(sha256sum "$ENC_PATH" | awk '{print $1}')
-KEY="infisical/${TIMESTAMP}.sql.gz.age"
-
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$ENC_PATH" "s3://${DB_BACKUP_BUCKET}/${KEY}"
-
-jq -n --arg key "$KEY" --arg sha "$SHA" --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{key:$key, sha256:$sha, created_at:$created_at}' > "$WORKDIR/latest-dump.json"
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "$WORKDIR/latest-dump.json" "s3://${DB_BACKUP_BUCKET}/infisical/latest-dump.json"
-
-rm -f "$DUMP_PATH" "$ENC_PATH"
-EOF
-
-chmod +x /opt/infrazero/infisical/backup.sh
-
-cat > /etc/cron.d/infisical-backup <<'EOF'
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-15 2 * * * root /opt/infrazero/infisical/backup.sh >> /var/log/infrazero-infisical-backup.log 2>&1
-EOF
-
-chmod 0644 /etc/cron.d/infisical-backup
-
-beacon_status "complete" "Bootstrap complete" 100
-
-echo "[egress] $(date -Is) complete"
