@@ -407,6 +407,25 @@ fi
 # Ensure the private interface is UP and has its IP.
 # If Hetzner cloud-init hasn't configured it yet, do it ourselves using the
 # EGRESS_PRIVATE_IP variable injected by Terraform cloud-init (egress.env).
+#
+# FIX: wait up to 60s for Hetzner cloud-init to assign the IP before falling
+# through to self-configure. Root cause: _find_private_if() detects enp7s0 by
+# MAC prefix (no IP needed), so the outer interface-detection loop exits early
+# while Hetzner cloud-init is still racing to assign the address.
+# 12 attempts × 5 s = 60 s — covers observed Hetzner NIC configuration delays.
+for _priv_ip_wait in $(seq 1 12); do
+  if ip -4 addr show dev "$PRIVATE_IF_NAME" 2>/dev/null | grep -q "inet "; then
+    echo "[egress] $PRIVATE_IF_NAME has IP after ${_priv_ip_wait} attempt(s)"
+    break
+  fi
+  if [ "$_priv_ip_wait" -eq 12 ]; then
+    echo "[egress] $PRIVATE_IF_NAME still has no IP after 60s; falling back to self-configure" >&2
+  else
+    echo "[egress] waiting for Hetzner to configure $PRIVATE_IF_NAME (attempt ${_priv_ip_wait}/12)..."
+    sleep 5
+  fi
+done
+
 if ! ip -4 addr show dev "$PRIVATE_IF_NAME" 2>/dev/null | grep -q "inet "; then
   _expected_priv_ip="${EGRESS_PRIVATE_IP:-${PRIVATE_IP:-}}"
   if [ -n "$_expected_priv_ip" ]; then

@@ -463,11 +463,20 @@ PY
 
 # Wait for private interface to become available (race condition at boot).
 # 90 attempts × 3 s = 4.5 min — covers slow Hetzner private NIC attachment.
+#
+# FIX: removed "ip route get $private_gw" as the primary detection method.
+# On egress, when enp7s0 has no IP yet, "ip route get 10.10.0.1" resolves via
+# the default route and returns eth0 — the public interface. This caused the
+# WG route to be installed on the wrong interface. The python IP-in-CIDR check
+# is the correct and reliable method: it only matches an interface that actually
+# has an address inside the private network.
+# Old code (kept for reference):
+#   priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | \
+#     awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+#   if [ -z "$priv_if" ]; then  # python fallback below  fi
 priv_if=""
 for _wg_wait in {1..90}; do
-  priv_if=$(ip -4 route get "$private_gw" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-  if [ -z "$priv_if" ]; then
-    priv_if=$(python3 - <<'PY'
+  priv_if=$(python3 - <<'PY'
 import ipaddress
 import os
 import subprocess
@@ -491,8 +500,7 @@ for line in output.splitlines():
         continue
 raise SystemExit(1)
 PY
-    ) || true
-  fi
+  ) || true
   if [ -n "$priv_if" ]; then
     break
   fi

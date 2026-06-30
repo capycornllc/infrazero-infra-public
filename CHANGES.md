@@ -35,6 +35,26 @@ correct pg_hba and PostgreSQL is stable. Falls through after 120 × 5s
 timeout with a warning so non-Patroni setups are unaffected.
 
 
+### Fix: egress enp7s0 race condition — надёжное ожидание IP от Hetzner
+
+**Root cause (баг 1 — egress.sh):** `_find_private_if()` находит `enp7s0` по MAC-префиксу
+`86:00:00:` без проверки наличия IP. Внешний цикл обнаружения интерфейсов сразу выходит,
+как только нашёл интерфейс по MAC. Если Hetzner cloud-init ещё не присвоил IP — self-configure
+блок срабатывает, но `EGRESS_PRIVATE_IP` отсутствует в `egress.env` → enp7s0 остаётся
+без IP → egress.sh падает. Баг недетерминированный: когда Hetzner быстрый — работает.
+
+**Fix (egress.sh):** добавлен wait loop до 60 сек (12 × 5s) после нахождения
+`PRIVATE_IF_NAME` по MAC — ждём пока Hetzner cloud-init назначит IP на enp7s0.
+Self-configure вызывается только если IP так и не появился после ожидания.
+
+**Root cause (баг 2 — common.sh wg-route):** `ip route get $private_gw` на egress
+когда enp7s0 без IP возвращает eth0 через default route (нет специфичного маршрута к
+10.10.0.1). В итоге WG маршрут `10.50.0.0/24` устанавливался через публичный интерфейс.
+
+**Fix (common.sh):** убран `ip route get` как первичный метод детекции интерфейса.
+Используется только python IP-in-CIDR проверка — она надёжная: матчит только интерфейс
+с реальным IP внутри приватной сети. Старый код сохранён в комментарии.
+
 ### Fix: egress enp7s0 stays DOWN on rebuild (variable name mismatch)
 
 **Root cause:** `egress.sh` read `${PRIVATE_IP:-}` to self-configure the private
