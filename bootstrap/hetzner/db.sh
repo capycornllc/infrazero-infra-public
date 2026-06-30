@@ -2465,7 +2465,7 @@ setup_replication_primary() {
 
 # When Patroni is enabled it manages all replication parameters via DCS.
 # Running setup_replication_primary first writes conflicting values to
-# postgresql.conf (e.g. max_wal_senders=replica_count+2 vs DCS 5)
+# postgresql.conf (e.g. max_wal_senders=replica_count+2 vs DCS 10)
 # which causes a pending_restart loop on every fresh deploy.
 if [ "${PATRONI_ENABLED:-false}" != "true" ]; then
   setup_replication_primary
@@ -2582,8 +2582,8 @@ bootstrap:
       parameters:
         wal_level: replica
         hot_standby: "on"
-        max_wal_senders: 5
-        max_replication_slots: 5
+        max_wal_senders: 10
+        max_replication_slots: 10
         wal_keep_size: 512MB
 
 postgresql:

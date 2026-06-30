@@ -123,7 +123,7 @@ done
 # becomes temporarily unreachable while Patroni takes over, exhausting all
 # basebackup retries.
 if [ "${PATRONI_ENABLED:-false}" = "true" ]; then
-  local patroni_rest_port="${PATRONI_REST_PORT:-8008}"
+  patroni_rest_port="${PATRONI_REST_PORT:-8008}"
   echo "[db-replica] Patroni enabled — waiting for primary Patroni leader at ${DB_PRIMARY_HOST}:${patroni_rest_port}"
   patroni_ready=false
   for attempt in $(seq 1 120); do
@@ -437,8 +437,8 @@ bootstrap:
       parameters:
         wal_level: replica
         hot_standby: "on"
-        max_wal_senders: 5
-        max_replication_slots: 5
+        max_wal_senders: 10
+        max_replication_slots: 10
         wal_keep_size: 512MB
 
 postgresql:

@@ -6,6 +6,17 @@
 
 ## 2026-06-30
 
+### Fix: Patroni pending_restart на max_wal_senders и max_replication_slots
+
+**Root cause:** DCS bootstrap параметры в `patroni.yml` задавали `max_wal_senders: 5`
+и `max_replication_slots: 5`, тогда как PostgreSQL 14+ по умолчанию ставит оба в 10.
+После старта Patroni видел расхождение (running=10, DCS=5) и выставлял `pending_restart`
+на primary с первого же деплоя — без какого-либо ручного вмешательства применить нельзя.
+
+**Fix:** `bootstrap/hetzner/db.sh` и `bootstrap/hetzner/db-replica.sh` — изменены
+DCS bootstrap параметры: `max_wal_senders: 5 → 10`, `max_replication_slots: 5 → 10`.
+Теперь DCS совпадает с PostgreSQL default → `pending_restart` не появляется.
+
 ### Fix: db-replica pg_basebackup race condition with Patroni
 
 **Root cause:** When `PATRONI_ENABLED=true`, `db.sh` intentionally skips
