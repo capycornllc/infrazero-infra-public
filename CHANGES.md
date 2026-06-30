@@ -6,6 +6,24 @@
 
 ## 2026-06-30
 
+### Fix: db.sh — replication user password desync on redeploy
+
+**Root cause:** `setup_patroni()` in `db.sh` temporarily starts PostgreSQL only to set
+the `postgres` superuser password before handing off to Patroni. The `replicator` role
+password was never updated in this block. On first deploy Patroni bootstraps a new cluster
+and creates the replication user with `DB_REPLICATION_PASSWORD`. On subsequent redeploys
+the cluster already exists in etcd — Patroni does NOT recreate users, so the replication
+user keeps the password from the first deploy. If `DB_REPLICATION_PASSWORD` differs between
+deploys (or the stored value in etcd diverges), `db-replica.sh`'s `pg_basebackup` fails
+with `FATAL: password authentication failed for user "replicator"`.
+
+**Fix:** `bootstrap/hetzner/db.sh` `setup_patroni()` — expanded the temporary PostgreSQL
+start block to also `CREATE OR ALTER` the replication user with the current
+`DB_REPLICATION_PASSWORD`. Condition widened to `|| [ -n "$repl_password" ]` so the block
+runs even when `PATRONI_SUPERUSER_PASSWORD` is empty. This ensures the replication user
+password is always in sync with the deploy's secrets before Patroni takes over.
+
+
 ### Fix: Patroni pending_restart на max_wal_senders и max_replication_slots
 
 **Root cause:** DCS bootstrap параметры в `patroni.yml` задавали `max_wal_senders: 5`

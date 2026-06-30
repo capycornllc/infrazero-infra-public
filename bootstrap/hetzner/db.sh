@@ -2635,17 +2635,28 @@ PATRONI_EOF
   chown -R postgres:postgres "/etc/postgresql/${PG_MAJOR}/main/" || true
   chown -R postgres:postgres "${pg_data_dir}" || true
 
-  # Set postgres superuser password before Patroni takes over
-  # (Patroni needs TCP auth with password; db.sh uses peer auth which has no password)
-  if [ -n "$superuser_password" ]; then
-    echo "[db] setting postgres superuser password for Patroni"
-    # Start PG temporarily to set password
+  # Set postgres superuser and replication user passwords before Patroni takes over.
+  # On redeploys the cluster already exists in etcd; Patroni won't recreate users —
+  # only the initial bootstrap creates them. We must sync both passwords here so that
+  # db-replica.sh (which uses DB_REPLICATION_PASSWORD) can authenticate successfully.
+  if [ -n "$superuser_password" ] || [ -n "$repl_password" ]; then
+    echo "[db] temporarily starting PostgreSQL to sync passwords for Patroni"
     sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main start 2>/dev/null || true
     for _pw_attempt in {1..10}; do
       if sudo -u postgres pg_isready -q 2>/dev/null; then break; fi
       sleep 2
     done
-    sudo -u postgres psql -c "ALTER USER postgres PASSWORD '$(printf '%s' "$superuser_password" | sed "s/'/''/g")';" 2>/dev/null || true
+    if [ -n "$superuser_password" ]; then
+      echo "[db] setting postgres superuser password"
+      sudo -u postgres psql -c "ALTER USER postgres PASSWORD '$(printf '%s' "$superuser_password" | sed "s/'/''/g")';" 2>/dev/null || true
+    fi
+    if [ -n "$repl_password" ]; then
+      echo "[db] ensuring replication user ${repl_user} exists with current password"
+      local repl_pw_sq
+      repl_pw_sq=$(printf '%s' "$repl_password" | sed "s/'/''/g")
+      # CREATE if not exists, ALTER if exists — keeps password in sync across redeploys
+      sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${repl_user}') THEN CREATE ROLE \"${repl_user}\" WITH REPLICATION LOGIN PASSWORD '${repl_pw_sq}'; ELSE ALTER ROLE \"${repl_user}\" WITH REPLICATION LOGIN PASSWORD '${repl_pw_sq}'; END IF; END \$\$;" 2>/dev/null || true
+    fi
     sudo -u postgres pg_ctlcluster "${PG_MAJOR}" main stop 2>/dev/null || true
   fi
 
