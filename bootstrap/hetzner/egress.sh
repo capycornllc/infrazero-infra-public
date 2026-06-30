@@ -406,9 +406,9 @@ fi
 
 # Ensure the private interface is UP and has its IP.
 # If Hetzner cloud-init hasn't configured it yet, do it ourselves using the
-# PRIVATE_IP variable injected by Terraform cloud-init.
+# EGRESS_PRIVATE_IP variable injected by Terraform cloud-init (egress.env).
 if ! ip -4 addr show dev "$PRIVATE_IF_NAME" 2>/dev/null | grep -q "inet "; then
-  _expected_priv_ip="${PRIVATE_IP:-}"
+  _expected_priv_ip="${EGRESS_PRIVATE_IP:-${PRIVATE_IP:-}}"
   if [ -n "$_expected_priv_ip" ]; then
     echo "[egress] private interface $PRIVATE_IF_NAME has no IP; configuring with $_expected_priv_ip"
     ip link set "$PRIVATE_IF_NAME" up || true

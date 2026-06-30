@@ -4,7 +4,23 @@
 
 ---
 
-## 2026-06-30 — Bootstrap: исправление запуска Patroni/PostgreSQL из коробки
+## 2026-06-30
+
+### Fix: egress enp7s0 stays DOWN on rebuild (variable name mismatch)
+
+**Root cause:** `egress.sh` read `${PRIVATE_IP:-}` to self-configure the private
+interface when Hetzner cloud-init hadn't done it yet. But Terraform cloud-init
+injects the variable as `EGRESS_PRIVATE_IP` (in `/etc/infrazero/egress.env`),
+not `PRIVATE_IP`. So the fallback block never had a value → `ip link set enp7s0 up`
+was never called → `enp7s0` stayed DOWN non-deterministically (race condition: if
+Hetzner was fast enough the fallback wasn't needed; if slow the fallback failed).
+
+**Fix:** `bootstrap/hetzner/egress.sh` line 411:
+```
+_expected_priv_ip="${EGRESS_PRIVATE_IP:-${PRIVATE_IP:-}}"
+```
+
+**Action required:** run `rebuild-egress` to apply. — Bootstrap: исправление запуска Patroni/PostgreSQL из коробки
 
 ### Проблема
 После первого деплоя кластер Patroni требовал ручного вмешательства:
