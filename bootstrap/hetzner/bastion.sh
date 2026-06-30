@@ -258,6 +258,22 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
       || iptables -A FORWARD -i "$WG_IF" -o "$PUBLIC_IF" -j REJECT
   fi
 
+  # Targeted SNAT for Loki (port 3100) only.
+  # Hetzner private network rejects packets whose source IP is not within the
+  # private CIDR (e.g. WG client IPs in WG_CIDR). Rather than enabling broad
+  # WG_SNAT_ENABLED (which masquerades ALL WG traffic), we SNAT only the
+  # specific port that Loki uses, limiting the security surface.
+  # OLD broad approach (kept for reference):
+  #   iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE
+  if [ -n "${EGRESS_LOKI_URL:-}" ]; then
+    _loki_host=$(python3 -c "from urllib.parse import urlparse; print(urlparse('${EGRESS_LOKI_URL}').hostname)" 2>/dev/null || true)
+    if [ -n "$_loki_host" ]; then
+      iptables -t nat -C POSTROUTING -s "$WG_CIDR" -d "$_loki_host" -p tcp --dport 3100 -o "$PRIVATE_IF" -j MASQUERADE 2>/dev/null \
+        || iptables -t nat -A POSTROUTING -s "$WG_CIDR" -d "$_loki_host" -p tcp --dport 3100 -o "$PRIVATE_IF" -j MASQUERADE
+      echo "[bastion] Loki SNAT rule applied: WG clients → ${_loki_host}:3100 via ${PRIVATE_IF}"
+    fi
+  fi
+
   mkdir -p /etc/iptables
   iptables-save > /etc/iptables/rules.v4
 
