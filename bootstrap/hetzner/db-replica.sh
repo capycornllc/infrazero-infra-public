@@ -116,6 +116,30 @@ for attempt in $(seq 1 60); do
   sleep 5
 done
 
+# When Patroni is enabled, wait for the primary's Patroni REST API to be up
+# as leader before attempting pg_basebackup. Patroni writes pg_hba.conf only
+# after it starts managing PostgreSQL — without this wait, pg_basebackup hits
+# "no pg_hba.conf entry for replication" (vanilla pg_hba), then PostgreSQL
+# becomes temporarily unreachable while Patroni takes over, exhausting all
+# basebackup retries.
+if [ "${PATRONI_ENABLED:-false}" = "true" ]; then
+  local patroni_rest_port="${PATRONI_REST_PORT:-8008}"
+  echo "[db-replica] Patroni enabled — waiting for primary Patroni leader at ${DB_PRIMARY_HOST}:${patroni_rest_port}"
+  patroni_ready=false
+  for attempt in $(seq 1 120); do
+    if curl -sf --max-time 3 "http://${DB_PRIMARY_HOST}:${patroni_rest_port}/leader" >/dev/null 2>&1; then
+      echo "[db-replica] primary Patroni leader ready (attempt ${attempt})"
+      patroni_ready=true
+      break
+    fi
+    if [ "$attempt" -eq 120 ]; then
+      echo "[db-replica] primary Patroni not ready after 120 attempts; proceeding anyway" >&2
+      break
+    fi
+    sleep 5
+  done
+fi
+
 # ------------------------------------------------------------------ #
 #  pg_basebackup from primary                                          #
 # ------------------------------------------------------------------ #

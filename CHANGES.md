@@ -6,6 +6,24 @@
 
 ## 2026-06-30
 
+### Fix: db-replica pg_basebackup race condition with Patroni
+
+**Root cause:** When `PATRONI_ENABLED=true`, `db.sh` intentionally skips
+`setup_replication_primary` to avoid conflicting WAL settings. As a result,
+vanilla `pg_hba.conf` has no replication entry for the replica IP. Meanwhile
+`db-replica.sh` starts simultaneously, sees `pg_isready` succeed on port 5432
+(vanilla PostgreSQL still up), and immediately runs `pg_basebackup` — which
+fails with `FATAL: no pg_hba.conf entry for replication from 10.10.0.31`.
+By the time Patroni starts and writes its own pg_hba (`0.0.0.0/0`), all 30
+retry attempts (30 × 15s = 7.5 min) are exhausted and the replica exits.
+
+**Fix:** `bootstrap/hetzner/db-replica.sh` — when `PATRONI_ENABLED=true`,
+wait for the primary Patroni REST API (`/leader` on port 8008) before
+attempting `pg_basebackup`. Once Patroni is leader, it has written the
+correct pg_hba and PostgreSQL is stable. Falls through after 120 × 5s
+timeout with a warning so non-Patroni setups are unaffected.
+
+
 ### Fix: egress enp7s0 stays DOWN on rebuild (variable name mismatch)
 
 **Root cause:** `egress.sh` read `${PRIVATE_IP:-}` to self-configure the private
