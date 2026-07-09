@@ -454,7 +454,7 @@ NETEOF
     systemctl reload-or-restart systemd-networkd 2>/dev/null || true
     echo "[egress] private interface $PRIVATE_IF_NAME persisted via systemd-networkd"
   else
-    echo "[egress] WARNING: PRIVATE_IP not set; private interface $PRIVATE_IF_NAME left unconfigured" >&2
+    echo "[egress] WARNING: EGRESS_PRIVATE_IP/PRIVATE_IP not set; private interface $PRIVATE_IF_NAME left unconfigured" >&2
   fi
 fi
 

@@ -423,7 +423,7 @@ resource "hcloud_server" "pgbouncer" {
     role        = "pgbouncer"
   }
 
-  depends_on = [hcloud_network_subnet.main]
+  depends_on = [hcloud_network_subnet.main, hcloud_network_route.default_egress, hcloud_server.db]
 }
 
 resource "hcloud_server" "bastion" {
@@ -528,7 +528,7 @@ resource "hcloud_server" "k3s" {
     k3s_role    = tonumber(each.key) < local.k3s_control_planes_count ? "server" : "agent"
   }
 
-  depends_on = [hcloud_network_subnet.main, hcloud_server.egress]
+  depends_on = [hcloud_network_subnet.main, hcloud_network_route.default_egress]
 }
 
 resource "hcloud_server" "db" {
@@ -561,7 +561,7 @@ resource "hcloud_server" "db" {
     role        = "db"
   }
 
-  depends_on = [hcloud_network_subnet.main, hcloud_server.egress]
+  depends_on = [hcloud_network_subnet.main, hcloud_network_route.default_egress]
 }
 
 resource "hcloud_server" "db_replica" {
@@ -600,7 +600,7 @@ resource "hcloud_server" "db_replica" {
   # Replica bootstrap immediately tries pg_basebackup from the primary.
   # Ensure the primary VM exists first so the replica's retry window overlaps
   # with the primary's actual replication setup (not a cold boot).
-  depends_on = [hcloud_network_subnet.main, hcloud_server.db]
+  depends_on = [hcloud_network_subnet.main, hcloud_network_route.default_egress, hcloud_server.db]
 }
 
 resource "hcloud_load_balancer" "main" {

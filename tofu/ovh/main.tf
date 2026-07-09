@@ -685,7 +685,7 @@ resource "openstack_compute_instance_v2" "db_replica" {
     replica_idx = each.key
   }
 
-  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main, openstack_compute_instance_v2.db]
 
   dynamic "scheduler_hints" {
     for_each = var.placement_groups.enabled && length(var.db_replicas) > 0 ? [1] : []
@@ -752,7 +752,7 @@ resource "openstack_compute_instance_v2" "pgbouncer" {
     role        = "pgbouncer"
   }
 
-  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main]
+  depends_on = [openstack_networking_subnet_v2.main, openstack_networking_router_interface_v2.main, openstack_compute_instance_v2.db]
 
   dynamic "scheduler_hints" {
     for_each = var.placement_groups.enabled && length(var.db_replicas) > 0 ? [1] : []

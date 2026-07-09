@@ -49,7 +49,9 @@ locals {
     wg_cidr                             = var.wireguard.allowed_cidrs[0]
     admin_users_json_b64                = var.admin_users_json_b64
     debug_root_password                 = local.debug_root_password_escaped
-    egress_env                          = local.egress_env_lines
+    egress_env                          = concat(local.egress_env_lines, [
+      format("EGRESS_PRIVATE_IP='%s'", var.servers.egress.private_ip),
+    ])
     infisical_db_backup_age_private_key = var.infisical_db_backup_age_private_key
     databases_json_private_b64          = ""
     bastion_env                         = []
