@@ -1,0 +1,8 @@
+# Force LF for everything that executes or renders on Linux servers.
+# CRLF in *.sh breaks bash (cloud-init has a sed fallback, but do not rely on it).
+*.sh    text eol=lf
+*.tftpl text eol=lf
+*.tf    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf

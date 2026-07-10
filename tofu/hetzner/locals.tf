@@ -45,47 +45,8 @@ locals {
   wg_prefix_length            = tonumber(split("/", var.wg_server_address)[1])
   wg_network_ip               = cidrhost(var.wg_server_address, 0)
   wg_cidr                     = "${local.wg_network_ip}/${local.wg_prefix_length}"
-  debug_root_password_escaped = replace(var.debug_root_password, "'", "'\"'\"'")
-
-  egress_env_lines = [
-    for key, value in var.egress_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
-
-  bastion_env_lines = [
-    for key, value in var.bastion_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
-
-  db_env_lines = [
-    for key, value in var.db_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
-
-  k3s_env_lines = [
-    for key, value in var.k3s_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
-
-  k3s_server_env_lines = [
-    for key, value in var.k3s_server_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
-
-  k3s_agent_env_lines = [
-    for key, value in var.k3s_agent_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
 
   db_replicas_map  = { for idx, replica in var.db_replicas : tostring(idx) => replica }
   db_replica_cidrs = [for replica in var.db_replicas : "${replica.private_ip}/32"]
-  db_replica_env_lines = [
-    for key, value in var.db_replica_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
 
-  pgbouncer_env_lines = [
-    for key, value in var.pgbouncer_secrets :
-    format("%s='%s'", key, replace(value, "'", "'\"'\"'"))
-  ]
 }

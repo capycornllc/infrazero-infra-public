@@ -535,6 +535,11 @@ def main() -> int:
     cloud_provider = (optional_env("CLOUD_PROVIDER") or str(config.get("cloud_provider", "")) or "hetzner").strip().lower()
     if cloud_provider == "ovh":
         cloud_provider = "ovhcloud"
+    known_providers = {"hetzner", "ovhcloud", "aws", "azure", "gcp"}
+    if cloud_provider not in known_providers:
+        raise SystemExit(
+            f"Unknown cloud_provider '{cloud_provider}'; expected one of: {', '.join(sorted(known_providers))}"
+        )
     pgbouncer_server_type_default = "b2-7" if cloud_provider == "ovhcloud" else "cx23"
 
     bastion_server_type = require_env("BASTION_SERVER_TYPE")

@@ -161,36 +161,7 @@ jobs:
         run: python scripts/common/validate-config.py --config config/infra.yaml --schema config/schema.json
 
       - name: Determine cloud provider
-        run: |
-          PROVIDER="${CLOUD_PROVIDER:-hetzner}"
-          PROVIDER=$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')
-          if [ "$PROVIDER" = "ovhcloud" ] || [ "$PROVIDER" = "ovh" ]; then
-            echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_cloud_project_id=${OVH_CLOUD_PROJECT_ID}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_user_name=${OPENSTACK_USER_NAME}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_password=${OPENSTACK_PASSWORD}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
-            # Determine OpenStack auth URL based on region (US vs EU)
-            REGION_LOWER=$(echo "${CLOUD_REGION:-}" | tr '[:upper:]' '[:lower:]')
-            if [[ "$REGION_LOWER" == us-* ]]; then
-              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.us/v3" >> "$GITHUB_ENV"
-              echo "TF_VAR_ovh_endpoint=ovh-us" >> "$GITHUB_ENV"
-            else
-              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.net/v3" >> "$GITHUB_ENV"
-              echo "TF_VAR_ovh_endpoint=ovh-eu" >> "$GITHUB_ENV"
-            fi
-          else
-            echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
-            echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
-          fi
+        uses: ./.github/actions/select-provider
 
       - name: Render backend
         run: python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
@@ -213,38 +184,13 @@ jobs:
       - name: Package and upload bootstraps
         run: |
           set -euo pipefail
-          mkdir -p build/bootstrap
-          chmod +x ${BOOTSTRAP_DIR}/*.sh
           roles=(db-replica)
           if [ "${HAS_EXISTING_BOOTSTRAP_ARTIFACTS:-0}" != "1" ]; then
             roles=(bastion egress node1 nodecp node2 db db-replica)
             if [ "${PGBOUNCER_ENABLED:-false}" = "true" ]; then roles+=(pgbouncer); fi
           fi
 
-          for role in "${roles[@]}"; do
-            extra_files=()
-            if [ "$role" = "egress" ]; then
-              extra_files+=(infisical-bootstrap.sh)
-            fi
-            if [ "$role" = "node1" ]; then
-              extra_files+=(infisical-admin-secret.sh)
-            fi
-            tar --zstd -cf "build/bootstrap/${role}.tar.zst" -C ${BOOTSTRAP_DIR} common.sh beacon.sh "${role}.sh" "${extra_files[@]}"
-            sha=$(sha256sum "build/bootstrap/${role}.tar.zst" | awk '{print $1}')
-            echo "$sha" > "build/bootstrap/${role}.sha256"
-
-            aws --endpoint-url "$S3_ENDPOINT" s3 cp "build/bootstrap/${role}.tar.zst" "s3://$INFRA_STATE_BUCKET/bootstrap/${role}.tar.zst"
-            url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/bootstrap/${role}.tar.zst" --expires-in "$BOOTSTRAP_PRESIGN_EXPIRY")
-            echo "$url" > "build/bootstrap/${role}.url"
-          done
-
-          manifest='{}'
-          for role in "${roles[@]}"; do
-            sha=$(cat "build/bootstrap/${role}.sha256")
-            url=$(cat "build/bootstrap/${role}.url")
-            manifest=$(jq -c --arg role "$role" --arg url "$url" --arg sha "$sha" '. + {($role): {url: $url, sha256: $sha}}' <<<"$manifest")
-          done
-          echo "$manifest" | jq '.' > build/bootstrap_artifacts_new.json
+          bash scripts/common/package-bootstrap.sh --manifest build/bootstrap_artifacts_new.json "${roles[@]}"
 
           jq -s '.[0] * .[1]' build/bootstrap_artifacts_existing.json build/bootstrap_artifacts_new.json > build/bootstrap_artifacts.json
 

@@ -5,16 +5,18 @@
 set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────
-export OS_AUTH_URL="https://auth.cloud.ovh.us/"
-export OS_PROJECT_ID="17f0d53c3d4249119bbe88db7480d983"
-export OS_PROJECT_NAME="2417763858960086"
-export OS_USER_DOMAIN_NAME="ovhcloud-us"
-export OS_PROJECT_DOMAIN_ID="default"
-export OS_USERNAME="zj250-ovh"
+# All OpenStack credentials/settings come from the environment - no
+# account-specific defaults are baked into the repo.
+export OS_AUTH_URL="${OS_AUTH_URL:?Set OS_AUTH_URL env var}"
+export OS_PROJECT_ID="${OS_PROJECT_ID:?Set OS_PROJECT_ID env var}"
+export OS_PROJECT_NAME="${OS_PROJECT_NAME:-$OS_PROJECT_ID}"
+export OS_USER_DOMAIN_NAME="${OS_USER_DOMAIN_NAME:-Default}"
+export OS_PROJECT_DOMAIN_ID="${OS_PROJECT_DOMAIN_ID:-default}"
+export OS_USERNAME="${OS_USERNAME:?Set OS_USERNAME env var}"
 export OS_PASSWORD="${OS_PASSWORD:?Set OS_PASSWORD env var}"
-export OS_REGION_NAME="${OS_REGION_NAME:-US-EAST-VA-1}"
-export OS_INTERFACE=public
-export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME="${OS_REGION_NAME:?Set OS_REGION_NAME env var}"
+export OS_INTERFACE="${OS_INTERFACE:-public}"
+export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
 
 KEEP_VOLUMES="${KEEP_VOLUMES:-true}"
 

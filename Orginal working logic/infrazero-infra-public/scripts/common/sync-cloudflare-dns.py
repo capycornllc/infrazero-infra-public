@@ -1,0 +1,361 @@
+import argparse
+import ipaddress
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests
+import yaml
+
+
+REQUIRED_SERVICE_KEYS = ("bastion", "grafana", "loki", "infisical", "db")
+OPTIONAL_SERVICE_KEYS = ("argocd", "kubernetes")
+
+
+def load_yaml(path: Path):
+    return yaml.safe_load(path.read_text()) or {}
+
+
+def parse_json_env(name: str):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} is not valid JSON: {exc}") from exc
+
+
+def to_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def resolve_internal_fqdns():
+    internal_services = {}
+    internal_services_json = parse_json_env("INTERNAL_SERVICES_DOMAINS_JSON")
+    if internal_services_json is not None:
+        if not isinstance(internal_services_json, dict):
+            raise ValueError("INTERNAL_SERVICES_DOMAINS_JSON must be a JSON object")
+        for key in REQUIRED_SERVICE_KEYS:
+            value = internal_services_json.get(key)
+            if not isinstance(value, dict):
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
+            fqdn = str(value.get("fqdn", "")).strip()
+            if not fqdn:
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key}.fqdn is required")
+            internal_services[key] = fqdn
+        for key in OPTIONAL_SERVICE_KEYS:
+            if key not in internal_services_json:
+                continue
+            value = internal_services_json.get(key)
+            if not isinstance(value, dict):
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key} must be an object with fqdn")
+            fqdn = str(value.get("fqdn", "")).strip()
+            if not fqdn:
+                raise ValueError(f"INTERNAL_SERVICES_DOMAINS_JSON.{key}.fqdn is required")
+            internal_services[key] = fqdn
+        return internal_services
+
+    env_map = {
+        "bastion": "BASTION_FQDN",
+        "grafana": "GRAFANA_FQDN",
+        "loki": "LOKI_FQDN",
+        "infisical": "INFISICAL_FQDN",
+        "db": "DB_FQDN",
+        "argocd": "ARGOCD_FQDN",
+        "kubernetes": "KUBERNETES_FQDN",
+    }
+    for key, env_name in env_map.items():
+        fqdn = os.getenv(env_name, "").strip()
+        if fqdn:
+            internal_services[key] = fqdn
+    return internal_services
+
+
+def resolve_deployed_app_fqdns():
+    records: list[dict[str, object]] = []
+    deployed_apps_json = parse_json_env("DEPLOYED_APPS_JSON")
+    if deployed_apps_json is None:
+        return records
+    if not isinstance(deployed_apps_json, list):
+        raise ValueError("DEPLOYED_APPS_JSON must be a JSON array")
+    for idx, app in enumerate(deployed_apps_json):
+        if not isinstance(app, dict):
+            raise ValueError(f"DEPLOYED_APPS_JSON[{idx}] must be an object")
+
+        workloads = app.get("workloads")
+        if workloads is None:
+            # Legacy payload shape: app-level fqdn.
+            fqdn = str(app.get("fqdn", "")).strip()
+            if not fqdn:
+                raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].fqdn is required for legacy entries without workloads")
+            proxied = to_bool(
+                app.get("cloudflare_proxied", app.get("cloudflareProxied")),
+                default=False,
+            )
+            records.append({"name": fqdn, "proxied": proxied})
+            continue
+
+        if not isinstance(workloads, list):
+            raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].workloads must be a JSON array")
+
+        for workload_idx, workload in enumerate(workloads):
+            if not isinstance(workload, dict):
+                raise ValueError(f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}] must be an object")
+
+            kind = str(workload.get("kind", workload.get("type", ""))).strip().lower()
+            if kind in {"cronjob", "job"}:
+                continue
+
+            fqdn = str(workload.get("fqdn", "")).strip()
+            expose = to_bool(workload.get("expose"), default=bool(fqdn))
+            if expose and not fqdn:
+                raise ValueError(
+                    f"DEPLOYED_APPS_JSON[{idx}].workloads[{workload_idx}].fqdn is required when expose=true"
+                )
+            if expose and fqdn:
+                proxied = to_bool(
+                    workload.get("cloudflare_proxied", workload.get("cloudflareProxied")),
+                    default=False,
+                )
+                records.append({"name": fqdn, "proxied": proxied})
+
+    return records
+
+
+def resolve_additional_hostnames():
+    additional = []
+    additional_json = parse_json_env("ADDITIONAL_HOSTNAMES")
+    if additional_json is None:
+        additional_json = parse_json_env("additional_hostnames")
+    if additional_json is None:
+        return additional
+    if not isinstance(additional_json, list):
+        raise ValueError("ADDITIONAL_HOSTNAMES must be a JSON array")
+    for idx, entry in enumerate(additional_json):
+        if not isinstance(entry, dict):
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}] must be an object")
+        hostname = str(entry.get("hostname", "")).strip()
+        ip = str(entry.get("ip", "")).strip()
+        if not hostname:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].hostname is required")
+        if not ip:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip is required")
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError as exc:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip must be a valid IP address") from exc
+        if addr.version != 4:
+            raise ValueError(f"ADDITIONAL_HOSTNAMES[{idx}].ip must be an IPv4 address for A records")
+        additional.append(
+            {
+                "id": str(entry.get("id", "")).strip(),
+                "hostname": hostname,
+                "ip": ip,
+            }
+        )
+    return additional
+
+
+def cloudflare_request(token: str, method: str, path: str, params=None, json_body=None):
+    url = f"https://api.cloudflare.com/client/v4{path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    response = requests.request(method, url, headers=headers, params=params, json=json_body, timeout=30)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"success": False, "errors": [{"message": response.text}]}
+    if not response.ok or not payload.get("success"):
+        errors = payload.get("errors") or []
+        message = "; ".join(err.get("message", "unknown error") for err in errors) or response.text
+        raise RuntimeError(f"Cloudflare API error ({method} {path}): {message}")
+    return payload
+
+
+def list_zones(token: str):
+    zones = []
+    page = 1
+    while True:
+        payload = cloudflare_request(
+            token,
+            "GET",
+            "/zones",
+            params={"page": page, "per_page": 50, "status": "active"},
+        )
+        zones.extend(payload.get("result", []))
+        info = payload.get("result_info") or {}
+        if page >= info.get("total_pages", 1):
+            break
+        page += 1
+    return {zone["name"]: zone["id"] for zone in zones}
+
+
+def find_zone_id(fqdn: str, zones: dict[str, str]) -> str | None:
+    for zone_name in sorted(zones.keys(), key=len, reverse=True):
+        if fqdn == zone_name or fqdn.endswith(f".{zone_name}"):
+            return zones[zone_name]
+    return None
+
+
+def upsert_record(token: str, zone_id: str, name: str, content: str, proxied: bool):
+    payload = cloudflare_request(
+        token,
+        "GET",
+        f"/zones/{zone_id}/dns_records",
+        params={"type": "A", "name": name, "per_page": 1},
+    )
+    records = payload.get("result", [])
+    record_data = {"type": "A", "name": name, "content": content, "proxied": proxied, "ttl": 1}
+
+    if records:
+        record_id = records[0]["id"]
+        current = records[0]
+        if (
+            current.get("content") == content
+            and bool(current.get("proxied")) == proxied
+            and current.get("ttl") in (1, None)
+        ):
+            print(f"Cloudflare DNS: {name} already up to date")
+            return
+        cloudflare_request(
+            token,
+            "PUT",
+            f"/zones/{zone_id}/dns_records/{record_id}",
+            json_body=record_data,
+        )
+        print(f"Cloudflare DNS: updated {name} -> {content} (proxied={proxied})")
+        return
+
+    cloudflare_request(
+        token,
+        "POST",
+        f"/zones/{zone_id}/dns_records",
+        json_body=record_data,
+    )
+    print(f"Cloudflare DNS: created {name} -> {content} (proxied={proxied})")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Sync Cloudflare DNS records for internal services and apps.")
+    parser.add_argument("--config", default="config/infra.yaml")
+    parser.add_argument("--lb-ip", required=True)
+    parser.add_argument("--bastion-public-ip", default="")
+    parser.add_argument("--egress-public-ip", default="")
+    args = parser.parse_args()
+
+    token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
+    if not token:
+        print("CLOUDFLARE_API_TOKEN is not set; skipping DNS sync.")
+        return 0
+
+    config = load_yaml(Path(args.config))
+    servers = config.get("servers", {})
+
+    bastion_private_ip = str(servers.get("bastion", {}).get("private_ip", "")).strip()
+    bastion_public_ip = args.bastion_public_ip.strip()
+    egress_ip = str(servers.get("egress", {}).get("private_ip", "")).strip()
+    egress_public_ip = args.egress_public_ip.strip()
+    db_ip = str(servers.get("db", {}).get("private_ip", "")).strip()
+
+    try:
+        internal_fqdns = resolve_internal_fqdns()
+        deployed_app_records = resolve_deployed_app_fqdns()
+        additional_hostnames = resolve_additional_hostnames()
+    except ValueError as exc:
+        print(f"Invalid DNS inputs: {exc}", file=sys.stderr)
+        return 1
+
+    records = []
+    if internal_fqdns:
+        if not all([bastion_private_ip, egress_ip, db_ip]):
+            print("servers.bastion/egress/db.private_ip must be set in config/infra.yaml", file=sys.stderr)
+            return 1
+        if "bastion" in internal_fqdns and not bastion_public_ip:
+            print("bastion-public-ip is required when bastion FQDN is provided.", file=sys.stderr)
+            return 1
+        if "kubernetes" in internal_fqdns and not egress_public_ip:
+            print("Warning: kubernetes FQDN set but egress-public-ip not provided; using egress private IP.")
+        service_ip_map = {
+            "bastion": bastion_public_ip or bastion_private_ip,
+            "grafana": egress_ip,
+            "loki": egress_ip,
+            "infisical": egress_ip,
+            "argocd": egress_ip,
+            "kubernetes": egress_public_ip or egress_ip,
+            "db": db_ip,
+        }
+        for key, fqdn in internal_fqdns.items():
+            ip = service_ip_map.get(key)
+            if ip:
+                records.append({"name": fqdn, "content": ip, "proxied": False})
+
+    if deployed_app_records and not args.lb_ip.strip():
+        print("lb-ip is required when deployed_apps_json is provided.", file=sys.stderr)
+        return 1
+
+    for deployed_app_record in deployed_app_records:
+        fqdn = str(deployed_app_record.get("name", "")).strip()
+        if not fqdn:
+            continue
+        proxied = bool(deployed_app_record.get("proxied", False))
+        records.append({"name": fqdn, "content": args.lb_ip, "proxied": proxied})
+
+    for entry in additional_hostnames:
+        hostname = str(entry.get("hostname", "")).strip()
+        ip = str(entry.get("ip", "")).strip()
+        if hostname and ip:
+            records.append({"name": hostname, "content": ip, "proxied": False})
+
+    if not records:
+        print("No FQDNs provided; skipping DNS sync.")
+        return 0
+
+    deduped: dict[str, dict] = {}
+    for record in records:
+        name = record["name"]
+        if name in deduped:
+            prev = deduped[name]
+            if prev.get("content") != record.get("content") or bool(prev.get("proxied")) != bool(record.get("proxied")):
+                print(f"Warning: duplicate DNS record '{name}' specified; last write wins.", file=sys.stderr)
+        deduped[name] = record
+    records = list(deduped.values())
+
+    try:
+        zones = list_zones(token)
+        if not zones:
+            raise RuntimeError("No active zones found in Cloudflare account.")
+
+        skipped_no_zone = 0
+        for record in records:
+            zone_id = find_zone_id(record["name"], zones)
+            if not zone_id:
+                print(f"No matching Cloudflare zone for {record['name']}; skipping.", file=sys.stderr)
+                skipped_no_zone += 1
+                continue
+            upsert_record(token, zone_id, record["name"], record["content"], record["proxied"])
+
+        if skipped_no_zone:
+            print(f"Cloudflare DNS: skipped {skipped_no_zone} record(s) with no matching zone")
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

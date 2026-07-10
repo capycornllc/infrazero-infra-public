@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Infrazero provider adapter: <CLOUD_NAME>.
+#
+# Contract: docs/provider-adapter-contract.md
+# Copy to bootstrap/providers/<cloud>/adapter.sh and implement every function.
+# This file is sourced (not executed) by common bootstrap scripts; it must only
+# define provider_* functions and export INFRAZERO_PROVIDER.
+
+export INFRAZERO_PROVIDER="<cloud>"
+
+# --- Network ------------------------------------------------------------------
+
+# hetzner-32 | ovh-dhcp | none. Clouds whose VPC/router natively routes the
+# private and WG subnets (AWS/Azure/GCP are expected to) should return "none":
+# the generated route-repair scripts then become no-ops.
+provider_route_mode() {
+  echo "none"
+}
+
+# Print the private network gateway IPv4. Default: first usable CIDR address;
+# prefer the kernel route where DHCP provides it (see the ovh adapter).
+provider_private_gateway() {
+  local cidr="${1:-${PRIVATE_CIDR:-}}"
+  [ -n "$cidr" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  PRIVATE_CIDR="$cidr" python3 - <<'PY'
+import ipaddress
+import os
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+print(str(net.network_address + 1 if net.num_addresses > 1 else net.network_address))
+PY
+}
+
+# Print the private NIC name (interface with an IPv4 inside PRIVATE_CIDR).
+provider_detect_private_iface() {
+  local cidr="${1:-${PRIVATE_CIDR:-}}"
+  [ -n "$cidr" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  PRIVATE_CIDR="$cidr" python3 - <<'PY'
+import ipaddress
+import os
+import subprocess
+cidr = os.environ.get("PRIVATE_CIDR", "")
+try:
+    net = ipaddress.ip_network(cidr, strict=False)
+except Exception:
+    raise SystemExit(1)
+output = subprocess.check_output(["ip", "-4", "-o", "addr", "show"]).decode()
+for line in output.splitlines():
+    parts = line.split()
+    if len(parts) < 4:
+        continue
+    ifname = parts[1]
+    addr = parts[3].split("/")[0]
+    try:
+        if ipaddress.ip_address(addr) in net:
+            print(ifname)
+            raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+}
+
+# Self-configure a racing private NIC with <ipv4>. No-op where the cloud
+# configures NICs itself (typical for DHCP/VPC clouds).
+provider_configure_private_nic() {
+  return 0
+}
+
+# Whether bastion masquerades WG traffic by default (true when the cloud
+# router cannot route the WG subnet back to bastion).
+provider_wg_snat_default() {
+  echo "false"
+}
+
+# Set PUBLIC_IF / PRIVATE_IF globals for the egress role; return 1 on failure.
+# Single-NIC clouds: both may be the same interface (see the ovh adapter).
+provider_egress_setup_interfaces() {
+  PUBLIC_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+  PRIVATE_IF="$(provider_detect_private_iface || true)"
+  [ -n "$PRIVATE_IF" ] || PRIVATE_IF="$PUBLIC_IF"
+  [ -n "$PUBLIC_IF" ] || PUBLIC_IF="$PRIVATE_IF"
+  if [ -z "$PUBLIC_IF" ] || [ -z "$PRIVATE_IF" ]; then
+    echo "[egress] unable to determine network interfaces" >&2
+    return 1
+  fi
+  return 0
+}
+
+# --- Storage ------------------------------------------------------------------
+
+# Print the block device path of the attached data volume (return 1 if absent).
+# AWS hint: NVMe devices expose the volume id via /dev/disk/by-id/nvme-Amazon_
+# Elastic_Block_Store_vol* links; also handle /dev/xvd* on older instance types.
+provider_find_data_volume() {
+  local volume_name="${1:-}"
+  echo "TODO: implement volume discovery for <cloud>" >&2
+  return 1
+}
+
+# Print "<attempts> <sleep_seconds>" for the volume attach wait.
+provider_volume_wait_defaults() {
+  echo "90 5"
+}
+
+# --- Misc ---------------------------------------------------------------------
+
+# Best-effort instance metadata lookup.
+# AWS hint: IMDSv2 requires a session token (PUT /latest/api/token first).
+provider_metadata_get() {
+  local key="${1:?metadata key required}"
+  curl -fsS --max-time 5 "http://169.254.169.254/latest/meta-data/${key}" 2>/dev/null
+}
+
+# Optional: export INFRAZERO_OUTBOUND_* defaults for the package-install
+# connectivity wait (see hetzner/ovh adapters for the two existing profiles).
+provider_outbound_defaults() {
+  return 0
+}

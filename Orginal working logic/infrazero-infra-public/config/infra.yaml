@@ -1,0 +1,113 @@
+project: infrazero
+environment: dev
+name_prefix: infrazero-dev
+
+location: fsn1
+network_zone: eu-central
+private_cidr: 10.10.0.0/24
+
+server_image: ubuntu-24.04
+
+servers:
+  bastion:
+    private_ip: 10.10.0.10
+    public_ipv4: true
+    public_ipv6: true
+  egress:
+    private_ip: 10.10.0.11
+    public_ipv4: true
+    public_ipv6: true
+  db:
+    private_ip: 10.10.0.30
+    public_ipv4: false
+    public_ipv6: false
+
+k3s_control_planes:
+  - private_ip: 10.10.0.20
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.22
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.23
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.24
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.25
+    public_ipv4: false
+    public_ipv6: false
+
+k3s_workers:
+  - private_ip: 10.10.0.21
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.26
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.27
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.28
+    public_ipv4: false
+    public_ipv6: false
+  - private_ip: 10.10.0.29
+    public_ipv4: false
+    public_ipv6: false
+
+k3s_api_load_balancer:
+  type: lb11
+  private_ip: 10.10.0.41
+
+load_balancer:
+  type: lb11
+  private_ip: 10.10.0.40
+  services:
+    - name: http
+      protocol: tcp
+      listen_port: 80
+      destination_port: 30080
+    - name: https
+      protocol: tcp
+      listen_port: 443
+      destination_port: 30443
+  health_check:
+    protocol: tcp
+    port: 30080
+    interval: 10
+    timeout: 5
+    retries: 3
+
+db_volume:
+  name: infrazero-dev-db
+  size: 200
+  format: ext4
+
+placement_groups:
+  enabled: true
+  type: spread
+
+wireguard:
+  enabled: true
+  listen_port: 51820
+  allowed_cidrs:
+    - 10.50.0.0/24
+
+k3s:
+  token_name: k3s_join_token
+  server_taint: false
+
+argocd:
+  repo_revision: main
+  repo_path: clusters/${ENVIRONMENT}
+  app_name: root
+  app_project: default
+  destination_namespace: argocd
+  destination_server: https://kubernetes.default.svc
+
+s3_backend:
+  state_prefix: infrazero/dev
+
+bootstrap:
+  presign_expiry_seconds: 14400

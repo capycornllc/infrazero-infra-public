@@ -276,8 +276,8 @@ write_files:
 
       echo "[bootstrap] extracting $ROLE artifact"
       tar --zstd -xf "$ROLE.tar.zst"
-      chmod +x common.sh beacon.sh "$ROLE.sh"
-      sed -i 's/\r$//' common.sh beacon.sh "$ROLE.sh" || true
+      chmod +x ./*.sh
+      sed -i 's/\r$//' ./*.sh || true
 
       mark_bootstrap_script_failed() {
         local phase="$1"
