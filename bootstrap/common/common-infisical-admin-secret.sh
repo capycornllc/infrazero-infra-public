@@ -283,14 +283,31 @@ fi
 
 INFISICAL_KUBERNETES_HOST="${INFISICAL_KUBERNETES_HOST:-}"
 if [ -z "$INFISICAL_KUBERNETES_HOST" ]; then
-  if [ -n "${K3S_SERVER_IP:-}" ]; then
-    INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
-  elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
-    INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
-  elif [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
-    INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
+  INFISICAL_KUBERNETES_HOST_MODE="${INFISICAL_KUBERNETES_HOST_MODE:-public}"
+  INFISICAL_KUBERNETES_HOST_MODE="$(printf '%s' "$INFISICAL_KUBERNETES_HOST_MODE" | tr '[:upper:]' '[:lower:]')"
+  if [ "$INFISICAL_KUBERNETES_HOST_MODE" = "private" ] || [ "$INFISICAL_KUBERNETES_HOST_MODE" = "internal" ]; then
+    if [ -n "${K3S_SERVER_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
+    elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
+    elif [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
+    else
+      INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
+    fi
   else
-    INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
+    if [ -n "${KUBERNETES_FQDN:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
+    elif [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
+    elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
+    elif [ -n "${K3S_SERVER_IP:-}" ]; then
+      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
+    else
+      echo "[infisical-admin-secret] unable to determine Kubernetes host" >&2
+      exit 1
+    fi
   fi
 fi
 export INFISICAL_KUBERNETES_HOST
