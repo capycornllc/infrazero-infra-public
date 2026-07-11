@@ -231,11 +231,16 @@ jobs:
       - name: Replace egress
         run: |
           if [ "$CLOUD_PROVIDER_RESOLVED" = "ovhcloud" ]; then
-            TARGET="openstack_compute_instance_v2.egress"
+            # OVH: the floating IP lives in a SEPARATE resource bound to the
+            # instance id. Replacing only the instance detaches the IP forever
+            # (the associate resource is outside the target set and never
+            # reconciled) - the rebuilt egress comes up without a public IP.
+            # Same pattern as rebuild-db, which already targets its
+            # volume_attach resource alongside the replace.
+            bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=openstack_compute_instance_v2.egress -target=openstack_compute_floatingip_associate_v2.egress -replace=openstack_compute_instance_v2.egress
           else
-            TARGET="hcloud_server.egress"
+            bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=hcloud_server.egress -replace=hcloud_server.egress
           fi
-          bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target="$TARGET" -replace="$TARGET"
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

@@ -148,6 +148,25 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
   sysctl -w "net.ipv4.conf.${PRIVATE_IF}.rp_filter=0" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.all.rp_filter=0" >/dev/null 2>&1 || true
 
+  # CRITICAL: the bastion HOSTS the WG subnet on wg0, so WG_CIDR must route via
+  # wg0 here - never via the private NIC. The generated infrazero-wg-route.sh
+  # runs during the common phase BEFORE wg0 exists (its wg0-guard can't fire
+  # yet) and installs "WG_CIDR via <private_gw> dev <private_if>". Once wg0 is
+  # up in the SAME subnet as the clients (server+clients share WG_CIDR), that
+  # stale route hijacks RETURN traffic to WG clients into the private network
+  # instead of the tunnel - handshakes succeed but no data flows, breaking
+  # every client (admin AND runtime worker). Drop any WG_CIDR route on the
+  # private NIC and pin WG_CIDR to wg0. The wg-route timer won't re-add it:
+  # its wg0-guard fires now that wg0 exists.
+  if [ -n "${WG_CIDR:-}" ]; then
+    while IFS= read -r _stale_wg_route; do
+      [ -n "$_stale_wg_route" ] || continue
+      # shellcheck disable=SC2086
+      ip route del $_stale_wg_route 2>/dev/null || true
+    done < <(ip route show "$WG_CIDR" 2>/dev/null | grep -F "dev ${PRIVATE_IF}" || true)
+    ip route replace "$WG_CIDR" dev "$WG_IF" scope link 2>/dev/null || true
+  fi
+
   if [ "${WG_SNAT_ENABLED,,}" = "true" ]; then
     # SNAT WG clients to bastion private IP for private subnet access.
     iptables -t nat -C POSTROUTING -s "$WG_CIDR" -d "$PRIVATE_CIDR" -o "$PRIVATE_IF" -j MASQUERADE \
