@@ -96,6 +96,13 @@ provider_wg_snat_default() {
   echo "true"
 }
 
+# OVH Ubuntu images can already contain an "admin" group. The historical OVH
+# bootstrap used useradd -N for platform admin users to avoid failing when the
+# requested username matches an existing group.
+provider_admin_useradd_options() {
+  echo "-N"
+}
+
 # --- Storage ------------------------------------------------------------------
 
 # provider_find_data_volume [volume_name]: print the block device path of the

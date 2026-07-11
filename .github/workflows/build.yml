@@ -324,7 +324,7 @@ jobs:
           BASTION_PUBLIC_IP: ""
           BOOTSTRAP_SERVER_LIST: ""
           BOOTSTRAP_SSH_PRIVATE_KEY: ${{ secrets.BOOTSTRAP_SSH_PRIVATE_KEY }}
-          PLATFORM_ADMINS_JSON: ${{ secrets.platform_admins_json }}
+          PLATFORM_ADMINS_JSON: ${{ secrets.platform_admins_json || secrets.PLATFORM_ADMINS_JSON }}
           BOOTSTRAP_TIMEOUT_MINUTES: "35"
         run: |
           # Extract IPs from OpenTofu outputs
@@ -334,6 +334,11 @@ jobs:
             exit 0
           fi
           export BASTION_PUBLIC_IP="$BASTION_IP"
+
+          if [ -z "${DEBUG_ROOT_PASSWORD:-}" ]; then
+            echo "[build] DEBUG_ROOT_PASSWORD is not set; public SSH bootstrap monitoring is disabled because bastion SSH is WireGuard-only in secure mode."
+            exit 0
+          fi
 
           # Build server list from tofu outputs
           SERVERS="bastion:${BASTION_IP}"

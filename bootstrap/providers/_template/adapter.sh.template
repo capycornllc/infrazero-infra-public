@@ -78,6 +78,11 @@ provider_wg_snat_default() {
   echo "false"
 }
 
+# Optional: print extra useradd options for platform admin users.
+provider_admin_useradd_options() {
+  return 0
+}
+
 # Set PUBLIC_IF / PRIVATE_IF globals for the egress role; return 1 on failure.
 # Single-NIC clouds: both may be the same interface (see the ovh adapter).
 provider_egress_setup_interfaces() {

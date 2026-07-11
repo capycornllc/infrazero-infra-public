@@ -308,7 +308,16 @@ PY
       fi
 
       if ! id -u "$username" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash -G infrazero-admins "$username"
+        local useradd_extra_raw=""
+        local -a useradd_extra_args=()
+        if declare -F provider_admin_useradd_options >/dev/null 2>&1; then
+          useradd_extra_raw="$(provider_admin_useradd_options "$username" 2>/dev/null || true)"
+          if [ -n "$useradd_extra_raw" ]; then
+            # shellcheck disable=SC2206
+            useradd_extra_args=($useradd_extra_raw)
+          fi
+        fi
+        useradd -m -s /bin/bash "${useradd_extra_args[@]}" -G infrazero-admins "$username"
       else
         usermod -aG infrazero-admins "$username" || true
       fi

@@ -189,6 +189,16 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
       || iptables -A FORWARD -i "$WG_IF" -o "$PUBLIC_IF" -j REJECT
   fi
 
+  if [ -n "${WG_LISTEN_PORT:-}" ]; then
+    if [ -n "$PUBLIC_IF" ]; then
+      iptables -C INPUT -i "$PUBLIC_IF" -p udp --dport "$WG_LISTEN_PORT" -j ACCEPT 2>/dev/null \
+        || iptables -I INPUT 1 -i "$PUBLIC_IF" -p udp --dport "$WG_LISTEN_PORT" -j ACCEPT
+    else
+      iptables -C INPUT -p udp --dport "$WG_LISTEN_PORT" -j ACCEPT 2>/dev/null \
+        || iptables -I INPUT 1 -p udp --dport "$WG_LISTEN_PORT" -j ACCEPT
+    fi
+  fi
+
   # Targeted SNAT for Loki (port 3100) only.
   # Some private networks (Hetzner) reject packets whose source IP is not
   # within the private CIDR (e.g. WG client IPs). Rather than enabling broad
