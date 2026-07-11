@@ -1119,6 +1119,26 @@ def main() -> int:
 
     wg_server_address = require_env("WG_SERVER_ADDRESS")
 
+    # Consistency guard: the WG server address must live inside the client
+    # subnet (wireguard.allowed_cidrs[0]). The cloud WG return-route (tofu),
+    # bastion iptables and node wg-routes are all built from allowed_cidrs[0];
+    # a mismatching wg_server_address silently breaks ALL WG<->private traffic
+    # except explicitly SNATed ports (observed: 10.0.0.1/24 vs 10.50.0.0/24).
+    import ipaddress as _ipaddress
+    _wg_allowed = ((config.get("wireguard") or {}).get("allowed_cidrs") or [])
+    if _wg_allowed:
+        try:
+            _client_net = _ipaddress.ip_network(str(_wg_allowed[0]), strict=False)
+            _server_ip = _ipaddress.ip_interface(str(wg_server_address)).ip
+        except ValueError as exc:
+            raise SystemExit(f"Invalid wg_server_address/allowed_cidrs: {exc}")
+        if _server_ip not in _client_net:
+            raise SystemExit(
+                f"wg_server_address ({wg_server_address}) is OUTSIDE wireguard.allowed_cidrs[0] "
+                f"({_wg_allowed[0]}). They must share one subnet - fix wg_server_address "
+                f"(e.g. first host of {_wg_allowed[0]}) or allowed_cidrs in config."
+            )
+
     bastion_secrets = {
         "WG_SERVER_PRIVATE_KEY": require_env("WG_SERVER_PRIVATE_KEY"),
         "WG_SERVER_PUBLIC_KEY": require_env("WG_SERVER_PUBLIC_KEY"),

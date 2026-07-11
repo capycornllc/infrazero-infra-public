@@ -30,7 +30,12 @@ resource "hcloud_network_route" "default_egress" {
 resource "hcloud_network_route" "wireguard" {
   count       = var.wireguard.enabled ? 1 : 0
   network_id  = hcloud_network.main.id
-  destination = local.wg_cidr
+  # MUST match the subnet bootstrap uses for WG clients (bastion iptables and
+  # node wg-routes are built from wireguard.allowed_cidrs[0]). Deriving this
+  # from wg_server_address instead caused a silent split-brain when the two
+  # values pointed at different subnets: the cloud route ended up for the
+  # wrong CIDR and Hetzner dropped all WG<->private traffic except SNATed ports.
+  destination = var.wireguard.allowed_cidrs[0]
   gateway     = var.servers.bastion.private_ip
 
   # Prevent race: Hetzner rejects the gateway if the bastion's network attachment

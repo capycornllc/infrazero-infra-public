@@ -42,9 +42,6 @@ locals {
   k3s_server_private_ip    = local.k3s_control_plane_nodes[0].private_ip
   k3s_server_cidr          = "${local.k3s_control_plane_nodes[0].private_ip}/32"
 
-  wg_prefix_length            = tonumber(split("/", var.wg_server_address)[1])
-  wg_network_ip               = cidrhost(var.wg_server_address, 0)
-  wg_cidr                     = "${local.wg_network_ip}/${local.wg_prefix_length}"
 
   db_replicas_map  = { for idx, replica in var.db_replicas : tostring(idx) => replica }
   db_replica_cidrs = [for replica in var.db_replicas : "${replica.private_ip}/32"]
