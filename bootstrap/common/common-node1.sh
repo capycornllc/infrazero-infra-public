@@ -55,6 +55,10 @@ if command -v apt-get >/dev/null 2>&1; then
   apt_get install -y curl ca-certificates jq unzip apache2-utils openssl
 fi
 
+if declare -F infrazero_install_journald_promtail >/dev/null 2>&1; then
+  infrazero_install_journald_promtail "node1" "node1" "$EGRESS_LOKI_URL"
+fi
+
 if ! command -v argocd >/dev/null 2>&1; then
   ARGOCD_CLI_VERSION="${ARGOCD_CLI_VERSION:-latest}"
   if [ "$ARGOCD_CLI_VERSION" = "latest" ]; then

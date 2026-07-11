@@ -678,6 +678,15 @@ scrape_configs:
     relabel_configs:
       - source_labels: ["__journal__systemd_unit"]
         target_label: unit
+  - job_name: infrazero-bootstrap
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: infrazero-bootstrap
+          host: "${host_label}"
+          role: "${role}"
+          __path__: /var/log/infrazero-bootstrap.log
 EOF
 
   cat > "/etc/systemd/system/${service_unit}" <<EOF

@@ -282,36 +282,12 @@ if [ -z "$INFISICAL_ENV_SLUG" ]; then
 fi
 
 INFISICAL_KUBERNETES_HOST="${INFISICAL_KUBERNETES_HOST:-}"
-if [ -z "$INFISICAL_KUBERNETES_HOST" ]; then
-  INFISICAL_KUBERNETES_HOST_MODE="${INFISICAL_KUBERNETES_HOST_MODE:-public}"
-  INFISICAL_KUBERNETES_HOST_MODE="$(printf '%s' "$INFISICAL_KUBERNETES_HOST_MODE" | tr '[:upper:]' '[:lower:]')"
-  if [ "$INFISICAL_KUBERNETES_HOST_MODE" = "private" ] || [ "$INFISICAL_KUBERNETES_HOST_MODE" = "internal" ]; then
-    if [ -n "${K3S_SERVER_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
-    elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
-    elif [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
-    else
-      INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
-    fi
-  else
-    if [ -n "${KUBERNETES_FQDN:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${KUBERNETES_FQDN}"
-    elif [ -n "${K3S_API_LB_PRIVATE_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_API_LB_PRIVATE_IP}:6443"
-    elif [ -n "${K3S_SERVER_PRIVATE_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_PRIVATE_IP}:6443"
-    elif [ -n "${K3S_SERVER_IP:-}" ]; then
-      INFISICAL_KUBERNETES_HOST="https://${K3S_SERVER_IP}:6443"
-    else
-      echo "[infisical-admin-secret] unable to determine Kubernetes host" >&2
-      exit 1
-    fi
-  fi
-fi
 export INFISICAL_KUBERNETES_HOST
-echo "[infisical-admin-secret] using INFISICAL_KUBERNETES_HOST=${INFISICAL_KUBERNETES_HOST}"
+if [ -n "$INFISICAL_KUBERNETES_HOST" ]; then
+  echo "[infisical-admin-secret] using INFISICAL_KUBERNETES_HOST=${INFISICAL_KUBERNETES_HOST}"
+else
+  echo "[infisical-admin-secret] INFISICAL_KUBERNETES_HOST not set; preserving GitOps KUBE_HOST"
+fi
 
 GITOPS_DIR="${GITOPS_DIR:-/opt/infrazero/gitops}"
 
@@ -402,9 +378,11 @@ import sys
 
 path, kube_host = sys.argv[1], sys.argv[2]
 text = open(path, "r", encoding="utf-8").read()
-next_text, count = re.subn(r'KUBE_HOST="[^"]*"', f'KUBE_HOST="{kube_host}"', text, count=1)
-if count == 0:
-    raise SystemExit("KUBE_HOST assignment not found in infisical k8s auth configmap")
+next_text = text
+if kube_host:
+    next_text, count = re.subn(r'KUBE_HOST="[^"]*"', f'KUBE_HOST="{kube_host}"', next_text, count=1)
+    if count == 0:
+        raise SystemExit("KUBE_HOST assignment not found in infisical k8s auth configmap")
 if 'CURL_INSECURE="${INFISICAL_BOOTSTRAP_CURL_INSECURE:--k}"' not in next_text:
     next_text, insecure_count = re.subn(
         r'(API_RETRY_DELAY="\$\{API_RETRY_DELAY:-2\}"\n)',
