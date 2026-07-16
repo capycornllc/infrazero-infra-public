@@ -239,19 +239,90 @@ wait_for_url "${INFISICAL_SITE_URL}" || {
 
 restore_requested="${INFISICAL_RESTORE_FROM_S3,,}"
 backup_manifest_key="infisical/latest-dump.json"
-if [ "$restore_requested" = "true" ]; then
-  if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${backup_manifest_key}" >/dev/null 2>&1; then
-    echo "[infisical-bootstrap] restore requested and backup manifest exists; skipping bootstrap"
-    exit 0
-  fi
-  echo "[infisical-bootstrap] restore requested but no backup manifest; continuing with bootstrap"
-fi
-
 tokens_manifest_key="infisical/bootstrap/latest-tokens.json"
 tokens_manifest_exists="false"
 if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" >/dev/null 2>&1; then
   tokens_manifest_exists="true"
 fi
+
+restore_archived_tokens_manifest() {
+  local archived_key=""
+  local tmpdir=""
+  local admin_key=""
+  local admin_sha=""
+  local actual_sha=""
+  local manifest_site=""
+
+  archived_key=$(aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/old_backup/" --recursive 2>/dev/null \
+    | awk '/\/infisical-latest-tokens\.json$/ {print $4}' \
+    | sort \
+    | tail -n 1 || true)
+  if [ -z "$archived_key" ]; then
+    return 1
+  fi
+
+  tmpdir=$(mktemp -d /run/infrazero-token-manifest.XXXXXX)
+  chmod 700 "$tmpdir"
+  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+    "s3://${DB_BACKUP_BUCKET}/${archived_key}" "$tmpdir/manifest.json" >/dev/null; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  admin_key=$(jq -r '.admin_token_key // empty' "$tmpdir/manifest.json")
+  admin_sha=$(jq -r '.admin_token_sha256 // empty' "$tmpdir/manifest.json")
+  manifest_site=$(jq -r '.infisical_site_url // empty' "$tmpdir/manifest.json")
+  if [ -z "$admin_key" ] || [ -z "$admin_sha" ]; then
+    echo "[infisical-bootstrap] archived token manifest is incomplete: ${archived_key}" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  if [ -n "$manifest_site" ] && [ "$manifest_site" != "$INFISICAL_SITE_URL" ]; then
+    echo "[infisical-bootstrap] archived token manifest site mismatch: ${manifest_site}" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+    "s3://${DB_BACKUP_BUCKET}/${admin_key}" "$tmpdir/admin.token.age" >/dev/null; then
+    echo "[infisical-bootstrap] archived token object is missing: ${admin_key}" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  actual_sha=$(sha256sum "$tmpdir/admin.token.age" | awk '{print $1}')
+  if [ "$actual_sha" != "$admin_sha" ]; then
+    echo "[infisical-bootstrap] archived token checksum mismatch: ${admin_key}" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+    "s3://${DB_BACKUP_BUCKET}/${archived_key}" \
+    "s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" >/dev/null; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  rm -rf "$tmpdir"
+  echo "[infisical-bootstrap] restored validated token manifest from ${archived_key}"
+  return 0
+}
+
+if [ "$restore_requested" = "true" ]; then
+  if aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${DB_BACKUP_BUCKET}/${backup_manifest_key}" >/dev/null 2>&1; then
+    if [ "$tokens_manifest_exists" != "true" ] && restore_archived_tokens_manifest; then
+      tokens_manifest_exists="true"
+    fi
+    if [ "$tokens_manifest_exists" = "true" ]; then
+      echo "[infisical-bootstrap] restore requested; database and token manifests exist; skipping fresh bootstrap"
+      exit 0
+    fi
+    echo "[infisical-bootstrap] restored database has no token manifest at s3://${DB_BACKUP_BUCKET}/${tokens_manifest_key}" >&2
+    echo "[infisical-bootstrap] refusing successful completion because node1 cannot continue without it" >&2
+    exit 1
+  fi
+  echo "[infisical-bootstrap] restore requested but no backup manifest; continuing with bootstrap"
+fi
+
 if [ "$restore_requested" != "true" ] && [ "$tokens_manifest_exists" = "true" ]; then
   echo "[infisical-bootstrap] tokens manifest exists; rotating tokens and updating manifest"
 fi

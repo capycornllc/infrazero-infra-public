@@ -27,6 +27,8 @@ jobs:
         run: shellcheck -S error $(git ls-files '*.sh')
       - name: Python syntax
         run: python -m compileall -q scripts
+      - name: Bootstrap route and token lifecycle invariants
+        run: python scripts/common/check-bootstrap-invariants.py
 
   tofu-common-sync:
     runs-on: ubuntu-latest

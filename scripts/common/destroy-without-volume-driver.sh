@@ -65,11 +65,18 @@ if [ -n "${S3_ENDPOINT:-}" ] && [ -n "${INFRA_STATE_BUCKET:-}" ] && [ -n "${DB_B
       2>/dev/null || true
   done
 
-  # Move infisical bootstrap tokens
-  aws --endpoint-url "$S3_ENDPOINT" s3 mv \
-    "s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/latest-tokens.json" \
-    "s3://${DB_BACKUP_BUCKET}/old_backup/${timestamp}/infisical-latest-tokens.json" \
-    2>/dev/null || true
+  # Archive the token manifest, but keep the canonical copy. A restored
+  # Infisical database still needs the same encrypted admin token so node1 can
+  # resume GitOps bootstrap after the egress server is recreated.
+  tokens_manifest="s3://${DB_BACKUP_BUCKET}/infisical/bootstrap/latest-tokens.json"
+  if aws --endpoint-url "$S3_ENDPOINT" s3 ls "$tokens_manifest" >/dev/null 2>&1; then
+    aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+      "$tokens_manifest" \
+      "s3://${DB_BACKUP_BUCKET}/old_backup/${timestamp}/infisical-latest-tokens.json"
+    echo "[destroy] Infisical token manifest archived and retained for restore"
+  else
+    echo "[destroy] No Infisical token manifest to archive"
+  fi
 
   echo "[destroy] Old data moved to old_backup/${timestamp}/"
 fi

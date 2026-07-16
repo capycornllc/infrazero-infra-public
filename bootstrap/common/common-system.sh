@@ -245,7 +245,18 @@ if declare -F infrazero_install_systemd_timer >/dev/null 2>&1; then
     "10s"
 fi
 
-# Ensure the WireGuard subnet routes to bastion on non-WG hosts.
+# Ensure the WireGuard subnet routes to bastion on non-WG hosts. The bastion
+# owns WG_CIDR locally on wg0, so installing this guest route there creates a
+# race that can redirect return traffic into the private network.
+if [ "${BOOTSTRAP_ROLE:-}" = "bastion" ]; then
+  systemctl disable --now infrazero-wg-route.timer infrazero-wg-route.service >/dev/null 2>&1 || true
+  rm -f \
+    /etc/systemd/system/infrazero-wg-route.timer \
+    /etc/systemd/system/infrazero-wg-route.service \
+    /usr/local/sbin/infrazero-wg-route.sh
+  systemctl daemon-reload
+  echo "[common] bastion owns ${WG_CIDR:-the WireGuard subnet} on wg0; guest WG route disabled"
+else
 {
   printf '#!/usr/bin/env bash\nset -euo pipefail\nINFRAZERO_ROUTE_MODE=%q\n' "$INFRAZERO_ROUTE_MODE"
   cat <<'EOF'
@@ -457,6 +468,7 @@ if declare -F infrazero_install_systemd_timer >/dev/null 2>&1; then
     "120s" \
     "60s" \
     "10s"
+fi
 fi
 
 if declare -F infrazero_configure_base_system >/dev/null 2>&1; then

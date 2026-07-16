@@ -44,6 +44,16 @@ infrazero_require_env "EGRESS_LOKI_URL" "bastion"
 
 DEBUG_ROOT_PASSWORD="${DEBUG_ROOT_PASSWORD:-}"
 
+# Older common bootstrap versions installed the non-WG-host route repair on
+# every role. Remove it here as a second role-local guard so bastion routing
+# cannot depend on BOOTSTRAP_ROLE propagation or systemd timing.
+systemctl disable --now infrazero-wg-route.timer infrazero-wg-route.service >/dev/null 2>&1 || true
+rm -f \
+  /etc/systemd/system/infrazero-wg-route.timer \
+  /etc/systemd/system/infrazero-wg-route.service \
+  /usr/local/sbin/infrazero-wg-route.sh
+systemctl daemon-reload
+
 beacon_status "installing_wireguard" "Installing WireGuard" 10
 
 if ! declare -F infrazero_install_wireguard_packages >/dev/null 2>&1 || ! declare -F infrazero_configure_bastion_wireguard >/dev/null 2>&1; then
@@ -148,23 +158,38 @@ if [ "$SKIP_FORWARDING" != "true" ]; then
   sysctl -w "net.ipv4.conf.${PRIVATE_IF}.rp_filter=0" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.all.rp_filter=0" >/dev/null 2>&1 || true
 
-  # CRITICAL: the bastion HOSTS the WG subnet on wg0, so WG_CIDR must route via
-  # wg0 here - never via the private NIC. The generated infrazero-wg-route.sh
-  # runs during the common phase BEFORE wg0 exists (its wg0-guard can't fire
-  # yet) and installs "WG_CIDR via <private_gw> dev <private_if>". Once wg0 is
-  # up in the SAME subnet as the clients (server+clients share WG_CIDR), that
-  # stale route hijacks RETURN traffic to WG clients into the private network
-  # instead of the tunnel - handshakes succeed but no data flows, breaking
-  # every client (admin AND runtime worker). Drop any WG_CIDR route on the
-  # private NIC and pin WG_CIDR to wg0. The wg-route timer won't re-add it:
-  # its wg0-guard fires now that wg0 exists.
+  # The bastion hosts WG_CIDR locally. Remove routes left by older bootstrap
+  # versions and make wg0 the only valid path before firewall rules are saved.
   if [ -n "${WG_CIDR:-}" ]; then
     while IFS= read -r _stale_wg_route; do
       [ -n "$_stale_wg_route" ] || continue
-      # shellcheck disable=SC2086
-      ip route del $_stale_wg_route 2>/dev/null || true
-    done < <(ip route show "$WG_CIDR" 2>/dev/null | grep -F "dev ${PRIVATE_IF}" || true)
-    ip route replace "$WG_CIDR" dev "$WG_IF" scope link 2>/dev/null || true
+      _stale_wg_dev=$(printf '%s\n' "$_stale_wg_route" | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+      [ "$_stale_wg_dev" = "$WG_IF" ] && continue
+      read -r -a _stale_wg_args <<< "$_stale_wg_route"
+      if ! ip route del "${_stale_wg_args[@]}"; then
+        echo "[bastion] unable to remove stale WG route: ${_stale_wg_route}" >&2
+        beacon_status "failed" "Unable to repair WireGuard route" 0 || true
+        exit 1
+      fi
+    done < <(ip -4 route show "$WG_CIDR" 2>/dev/null || true)
+
+    if ! ip route replace "$WG_CIDR" dev "$WG_IF" scope link; then
+      echo "[bastion] unable to route ${WG_CIDR} through ${WG_IF}" >&2
+      beacon_status "failed" "Unable to configure WireGuard route" 0 || true
+      exit 1
+    fi
+
+    _wg_probe_ip=$(echo "$WG_ADMIN_PEERS_JSON" | jq -r '[.[]?.ip // empty | select(length > 0)][0] // empty' | cut -d/ -f1)
+    if [ -n "$_wg_probe_ip" ]; then
+      _wg_selected_route=$(ip -4 route get "$_wg_probe_ip" 2>/dev/null || true)
+      _wg_selected_dev=$(printf '%s\n' "$_wg_selected_route" | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+      if [ "$_wg_selected_dev" != "$WG_IF" ]; then
+        echo "[bastion] invalid route for ${_wg_probe_ip}: ${_wg_selected_route:-not found}; expected dev ${WG_IF}" >&2
+        beacon_status "failed" "WireGuard route validation failed" 0 || true
+        exit 1
+      fi
+      echo "[bastion] WireGuard route verified: ${_wg_probe_ip} via ${WG_IF}"
+    fi
   fi
 
   if [ "${WG_SNAT_ENABLED,,}" = "true" ]; then
