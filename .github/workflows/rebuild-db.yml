@@ -75,16 +75,7 @@ jobs:
       WG_LISTEN_PORT: ${{ secrets.wg_listen_port }}
       WG_ADMIN_PEERS_JSON: ${{ secrets.WG_ADMIN_PEERS_JSON }}
       WG_PRESHARED_KEYS_JSON: ${{ secrets.WG_PRESHARED_KEYS_JSON }}
-      HCLOUD_TOKEN: ${{ secrets.hetzner_cloud_token }}
-      TF_VAR_hcloud_token: ${{ secrets.hetzner_cloud_token }}
       CLOUD_PROVIDER: ${{ secrets.cloud_provider }}
-      OVH_APPLICATION_KEY: ${{ secrets.ovh_application_key }}
-      OVH_APPLICATION_SECRET: ${{ secrets.ovh_application_secret }}
-      OVH_CONSUMER_KEY: ${{ secrets.ovh_consumer_key }}
-      OVH_CLOUD_PROJECT_ID: ${{ secrets.ovh_cloud_project_id }}
-      OPENSTACK_USER_NAME: ${{ secrets.openstack_user_name }}
-      OPENSTACK_PASSWORD: ${{ secrets.openstack_password }}
-      OPENSTACK_TENANT_ID: ${{ secrets.openstack_tenant_id }}
       DB_REPLICA_ENABLED: ${{ secrets.db_replica_enabled }}
       DB_REPLICA_COUNT: ${{ secrets.db_replica_count }}
       PATRONI_ENABLED: ${{ secrets.patroni_enabled }}
@@ -106,16 +97,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml jsonschema requests
-
-      - name: Export Infisical bootstrap secret payloads
-        run: |
-          cat > "${RUNNER_TEMP}/github-secrets.json" <<'JSON'
-          ${{ toJson(secrets) }}
-          JSON
-          python scripts/common/export-bootstrap-folder-secrets.py \
-            --secrets-json "${RUNNER_TEMP}/github-secrets.json" \
-            --github-env "${GITHUB_ENV}"
-          rm -f "${RUNNER_TEMP}/github-secrets.json"
 
       - name: Read config values
         run: |
@@ -198,6 +179,14 @@ jobs:
       - name: Determine cloud provider
         uses: ./.github/actions/select-provider
 
+      - name: Export Infisical bootstrap secret payloads
+        run: |
+          python scripts/common/export-bootstrap-folder-secrets.py \
+            --github-env "${GITHUB_ENV}" \
+            --provider-credential-script "${SCRIPTS_DIR}/ci-credentials.sh" <<'JSON'
+          ${{ toJSON(secrets) }}
+          JSON
+
       - name: Render backend
         run: python scripts/common/render-backend.py --config config/infra.yaml --output ${{ env.TOFU_DIR }}/backend.hcl
 
@@ -250,11 +239,14 @@ jobs:
 
       - name: Replace db server
         run: |
-          if [ "$CLOUD_PROVIDER_RESOLVED" = "ovhcloud" ]; then
-            bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=openstack_compute_instance_v2.db -target=openstack_compute_volume_attach_v2.db -replace=openstack_compute_instance_v2.db
-          else
-            bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json -target=hcloud_server.db -target=hcloud_volume_attachment.db -replace=hcloud_server.db
-          fi
+          set -euo pipefail
+          source "${{ env.SCRIPTS_DIR }}/tofu-resources.sh"
+          server=$(tofu_server_resource db)
+          target_args=(-target="$server")
+          for extra in $(tofu_replace_extra_targets db); do
+            target_args+=(-target="$extra")
+          done
+          bash scripts/common/tofu-retry.sh tofu -chdir=${{ env.TOFU_DIR }} apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json "${target_args[@]}" -replace="$server"
 
       - name: Sync Cloudflare DNS
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

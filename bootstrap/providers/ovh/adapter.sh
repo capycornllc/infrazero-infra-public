@@ -111,30 +111,11 @@ provider_admin_useradd_options() {
 # plain QEMU disk by serial, without a by-id link containing the OpenStack
 # volume name.
 provider_find_data_volume() {
-  local volume_name="${1:-}"
   local candidate=""
 
-  if [ -n "$volume_name" ] && [ -e "/dev/disk/by-id/scsi-0HC_Volume_${volume_name}" ]; then
-    echo "/dev/disk/by-id/scsi-0HC_Volume_${volume_name}"
-    return 0
-  fi
-  if [ -n "$volume_name" ] && [ -e "/dev/disk/by-id/scsi-SHC_Volume_${volume_name}" ]; then
-    echo "/dev/disk/by-id/scsi-SHC_Volume_${volume_name}"
-    return 0
-  fi
-
-  candidate=$(ls -1 /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -n 1 || true)
-  if [ -n "$candidate" ]; then
-    echo "$candidate"
-    return 0
-  fi
-
-  candidate=$(ls -1 /dev/disk/by-id/scsi-SHC_Volume_* 2>/dev/null | head -n 1 || true)
-  if [ -n "$candidate" ]; then
-    echo "$candidate"
-    return 0
-  fi
-
+  # OVH exposes attached volumes as plain QEMU disks (by serial), usually
+  # without an OpenStack-name by-id link. Match a generic *Volume* by-id link
+  # if present, otherwise fall back to the first unmounted disk (below).
   candidate=$(ls -1 /dev/disk/by-id/*Volume* 2>/dev/null | head -n 1 || true)
   if [ -n "$candidate" ]; then
     echo "$candidate"

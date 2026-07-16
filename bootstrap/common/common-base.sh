@@ -181,7 +181,9 @@ infrazero_install_base_packages() {
     packages=(curl ca-certificates zstd jq e2fsprogs auditd unattended-upgrades)
   fi
 
-  beacon_status "installing_packages" "Installing base packages" 15
+  if declare -F beacon_status >/dev/null 2>&1; then
+    beacon_status "installing_packages" "Installing base packages" 15
+  fi
 
   if [ -z "${HAS_PUBLIC_IPV4:-}" ] && infrazero_bool_is_true "${INFRAZERO_PUBLIC_IPV4_AUTODETECT:-false}"; then
     if curl -sf --connect-timeout 3 --max-time 5 -o /dev/null "$public_check_url" 2>/dev/null; then
@@ -500,6 +502,19 @@ infrazero_install_wireguard_packages() {
   fi
 
   export DEBIAN_FRONTEND=noninteractive
+
+  # Prefer the shared apt helper (retries, lock timeout, beacon reporting) - the
+  # same mechanism used for base packages. Fall back to the standalone loop if
+  # the helper is not loaded, so resilience is never reduced.
+  if declare -F infrazero_apt_get >/dev/null 2>&1; then
+    if infrazero_apt_get "$log_prefix" update -y \
+      && infrazero_apt_get "$log_prefix" install -y wireguard wireguard-tools unzip; then
+      return 0
+    fi
+    echo "[${log_prefix}] unable to install WireGuard packages" >&2
+    return 1
+  fi
+
   local attempt
   for attempt in {1..20}; do
     if timeout 1200 apt-get -o DPkg::Lock::Timeout=600 update -y && timeout 1200 apt-get -o DPkg::Lock::Timeout=600 install -y wireguard wireguard-tools unzip; then
@@ -598,11 +613,20 @@ infrazero_ensure_aws_cli() {
   local tmp_dir=""
   local archive=""
   local attempt=0
+  local awscli_arch=""
+  case "$(uname -m)" in
+    x86_64|amd64) awscli_arch="x86_64" ;;
+    aarch64|arm64) awscli_arch="aarch64" ;;
+    *)
+      echo "[${log_prefix}] unsupported architecture for awscli install: $(uname -m)" >&2
+      return 1
+      ;;
+  esac
   tmp_dir=$(mktemp -d)
   archive="$tmp_dir/awscliv2.zip"
 
   for attempt in {1..20}; do
-    if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$archive"; then
+    if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${awscli_arch}.zip" -o "$archive"; then
       rm -rf "$tmp_dir/aws"
       if unzip -q "$archive" -d "$tmp_dir" \
         && "$tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update \

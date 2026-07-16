@@ -1,81 +1,11 @@
 name: Select cloud provider
 description: >-
-  Single source of truth for provider dispatch. Resolves TOFU_DIR, SCRIPTS_DIR,
-  BOOTSTRAP_DIR, BOOTSTRAP_PROVIDER, CLOUD_PROVIDER_RESOLVED and provider
-  TF_VAR_* credentials into GITHUB_ENV. Reads CLOUD_PROVIDER / CLOUD_REGION and
-  provider credential variables from the job environment.
-  Adding a new cloud = one branch here + bootstrap/providers/<cloud>/adapter.sh
-  + tofu/<cloud>/ + scripts/<cloud>/.
+  Provider-neutral entrypoint. Resolves directories by convention, validates
+  the selected provider contract and publishes provider paths for later steps.
 
 runs:
   using: composite
   steps:
     - name: Resolve provider
       shell: bash
-      run: |
-        PROVIDER="${CLOUD_PROVIDER:-hetzner}"
-        PROVIDER=$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')
-        case "$PROVIDER" in
-          ovh|ovhcloud)
-            echo "CLOUD_PROVIDER_RESOLVED=ovhcloud" >> "$GITHUB_ENV"
-            echo "TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/ovh" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_PROVIDER=ovh" >> "$GITHUB_ENV"
-            # OVH provider credentials
-            echo "TF_VAR_ovh_application_key=${OVH_APPLICATION_KEY}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_application_secret=${OVH_APPLICATION_SECRET}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_consumer_key=${OVH_CONSUMER_KEY}" >> "$GITHUB_ENV"
-            echo "TF_VAR_ovh_cloud_project_id=${OVH_CLOUD_PROJECT_ID}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_user_name=${OPENSTACK_USER_NAME}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_password=${OPENSTACK_PASSWORD}" >> "$GITHUB_ENV"
-            echo "TF_VAR_openstack_tenant_id=${OPENSTACK_TENANT_ID:-${OVH_CLOUD_PROJECT_ID}}" >> "$GITHUB_ENV"
-            # Determine OpenStack auth URL based on region (US vs EU)
-            REGION_LOWER=$(echo "${CLOUD_REGION:-}" | tr '[:upper:]' '[:lower:]')
-            if [[ "$REGION_LOWER" == us-* ]]; then
-              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.us/v3" >> "$GITHUB_ENV"
-              echo "TF_VAR_ovh_endpoint=ovh-us" >> "$GITHUB_ENV"
-            else
-              echo "TF_VAR_openstack_auth_url=https://auth.cloud.ovh.net/v3" >> "$GITHUB_ENV"
-              echo "TF_VAR_ovh_endpoint=ovh-eu" >> "$GITHUB_ENV"
-            fi
-            ;;
-          hetzner)
-            echo "CLOUD_PROVIDER_RESOLVED=hetzner" >> "$GITHUB_ENV"
-            echo "TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/hetzner" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_PROVIDER=hetzner" >> "$GITHUB_ENV"
-            ;;
-          aws)
-            # Scaffold: enable when bootstrap/providers/aws + tofu/aws + scripts/aws land.
-            echo "CLOUD_PROVIDER_RESOLVED=aws" >> "$GITHUB_ENV"
-            echo "TOFU_DIR=tofu/aws" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/aws" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/aws" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_PROVIDER=aws" >> "$GITHUB_ENV"
-            # TODO(aws): export TF_VAR_* credentials here.
-            ;;
-          azure)
-            # Scaffold: enable when bootstrap/providers/azure + tofu/azure + scripts/azure land.
-            echo "CLOUD_PROVIDER_RESOLVED=azure" >> "$GITHUB_ENV"
-            echo "TOFU_DIR=tofu/azure" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/azure" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/azure" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_PROVIDER=azure" >> "$GITHUB_ENV"
-            # TODO(azure): export TF_VAR_* credentials here.
-            ;;
-          gcp)
-            # Scaffold: enable when bootstrap/providers/gcp + tofu/gcp + scripts/gcp land.
-            echo "CLOUD_PROVIDER_RESOLVED=gcp" >> "$GITHUB_ENV"
-            echo "TOFU_DIR=tofu/gcp" >> "$GITHUB_ENV"
-            echo "SCRIPTS_DIR=scripts/gcp" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_DIR=bootstrap/gcp" >> "$GITHUB_ENV"
-            echo "BOOTSTRAP_PROVIDER=gcp" >> "$GITHUB_ENV"
-            # TODO(gcp): export TF_VAR_* credentials here.
-            ;;
-          *)
-            echo "Unknown CLOUD_PROVIDER '${PROVIDER}'; expected: hetzner, ovhcloud, aws, azure, gcp" >&2
-            exit 1
-            ;;
-        esac
+      run: bash scripts/common/select-provider.sh

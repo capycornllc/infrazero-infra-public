@@ -1,6 +1,6 @@
 # infrazero-infra-public
 
-Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bastion, egress, k3s control planes + workers, db, LBs, firewalls, and persistent DB volume) from a single config file and GitHub Actions workflows.
+Reusable multi-cloud OpenTofu template that builds the full topology (bastion, egress, k3s control planes + workers, db, LBs, firewalls, and persistent DB volume) from a single config file and GitHub Actions workflows. Hetzner and OVHcloud are currently implemented.
 
 ## Quick start
 1) Edit `config/infra.yaml` for your project/env.
@@ -16,13 +16,13 @@ Reusable OpenTofu template for Hetzner Cloud that builds the full topology (bast
 
 Render and validate locally:
 ```bash
-python scripts/validate-config.py --config config/infra.yaml --schema config/schema.json
+python scripts/common/validate-config.py --config config/infra.yaml --schema config/schema.json
 # render-config.py expects the GitHub Actions secrets as env vars (see list below).
-python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tfvars.json
+python scripts/common/render-config.py --config config/infra.yaml --output tofu/<cloud>/tofu.tfvars.json
 ```
 
 ## Required GitHub Actions secrets
-- `hetzner_cloud_token`
+- `cloud_provider` (`hetzner` or `ovhcloud`)
 - `s3_access_key_id`
 - `s3_secret_access_key`
 - `infra_state_bucket`
@@ -68,6 +68,33 @@ python scripts/render-config.py --config config/infra.yaml --output tofu/tofu.tf
 - `wg_listen_port`
 - `WG_ADMIN_PEERS_JSON`
 - `WG_PRESHARED_KEYS_JSON`
+
+Provider credentials are isolated and only the selected cloud's values are
+exported into the deploy job:
+
+- Hetzner: `hetzner_cloud_token`
+- OVHcloud: `ovh_application_key`, `ovh_application_secret`,
+  `ovh_consumer_key`, `ovh_cloud_project_id`, `openstack_user_name`,
+  `openstack_password`
+- OVHcloud optional override: `openstack_tenant_id` (defaults to
+  `ovh_cloud_project_id`)
+
+## Cloud provider contract
+
+Shared workflows do not contain provider resource addresses or credential
+bindings. A fully implemented provider owns:
+
+- `bootstrap/providers/<cloud>/adapter.sh`
+- `bootstrap/<cloud>/`
+- `tofu/<cloud>/`
+- `scripts/<cloud>/ci-credentials.sh`
+- `scripts/<cloud>/tofu-resources.sh`
+- provider implementations of destroy, volume import and SSH-key import
+
+`scripts/common/select-provider.sh` validates this contract before OpenTofu is
+initialized. `scripts/common/materialize-user-repo.sh` copies only shared files
+and the selected provider. CI materializes, packages and validates every fully
+wired provider directory on each change.
 
 ### databases_json
 `databases_json` is a JSON array of database definitions:
@@ -128,7 +155,7 @@ Full list (including future epics): `docs/secrets-list.md`
 - If `db_fqdn` and `cloudflare_api_token` are set, DB bootstrap will obtain a Let's Encrypt cert via DNS-01 and enable PostgreSQL TLS.
 - `kubernetes_fqdn` points to egress (public IP). Egress terminates TLS and proxies `https://kubernetes_fqdn` to the k3s API (private k3s API LB when HA, otherwise node1).
 - Bootstrap artifacts are uploaded to `s3://$infra_state_bucket/bootstrap/` and referenced in cloud-init via presigned URLs.
-- `bootstrap/*.sh` are placeholders for Epic 2+ and will be extended.
+- Provider wrappers under `bootstrap/<cloud>/` are thin entry points; shared server logic lives in `bootstrap/common/`, and cloud-specific behavior lives in `bootstrap/providers/<cloud>/adapter.sh`.
 - If `s3_endpoint` is missing a scheme, the workflows will prepend `https://`.
 - Backend config skips AWS region validation to allow Hetzner regions (e.g. `fsn1`).
 - When validating outbound egress IP, use IPv4 explicitly: `curl -4 ifconfig.me`. If IPv6 is enabled, plain `curl ifconfig.me` may return an IPv6 address that bypasses IPv4-only egress/NAT.

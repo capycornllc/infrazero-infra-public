@@ -3,8 +3,8 @@ set -euo pipefail
 
 LOG_FILE="${INFRAZERO_BOOTSTRAP_LOG:-/var/log/infrazero-bootstrap.log}"
 mkdir -p "$(dirname "$LOG_FILE")"
-if [ -z "${INFRAZERO_LOG_REDIRECTED:-}" ]; then
-  export INFRAZERO_LOG_REDIRECTED=1
+if [ -z "${_INFRAZERO_LOG_REDIRECTED:-}" ]; then
+  export _INFRAZERO_LOG_REDIRECTED=1
   exec > >(tee -a "$LOG_FILE") 2>&1
 fi
 

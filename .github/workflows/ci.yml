@@ -1,0 +1,148 @@
+name: CI
+
+# Protects the commonization invariants so adding a new cloud cannot silently
+# break existing ones. Every check here passes on the current tree; each is a
+# guard, not a deploy step - nothing in this workflow touches infrastructure.
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  shell-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: bash -n (syntax) on all shell scripts
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "syntax error: $f"; rc=1; }
+          done < <(git ls-files '*.sh')
+          exit "$rc"
+      - name: shellcheck (errors only)
+        run: shellcheck -S error $(git ls-files '*.sh')
+      - name: Python syntax
+        run: python -m compileall -q scripts
+
+  tofu-common-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: canonical tofu files match provider copies
+        run: bash scripts/common/sync-tofu-common.sh --check
+
+  common-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: bootstrap/common must stay provider-neutral
+        run: |
+          # Provider-specific resource/API tokens must never appear in shared
+          # bootstrap logic. route_mode contract values (hetzner-32, ovh-dhcp)
+          # are intentionally NOT matched by these tokens.
+          if git grep -nE '\b(hcloud|openstack|ovhcloud)\b' -- bootstrap/common; then
+            echo "::error::provider-specific token leaked into bootstrap/common"
+            exit 1
+          fi
+          echo "bootstrap/common is provider-neutral"
+
+      - name: workflows must not bind provider credentials
+        run: |
+          set -euo pipefail
+          while IFS= read -r credential_script; do
+            bash "$credential_script" --list-secret-names
+          done < <(find scripts -mindepth 2 -maxdepth 2 -type f -name ci-credentials.sh | sort) \
+            | python scripts/common/check-workflow-provider-isolation.py --github-dir .github
+
+  provider-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      clouds: ${{ steps.discover.outputs.clouds }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: discover
+        name: discover fully wired provider directories
+        run: |
+          mapfile -t clouds < <(
+            find scripts -mindepth 2 -maxdepth 2 -type f -name ci-credentials.sh -printf '%h\n' \
+              | sed 's#^scripts/##' \
+              | sort -u
+          )
+          if [ ${#clouds[@]} -eq 0 ]; then
+            echo "::error::no implemented cloud providers found"
+            exit 1
+          fi
+          source scripts/common/provider-contract.sh
+          for cloud in "${clouds[@]}"; do
+            infrazero_validate_provider_contract "$PWD" "$cloud"
+          done
+          json=$(printf '%s\n' "${clouds[@]}" | jq -R . | jq -sc .)
+          echo "clouds=${json}" >> "$GITHUB_OUTPUT"
+          echo "providers: ${clouds[*]}"
+
+  materialize:
+    needs: provider-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.provider-matrix.outputs.clouds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: materialize single-cloud copy (fails on foreign-provider leak)
+        run: bash scripts/common/materialize-user-repo.sh "${{ matrix.cloud }}" "${RUNNER_TEMP}/mat"
+      - name: dry-package every role from the copy
+        working-directory: ${{ runner.temp }}/mat
+        run: |
+          BOOTSTRAP_DIR="bootstrap/${{ matrix.cloud }}" \
+          BOOTSTRAP_OUTPUT_DIR="${RUNNER_TEMP}/pkg" \
+          PACKAGE_BOOTSTRAP_SKIP_UPLOAD=true \
+          PACKAGE_BOOTSTRAP_COMPRESSION=none \
+          bash scripts/common/package-bootstrap.sh \
+            --manifest "${RUNNER_TEMP}/pkg/manifest.json" \
+            bastion egress node1 nodecp node2 db db-replica pgbouncer
+
+  provider-selection:
+    needs: provider-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.provider-matrix.outputs.clouds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: bootstrap adapter contract
+        run: bash scripts/common/test-provider-adapter.sh "${{ matrix.cloud }}"
+      - name: provider selector and credential contract
+        run: bash scripts/common/test-provider-selection.sh "${{ matrix.cloud }}"
+
+  tofu-validate:
+    needs: provider-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.provider-matrix.outputs.clouds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.10.6"
+      - name: tofu validate
+        working-directory: tofu/${{ matrix.cloud }}
+        run: |
+          tofu init -backend=false -input=false -no-color
+          tofu validate -no-color

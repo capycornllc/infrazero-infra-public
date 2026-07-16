@@ -62,7 +62,10 @@ aws/azure/gcp есть заготовки с инструкцией (`bootstrap/
 
 1. `bootstrap/providers/<новый>/adapter.sh` — все обязательные функции.
 2. `tofu/<новый>/` — main.tf и провайдер-переменные.
-3. `scripts/<новый>/` — provider API (volume lookup, cleanup).
-4. Ветка провайдера в workflows (после этапа 9 — одно место: composite action).
+3. `scripts/<новый>/` — provider API, `ci-credentials.sh` с режимом
+   `--list-secret-names`,
+   `tofu-resources.sh`, destroy/import entrypoints.
+4. Общие workflow и `select-provider` не меняются: каталоги подключаются по
+   конвенции, а CI автоматически добавляет полностью собранный provider в матрицу.
 5. Прогнать: dry-package всех ролей, tar-лист (есть `adapter.sh`, нет чужого
    облака), staging-деплой.

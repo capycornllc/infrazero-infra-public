@@ -30,20 +30,12 @@ if [ -z "$cloud" ] || [ -z "$out" ]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-if [ ! -f "${repo_root}/bootstrap/providers/${cloud}/adapter.sh" ]; then
-  echo "[materialize] unknown cloud '${cloud}': bootstrap/providers/${cloud}/adapter.sh not found" >&2
-  echo "[materialize] available clouds:" >&2
-  ls -1 "${repo_root}/bootstrap/providers" >&2 || true
+# shellcheck source=scripts/common/provider-contract.sh
+source "${repo_root}/scripts/common/provider-contract.sh"
+if ! infrazero_validate_provider_contract "$repo_root" "$cloud"; then
+  echo "[materialize] cloud '${cloud}' is not fully implemented" >&2
   exit 2
 fi
-
-for required in "bootstrap/${cloud}" "tofu/${cloud}" "scripts/${cloud}"; do
-  if [ ! -d "${repo_root}/${required}" ]; then
-    echo "[materialize] cloud '${cloud}' is not fully implemented yet: missing ${required}" >&2
-    exit 2
-  fi
-done
 
 if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
   echo "[materialize] output directory exists and is not empty: ${out}" >&2
@@ -103,6 +95,12 @@ done
 if [ "$leak" -ne 0 ]; then
   exit 1
 fi
+
+# Workflows are shared, but they must not name credentials from any cloud.
+# The selected provider owns that mapping in scripts/<cloud>/ci-credentials.sh.
+bash "${out}/scripts/${cloud}/ci-credentials.sh" --list-secret-names \
+  | python "${out}/scripts/common/check-workflow-provider-isolation.py" \
+      --github-dir "${out}/.github"
 
 echo "[materialize] done: $(find "$out" -type f | wc -l) files"
 echo "[materialize] verify with:"

@@ -532,21 +532,11 @@ def main() -> int:
     if not s3_endpoint:
         missing_env.append("S3_ENDPOINT")
 
-    cloud_provider = (optional_env("CLOUD_PROVIDER") or str(config.get("cloud_provider", "")) or "hetzner").strip().lower()
-    if cloud_provider == "ovh":
-        cloud_provider = "ovhcloud"
-    known_providers = {"hetzner", "ovhcloud", "aws", "azure", "gcp"}
-    if cloud_provider not in known_providers:
-        raise SystemExit(
-            f"Unknown cloud_provider '{cloud_provider}'; expected one of: {', '.join(sorted(known_providers))}"
-        )
-    pgbouncer_server_type_default = "b2-7" if cloud_provider == "ovhcloud" else "cx23"
-
     bastion_server_type = require_env("BASTION_SERVER_TYPE")
     egress_server_type = require_env("EGRESS_SERVER_TYPE")
     db_server_type = require_env("DB_SERVER_TYPE")
     k3s_node_server_type = require_env("K3S_NODE_SERVER_TYPE")
-    pgbouncer_server_type = optional_env("PGBOUNCER_SERVER_TYPE") or pgbouncer_server_type_default
+    pgbouncer_server_type = require_env("PGBOUNCER_SERVER_TYPE")
 
     db_type = require_env("DB_TYPE")
     db_version = require_env("DB_VERSION")
